@@ -1,0 +1,156 @@
+use crate::{
+    constants,
+    flutter_bindings,
+    win32_utils,
+};
+use std::{
+    env,
+    ffi::c_char,
+    mem,
+    ptr,
+};
+use windows::Win32::{
+    Foundation::HWND,
+    System::Com::CoUninitialize,
+};
+use log::{debug, error, info};
+
+/// Alias for the raw Flutter engine handles
+pub type FlutterDesktopEngineRef = flutter_bindings::FlutterDesktopEngineRef;
+pub type FlutterDesktopViewControllerRef = flutter_bindings::FlutterDesktopViewControllerRef;
+pub type FlutterDesktopViewRef = flutter_bindings::FlutterDesktopViewRef;
+pub type FlutterHWND = flutter_bindings::HWND;
+pub type FlutterWPARAM = flutter_bindings::WPARAM;
+pub type FlutterLPARAM = flutter_bindings::LPARAM;
+pub type FlutterLRESULT = flutter_bindings::LRESULT;
+pub type FlutterUINT = flutter_bindings::UINT;
+
+/// Determine and validate the platform‐specific Flutter asset paths:
+/// 1. `<exe_dir>/data/flutter_assets`  
+/// 2. `<exe_dir>/data/icudtl.dat`  
+/// 3. `<exe_dir>/data/app.so`  
+/// 
+/// Panics if any of the above are missing. Returns each path as a null-terminated UTF-16 vector.
+fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
+    let exe = env::current_exe().expect("Failed to get current executable path");
+    let root = exe.parent().expect("Executable must live in a folder");
+    let data_dir = root.join("data");
+
+    let assets_dir = data_dir.join("flutter_assets");
+    let icu_file   = data_dir.join("icudtl.dat");
+    let aot_lib    = data_dir.join("app.so");
+
+    if !assets_dir.is_dir() {
+        panic!("[Flutter Utils] Missing flutter_assets at `{}`", assets_dir.display());
+    }
+    if !icu_file.is_file() {
+        panic!("[Flutter Utils] Missing icudtl.dat at `{}`", icu_file.display());
+    }
+    if !aot_lib.is_file() {
+        panic!("[Flutter Utils] Missing AOT library at `{}`", aot_lib.display());
+    }
+
+    debug!(
+        "[Flutter Utils] Validated paths: assets=`{}`, icu=`{}`, aot=`{}`",
+        assets_dir.display(),
+        icu_file.display(),
+        aot_lib.display(),
+    );
+
+    let assets_w = win32_utils::to_wide(assets_dir.to_str().unwrap());
+    let icu_w    = win32_utils::to_wide(icu_file.to_str().unwrap());
+    let aot_w    = win32_utils::to_wide(aot_lib.to_str().unwrap());
+
+    (assets_w, icu_w, aot_w)
+}
+
+/// Creates and initializes the Flutter engine with the appropriate properties.
+/// On failure, uninitializes COM and aborts the process.
+pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
+    let (assets_w, icu_w, aot_w) = get_flutter_paths();
+
+    // Prepare Dart entrypoint arguments
+    let args_ptrs: Vec<*const c_char> = constants::DART_ENTRYPOINT_ARGS
+        .iter()
+        .map(|arg| arg.as_ptr() as *const c_char)
+        .collect();
+
+    let props = flutter_bindings::FlutterDesktopEngineProperties {
+        assets_path:          assets_w.as_ptr(),
+        icu_data_path:        icu_w.as_ptr(),
+        aot_library_path:     aot_w.as_ptr(),
+        dart_entrypoint:      ptr::null(),
+        dart_entrypoint_argc: args_ptrs.len() as i32,
+        dart_entrypoint_argv: if args_ptrs.is_empty() {
+            ptr::null_mut()
+        } else {
+            args_ptrs.as_ptr() as *mut *const c_char
+        },
+        ..unsafe { mem::zeroed() }
+    };
+
+    info!("[Flutter Utils] Initializing Flutter engine");
+    let engine = unsafe { flutter_bindings::FlutterDesktopEngineCreate(&props) };
+    if engine.is_null() {
+        error!("[Flutter Utils] Engine creation failed");
+        unsafe { CoUninitialize() };
+        win32_utils::panic_with_error("FlutterDesktopEngineCreate failed");
+    }
+    info!("[Flutter Utils] Engine created");
+    engine
+}
+
+/// Creates a Flutter view controller of the given size for the specified engine.
+/// Panics (after cleanup) on failure.
+pub fn create_flutter_view_controller(
+    engine: FlutterDesktopEngineRef,
+    width: i32,
+    height: i32,
+) -> FlutterDesktopViewControllerRef {
+    info!("[Flutter Utils] Creating view controller");
+    let controller = unsafe {
+        flutter_bindings::FlutterDesktopViewControllerCreate(width, height, engine)
+    };
+    if controller.is_null() {
+        error!("[Flutter Utils] View controller creation failed");
+        unsafe {
+            flutter_bindings::FlutterDesktopEngineDestroy(engine);
+            CoUninitialize();
+        }
+        win32_utils::panic_with_error("FlutterDesktopViewControllerCreate failed");
+    }
+    info!("[Flutter Utils] View controller created");
+    controller
+}
+
+/// Retrieves the Flutter view and underlying HWND from a view controller.
+/// On failure, cleans up and aborts.
+pub fn get_flutter_view_and_hwnd(
+    controller: FlutterDesktopViewControllerRef,
+) -> (FlutterDesktopViewRef, HWND) {
+    info!("[Flutter Utils] Obtaining Flutter view");
+    let view = unsafe { flutter_bindings::FlutterDesktopViewControllerGetView(controller) };
+    if view.is_null() {
+        error!("[Flutter Utils] Failed to get view");
+        unsafe {
+            flutter_bindings::FlutterDesktopViewControllerDestroy(controller);
+            CoUninitialize();
+        }
+        win32_utils::panic_with_error("FlutterDesktopViewControllerGetView failed");
+    }
+
+    info!("[Flutter Utils] Obtaining HWND from view");
+    let raw = unsafe { flutter_bindings::FlutterDesktopViewGetHWND(view) };
+    if raw.is_null() {
+        error!("[Flutter Utils] View returned null HWND");
+        unsafe {
+            flutter_bindings::FlutterDesktopViewControllerDestroy(controller);
+            CoUninitialize();
+        }
+        win32_utils::panic_with_error("FlutterDesktopViewGetHWND failed");
+    }
+
+    let hwnd = HWND(raw as isize);
+    info!("[Flutter Utils] Flutter child HWND = {:?}", hwnd);
+    (view, hwnd)
+}

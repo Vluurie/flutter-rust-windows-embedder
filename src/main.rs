@@ -22,7 +22,7 @@ mod flutter_bindings {
 
 use std::env;
 use log::{error, info};
-use env_logger;
+use env_logger::{self, Env};
 use app_state::AppState;
 use windows::Win32::{
     System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
@@ -38,7 +38,8 @@ use windows::Win32::{
 /// 5. Show the window and run the message loop.  
 /// 6. Uninitialize COM and exit.
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
+    .init();
 
     // --- COM Initialization (STA) ---
     unsafe {

@@ -20,7 +20,6 @@ mod flutter_bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-use std::env;
 use log::{error, info, LevelFilter};
 use env_logger::{self, Builder, Env};
 use app_state::AppState;
@@ -70,23 +69,19 @@ fn init_flutter_window() {
         constants::DEFAULT_WINDOW_HEIGHT
     );
 
-    // Get exe dir
-    let exe_dir = env::current_exe()
-        .expect("Failed to get current executable path")
-        .parent()
-        .expect("Executable must live in a folder")
-        .to_path_buf();
+    // Get dll dir
+    let dll_dir = flutter_utils::dll_directory();
 
     // Get the plugin registrar
     let registrar = unsafe {
         flutter_bindings::FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
     };
     // Load and register plugins DYNAMICALLY in runtime !!!!!!
-    if let Err(e) = plugin_loader::load_and_register_plugins(&exe_dir, registrar) {
+    if let Err(e) = plugin_loader::load_and_register_plugins(&dll_dir, registrar) {
         error!("Plugin loading failed: {:?}", e);
         std::process::exit(1); // rip
     }
-    info!("Plugins loaded from {:?}", exe_dir);
+    info!("Plugins loaded from {:?}", dll_dir);
 
     // --- Flutter View Embedding ---
     let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);

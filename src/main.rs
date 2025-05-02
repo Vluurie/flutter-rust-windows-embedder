@@ -21,8 +21,8 @@ mod flutter_bindings {
 }
 
 use std::env;
-use log::{error, info};
-use env_logger::{self, Env};
+use log::{error, info, LevelFilter};
+use env_logger::{self, Builder, Env};
 use app_state::AppState;
 use windows::Win32::{
     System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
@@ -38,8 +38,12 @@ use windows::Win32::{
 /// 5. Show the window and run the message loop.  
 /// 6. Uninitialize COM and exit.
 fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("debug"))
-    .init();
+
+      Builder::from_env(Env::default().default_filter_or("debug"))
+        .filter(None, LevelFilter::Debug)
+        // turn on filter if you want to see goblin logs (.dll discovery imports etc..)
+        .filter_module("goblin", LevelFilter::Off)
+        .init();
 
     // --- COM Initialization (STA) ---
     unsafe {

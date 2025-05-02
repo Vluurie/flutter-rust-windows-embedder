@@ -4,15 +4,12 @@ use crate::{
     win32_utils,
 };
 use std::{
-    env,
-    ffi::c_char,
-    mem,
-    ptr,
+     ffi::{c_char, OsString}, mem, os::windows::ffi::OsStringExt, path::PathBuf, ptr
 };
-use windows::Win32::{
-    Foundation::HWND,
-    System::Com::CoUninitialize,
-};
+use windows::{core::PCWSTR, Win32::{
+    Foundation::{HMODULE, HWND},
+    System::{Com::CoUninitialize, LibraryLoader::{GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT}},
+}};
 use log::{debug, error, info};
 
 /// Alias for the raw Flutter engine handles
@@ -26,19 +23,19 @@ pub type FlutterLRESULT = flutter_bindings::LRESULT;
 pub type FlutterUINT = flutter_bindings::UINT;
 
 /// Determine and validate the platform‐specific Flutter asset paths:
-/// 1. `<exe_dir>/data/flutter_assets`  
-/// 2. `<exe_dir>/data/icudtl.dat`  
-/// 3. `<exe_dir>/data/app.so`  
+/// 1. `<dll_dir>/data/flutter_assets`  
+/// 2. `<dll_dir>/data/icudtl.dat`  
+/// 3. `<dll_dir>/data/app.so`  
 /// 
 /// Panics if any of the above are missing. Returns each path as a null-terminated UTF-16 vector.
 fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    let exe = env::current_exe().expect("Failed to get current executable path");
-    let root = exe.parent().expect("Executable must live in a folder");
-    let data_dir = root.join("data");
+    let root_dir = dll_directory();
+    let data_dir_path = root_dir.join("data");
+    info!("[Flutter Utils] Data directory path: {:?}", data_dir_path);
 
-    let assets_dir = data_dir.join("flutter_assets");
-    let icu_file   = data_dir.join("icudtl.dat");
-    let aot_lib    = data_dir.join("app.so");
+    let assets_dir = data_dir_path.join("flutter_assets");
+    let icu_file   = data_dir_path.join("icudtl.dat");
+    let aot_lib    = data_dir_path.join("app.so");
 
     if !assets_dir.is_dir() {
         panic!("[Flutter Utils] Missing flutter_assets at `{}`", assets_dir.display());
@@ -153,4 +150,31 @@ pub fn get_flutter_view_and_hwnd(
     let hwnd = HWND(raw as isize);
     info!("[Flutter Utils] Flutter child HWND = {:?}", hwnd);
     (view, hwnd)
+}
+
+pub fn dll_directory() -> PathBuf {
+    unsafe {
+        let mut hmod = HMODULE(0);
+
+        let addr_pcwstr = PCWSTR(dll_directory as *const () as _);
+        let ok = GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            addr_pcwstr,
+            &mut hmod,
+        );
+        if !ok.as_bool() {
+            panic!("GetModuleHandleExW failed");
+        }
+
+        const MAX_PATH: usize = 260;
+        let mut buf = [0u16; MAX_PATH];
+        let len = GetModuleFileNameW(hmod, &mut buf) as usize;
+        if len == 0 {
+            panic!("GetModuleFileNameW failed");
+        }
+
+        let os = OsString::from_wide(&buf[..len]);
+        PathBuf::from(os).parent().unwrap().to_path_buf()
+    }
 }

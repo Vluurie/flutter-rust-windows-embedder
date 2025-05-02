@@ -20,6 +20,8 @@ mod flutter_bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+use std::sync::Once;
+
 use log::{error, info, LevelFilter};
 use env_logger::{self, Builder, Env};
 use app_state::AppState;
@@ -38,11 +40,7 @@ use windows::Win32::{
 /// 6. Uninitialize COM and exit.
 pub fn init_flutter_window() {
 
-      Builder::from_env(Env::default().default_filter_or("debug"))
-        .filter(None, LevelFilter::Debug)
-        // turn on filter if you want to see goblin logs (.dll discovery imports etc..)
-        .filter_module("goblin", LevelFilter::Off)
-        .init();
+    init_logging();
 
     // --- COM Initialization (STA) ---
     unsafe {
@@ -126,4 +124,17 @@ pub fn init_flutter_window() {
         CoUninitialize();
     }
     info!("Application exiting");
+}
+
+// when we init loggin on first flutter app start then close the app and reopen another one
+// from the same rust process, we get init log error so we make it static and only init once
+static LOGGER_INIT: Once = Once::new();
+
+fn init_logging() {
+    LOGGER_INIT.call_once(|| {
+        Builder::from_env(Env::default().default_filter_or("debug"))
+            .filter(None, LevelFilter::Debug)
+            .filter_module("goblin", LevelFilter::Off)
+            .init();
+    });
 }

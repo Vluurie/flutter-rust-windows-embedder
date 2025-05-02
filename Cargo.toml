@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 
-# [lib]
-# name = "flutter_rust_windows_embedder"
-# crate-type = ["rlib"] 
-
-[[bin]]
+[lib]
 name = "flutter_rust_windows_embedder"
-path = "src/main.rs"
+crate-type = ["rlib"] 
+
+# [[bin]]
+# name = "flutter_rust_windows_embedder"
+# path = "src/main.rs"
 
 [dependencies]
 lazy_static = "1.4.0"

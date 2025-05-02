@@ -37,7 +37,7 @@ use windows::Win32::{
 /// 4. Embed the Flutter HWND in a Win32 window.  
 /// 5. Show the window and run the message loop.  
 /// 6. Uninitialize COM and exit.
-fn main() {
+fn init_flutter_window() {
 
       Builder::from_env(Env::default().default_filter_or("debug"))
         .filter(None, LevelFilter::Debug)

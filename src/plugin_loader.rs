@@ -171,41 +171,37 @@ fn discover_plugins(release_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>> {
     Ok(updated)
 }
 
-/// Load each plugin DLL and invoke its `xxxRegisterWithRegistrar` exports.
-pub fn load_and_register_plugins(
+/// Registers only the plugins for which `filter(&symbols)` returns true.
+pub fn load_and_register_selected<F>(
     release_dir: &Path,
     registrar: *mut FlutterDesktopPluginRegistrar,
-) -> Result<()> {
-    let plugins = discover_plugins(release_dir)
+    filter: F,
+) -> Result<()>
+where
+    F: Fn(&[String]) -> bool,
+{
+    // Get the same discovery + cache logic
+    let all = discover_plugins(release_dir)
         .with_context(|| format!("discovering plugins in {}", release_dir.display()))?;
-    if plugins.is_empty() {
+    if all.is_empty() {
         debug!("No Flutter plugins found in `{}`", release_dir.display());
         return Ok(());
     }
 
-    // Hold libraries alive until end of function
-    let mut libs = Vec::with_capacity(plugins.len());
-
-    for (dll_path, symbols) in plugins {
+    // Hold libs alive
+    let mut libs = Vec::with_capacity(all.len());
+    for (dll_path, symbols) in all.into_iter().filter(|(_, syms)| filter(syms)) {
         info!("Loading plugin library `{}`", dll_path.display());
-        let lib = unsafe {
-            Library::new(&dll_path)
-                .with_context(|| format!("loading {}", dll_path.display()))?
-        };
-        for sym in symbols {
+        let lib = unsafe { Library::new(&dll_path)? };
+        for sym in symbols.into_iter().filter(|s| filter(&[s.clone()])) {
             let cname = CString::new(sym.clone()).unwrap();
-            let func: Symbol<unsafe extern "C" fn(*mut FlutterDesktopPluginRegistrar)> =
-                unsafe {
-                    lib.get(cname.as_bytes_with_nul())
-                        .with_context(|| format!("symbol {}", sym))?
-                };
+            let func: Symbol<unsafe extern "C" fn(*mut _)>
+                = unsafe { lib.get(cname.as_bytes_with_nul())? };
             unsafe { func(registrar) };
             debug!("Registered symbol `{}`", sym);
         }
         libs.push(lib);
     }
-
-    // Prevent drop so plugins stay registered
     std::mem::forget(libs);
     Ok(())
 }

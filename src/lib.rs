@@ -39,42 +39,23 @@ use windows::Win32::{
 /// 5. Show the window and run the message loop.  
 /// 6. Uninitialize COM and exit.
 pub fn init_flutter_window() {
-    // --- 0) One‑time logging + COM (STA) init ---
+
     init_logging();
+
+    // --- COM Initialization (STA) ---
     unsafe {
         if let Err(e) = CoInitializeEx(None, COINIT_APARTMENTTHREADED) {
-            error!("COM init failed (STA): {:?}", e);
+            error!("COM initialization failed (STA): {:?}", e);
             std::process::exit(1);
         }
     }
     info!("COM initialized (STA)");
 
-    // --- 1) Create the Flutter engine (no Dart VM yet) ---
+    // --- Flutter Engine Setup ---
     let engine = flutter_utils::create_flutter_engine();
     info!("Flutter engine created");
 
-    // --- 2) Grab the *one* PluginRegistrar from the engine ---
-    //     This pointer will later hold both method‑channel and texture registrars.
-    let registrar = unsafe {
-        flutter_bindings::FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
-    };
-
-    // --- Phase 1: Register engine‑only plugins ---
-    //   (pure MethodChannel plugins; must run before Dart boots)
-    plugin_loader::load_and_register_selected(
-        &flutter_utils::dll_directory(),
-        registrar,
-        |syms| !syms.iter().any(|s| s.contains("TextureRegistrar")),
-    )
-    .unwrap_or_else(|e| {
-        error!("Engine‑only plugin registration failed: {:?}", e);
-        std::process::exit(1);
-    });
-    info!("Engine‑only plugins registered");
-
-    // --- Phase 2: Run the engine + create the view controller ---
-    //   Under the hood, this calls FlutterDesktopRunEngine,
-    //   which attaches the texture registrar into `registrar`.
+    // --- Flutter View Controller Setup ---
     let controller = flutter_utils::create_flutter_view_controller(
         engine,
         constants::DEFAULT_WINDOW_WIDTH,
@@ -86,47 +67,64 @@ pub fn init_flutter_window() {
         constants::DEFAULT_WINDOW_HEIGHT
     );
 
-    // --- Phase 3: Register texture/view‑dependent plugins ---
-    //   Now that `registrar` has a valid texture registrar,
-    //   we can safely register plugins like window_manager.
-    plugin_loader::load_and_register_selected(
-        &flutter_utils::dll_directory(),
-        registrar,
-        |syms| syms.iter().any(|s| s.contains("TextureRegistrar")),
-    )
-    .unwrap_or_else(|e| {
-        error!("Texture plugin registration failed: {:?}", e);
-        std::process::exit(1);
-    });
-    info!("Texture/view‑dependent plugins registered");
+    // Get dll dir
+    let dll_dir = flutter_utils::dll_directory();
 
-    // --- 4) Embed the Flutter child HWND into our Win32 window ---
+    // Get the plugin registrar
+    let registrar = unsafe {
+        flutter_bindings::FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
+    };
+    // Load and register plugins DYNAMICALLY in runtime !!!!!!
+    if let Err(e) = plugin_loader::load_and_register_plugins(&dll_dir, registrar) {
+        error!("Plugin loading failed: {:?}", e);
+        std::process::exit(1); // rip
+    }
+    info!("Plugins loaded from {:?}", dll_dir);
+
+    // --- Flutter View Embedding ---
     let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);
-    let boxed = Box::new(AppState { controller, child_hwnd: flutter_child_hwnd });
-    let app_state_ptr = Box::into_raw(boxed);
+    info!("Obtained Flutter child HWND: {:?}", flutter_child_hwnd);
 
+    // --- Application State Setup ---
+    let boxed_state = Box::new(AppState { controller, child_hwnd: flutter_child_hwnd });
+    let app_state_ptr: *mut AppState = Box::into_raw(boxed_state);
+
+    // --- Win32 Window Setup ---
     win32_utils::register_window_class();
-    let parent = win32_utils::create_main_window(app_state_ptr);
-    if parent.0 == 0 {
+    info!("Window class registered");
+
+    let parent_hwnd = win32_utils::create_main_window(app_state_ptr);
+    if parent_hwnd.0 == 0 {
         error!("Failed to create main window");
+        // just do not leak :)
         unsafe { drop(Box::from_raw(app_state_ptr)) };
         std::process::exit(1);
     }
-    win32_utils::set_flutter_window_as_child(parent, flutter_child_hwnd);
+    info!("Main window created: {:?}", parent_hwnd);
 
-    // --- 5) Show & focus the window (now Flutter will paint) ---
+    win32_utils::set_flutter_window_as_child(parent_hwnd, flutter_child_hwnd);
+    info!(
+        "Embedded Flutter HWND {:?} into parent {:?}",
+        flutter_child_hwnd, parent_hwnd
+    );
+
+    // Show and focus the window
     unsafe {
-        ShowWindow(parent, SW_SHOWNORMAL);
-        SetForegroundWindow(parent);
+        ShowWindow(parent_hwnd, SW_SHOWNORMAL);
+        SetForegroundWindow(parent_hwnd);
     }
     info!("Main window shown");
 
-    // --- 6) Message loop + cleanup ---
-    win32_utils::run_message_loop(parent, app_state_ptr);
-    unsafe { CoUninitialize() };
+    // --- Message Loop ---
+    win32_utils::run_message_loop(parent_hwnd, app_state_ptr);
+    info!("Message loop exited");
+
+    info!("Uninitializing COM");
+    unsafe {
+        CoUninitialize();
+    }
     info!("Application exiting");
 }
-
 
 // when we init loggin on first flutter app start then close the app and reopen another one
 // from the same rust process, we get init log error so we make it static and only init once

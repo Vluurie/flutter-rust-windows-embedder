@@ -14,10 +14,10 @@ use windows::Win32::{
 
 mod app_state;
 mod constants;
-mod flutter_utils;
-mod plugin_loader;
-mod path_utils;
-mod win32_utils;
+pub mod flutter_utils;
+pub mod plugin_loader;
+pub mod path_utils;
+pub mod win32_utils;
 
 mod flutter_bindings {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

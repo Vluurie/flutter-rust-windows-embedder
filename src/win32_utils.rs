@@ -21,9 +21,9 @@ use windows::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
             DispatchMessageW, GWLP_USERDATA, GetClientRect, GetMessageW, GetWindowLongPtrW, HICON,
             HMENU, IDC_ARROW, LoadCursorW, MSG, MoveWindow, PostQuitMessage, RegisterClassW,
-            SetParent, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATE,
-            WM_DESTROY, WM_NCCREATE, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-            WS_VISIBLE,
+            SendMessageW, SetParent, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE,
+            WM_ACTIVATE, WM_DESTROY, WM_NCCREATE, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN,
+            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         },
     },
     core::PCWSTR,
@@ -48,11 +48,9 @@ pub unsafe extern "system" fn wnd_proc(
         match msg {
             WM_NCCREATE => {
                 info!("[WndProc] WM_NCCREATE");
-                let cs = (lparam.0 as *const CREATESTRUCTW).as_ref();
-                if let Some(cs) = cs {
-                    let param = cs.lpCreateParams;
-                    debug!("[WndProc] Storing AppState ptr {:?}", param);
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, param as isize);
+                if let Some(cs) = (lparam.0 as *const CREATESTRUCTW).as_ref() {
+                    debug!("[WndProc] Storing AppState ptr {:?}", cs.lpCreateParams);
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
                 } else {
                     warn!("[WndProc] CREATESTRUCTW was null");
                 }
@@ -118,11 +116,8 @@ pub unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// we only registered once.
 static REGISTER_CLASS_ONCE: Once = Once::new();
 
-/// Registers the Win32 window class for the main application window.
-/// Panics if registration fails.
 pub fn register_window_class() {
     REGISTER_CLASS_ONCE.call_once(|| unsafe {
         let hinst = GetModuleHandleW(None).expect("GetModuleHandleW failed");
@@ -139,15 +134,12 @@ pub fn register_window_class() {
             cbWndExtra: 0,
         };
         if RegisterClassW(&wc) == 0 {
-            let e = GetLastError();
-            panic!("[Win32 Utils] RegisterClassW failed: {:?}", e);
+            panic!("[Win32 Utils] RegisterClassW failed: {:?}", GetLastError());
         }
         info!("[Win32 Utils] Window class registered");
     });
 }
 
-/// Creates the main parent window and associates the given `AppState` pointer.
-/// Panics (after cleanup) if window creation fails.
 pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
     info!("[Win32 Utils] Creating main window");
     let hwnd = unsafe {
@@ -181,30 +173,42 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
     hwnd
 }
 
-/// Reparents the Flutter child window under the main parent and resizes it to fit.
+/// Reparents the Flutter child, resizes it, then forces an immediate paint
 pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
     info!(
         "[Win32 Utils] Embedding Flutter HWND {:?} into {:?}",
         child, parent
     );
+
+    // reparent
     let prev = unsafe { SetParent(child, parent) };
     let err = unsafe { GetLastError() };
     if err.0 != 0 {
         warn!("[Win32 Utils] SetParent error: {:?}", err);
     } else if prev.0 != 0 {
         debug!("[Win32 Utils] Child was already parented under {:?}", prev);
+    } else {
+        debug!("[Win32 Utils] SetParent succeeded");
     }
 
+    // resize
     let mut rc = RECT::default();
     if unsafe { GetClientRect(parent, &mut rc) }.as_bool() {
         let w = rc.right - rc.left;
         let h = rc.bottom - rc.top;
-        debug!("[Win32 Utils] Initial resize to {}×{}", w, h);
-        unsafe { MoveWindow(child, 0, 0, w, h, true) };
+        debug!("[Win32 Utils] Parent client size = {}×{}", w, h);
+        unsafe {
+            MoveWindow(child, 0, 0, w, h, true);
+        }
+    }
+
+    // force paint
+    unsafe {
+        let _ = SendMessageW(child, WM_PAINT, WPARAM(0), LPARAM(0));
+        debug!("[Win32 Utils] Sent WM_PAINT to child window");
     }
 }
 
-/// Runs the Win32 message loop until WM_QUIT, then cleans up any remaining `AppState`.
 pub fn run_message_loop(parent: HWND, _app_state_ptr: *mut AppState) {
     info!("[Win32 Utils] Entering message loop");
     let mut msg = MSG::default();
@@ -216,7 +220,7 @@ pub fn run_message_loop(parent: HWND, _app_state_ptr: *mut AppState) {
     }
     info!("[Win32 Utils] Exited message loop");
 
-    // Final AppState cleanup if necessary
+    // cleanup
     let ptr = unsafe { GetWindowLongPtrW(parent, GWLP_USERDATA) as *mut AppState };
     if !ptr.is_null() {
         debug!("[Win32 Utils] Cleaning up AppState after loop");
@@ -232,7 +236,6 @@ pub fn to_wide(s: &str) -> Vec<u16> {
 
 pub fn panic_with_error(message: &str) -> ! {
     let err = std::io::Error::last_os_error();
-    let full = format!("{} OS error: {}", message, err);
-    error!("{}", full);
-    panic!("{}", full);
+    error!("{} OS error: {}", message, err);
+    panic!("{}", message);
 }

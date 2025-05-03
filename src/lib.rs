@@ -38,7 +38,7 @@ pub fn init_flutter_window() {
     let engine = flutter_utils::create_flutter_engine();
     info!("Flutter engine created");
 
-    // 2) Create the view controller
+    // 2) Create the view controller (so Flutter has its texture registrar ready)
     let controller = flutter_utils::create_flutter_view_controller(
         engine,
         constants::DEFAULT_WINDOW_WIDTH,
@@ -50,7 +50,8 @@ pub fn init_flutter_window() {
         constants::DEFAULT_WINDOW_HEIGHT
     );
 
-    // 3) Now load & register every plugin in one pass:
+    // 3) Now scan & register every plugin against the engine
+    //    (passing NULL for plugin_name so Flutter infers the correct channel name)
     let dll_dir = flutter_utils::dll_directory();
     plugin_loader::load_and_register_plugins(&dll_dir, engine)
         .unwrap_or_else(|e| {
@@ -58,12 +59,11 @@ pub fn init_flutter_window() {
             std::process::exit(1);
         });
     info!("All plugins registered");
-    
 
     // 4) Embed the Flutter HWND in our Win32 window
     let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);
-    let boxed = Box::new(AppState { controller, child_hwnd: flutter_child_hwnd });
-    let state_ptr: *mut AppState = Box::into_raw(boxed);
+    let state = Box::new(AppState { controller, child_hwnd: flutter_child_hwnd });
+    let state_ptr: *mut AppState = Box::into_raw(state);
 
     win32_utils::register_window_class();
     let parent_hwnd = win32_utils::create_main_window(state_ptr);

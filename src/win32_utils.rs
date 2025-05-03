@@ -80,6 +80,7 @@ pub unsafe extern "system" fn wnd_proc(
     unsafe {
         // Retrieve the `AppState` pointer we stashed in WM_NCCREATE
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
+        const WM_SIZE_RAW: RawUINT = WM_SIZE as _;
 
         match msg {
             WM_NCCREATE => {
@@ -96,7 +97,7 @@ pub unsafe extern "system" fn wnd_proc(
             }
 
             WM_SIZE => {
-                // Resize Flutter child to fill client
+                // 1) Resize our embedded Flutter child to fill the client area:
                 if let Some(state) = state_ptr.as_mut() {
                     let mut rc = RECT::default();
                     if GetClientRect(hwnd, &mut rc).as_bool() {
@@ -108,7 +109,25 @@ pub unsafe extern "system" fn wnd_proc(
                         );
                         MoveWindow(state.child_hwnd, 0, 0, w, h, true);
                     }
+                    // 2) Forward WM_SIZE into Flutter so it can resize its viewport
+                    let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
+                    let raw_wp: RawWPARAM = wparam.0 as _;
+                    let raw_lp: RawLPARAM = lparam.0 as _;
+                    let mut raw_out: RawLRESULT = 0;
+                    let handled = FlutterDesktopViewControllerHandleTopLevelWindowProc(
+                        state.controller,
+                        raw_hwnd,
+                        WM_SIZE_RAW,
+                        raw_wp,
+                        raw_lp,
+                        &mut raw_out as *mut _,
+                    );
+                    if handled {
+                        // return Flutter's own result if it claims to have handled it
+                        return LRESULT(raw_out.try_into().unwrap());
+                    }
                 }
+                // If Flutter didn’t handle it, just return 0
                 LRESULT(0)
             }
 

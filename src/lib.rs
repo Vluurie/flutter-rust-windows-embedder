@@ -38,14 +38,14 @@ pub fn init_flutter_window() {
     let engine = flutter_utils::create_flutter_engine();
     info!("Flutter engine created");
 
-    // 2) Register engine‐only plugins
+    // 2) Load and register all plugins against the engine
     let dll_dir = flutter_utils::dll_directory();
-    plugin_loader::load_engine_plugins(&dll_dir, engine)
+    plugin_loader::load_and_register_plugins(&dll_dir, engine)
         .unwrap_or_else(|e| {
-            error!("Engine plugin load failed: {:?}", e);
+            error!("Plugin load failed: {:?}", e);
             std::process::exit(1);
         });
-    info!("Engine plugins registered");
+    info!("All plugins registered");
 
     // 3) Create the view controller
     let controller = flutter_utils::create_flutter_view_controller(
@@ -59,15 +59,7 @@ pub fn init_flutter_window() {
         constants::DEFAULT_WINDOW_HEIGHT
     );
 
-    // 4) Register view‐level plugins using the same engine registrar
-    plugin_loader::load_view_plugins(&dll_dir, engine)
-        .unwrap_or_else(|e| {
-            error!("View plugin load failed: {:?}", e);
-            std::process::exit(1);
-        });
-    info!("View plugins registered");
-
-    // 5) Obtain child HWND, embed, show, message loop
+    // 4) Embed the Flutter HWND in our Win32 window
     let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);
     let boxed = Box::new(AppState { controller, child_hwnd: flutter_child_hwnd });
     let state_ptr: *mut AppState = Box::into_raw(boxed);

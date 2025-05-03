@@ -125,12 +125,13 @@ fn load_and_register(
     Ok(())
 }
 
-/// Which plugins need the *view*?  (i.e. texture APIs)
+/// Only screen_retriever needs the view’s texture registrar
 fn is_view_plugin(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .map_or(false, |n| n.contains("window_manager") || n.contains("screen_retriever"))
+        .map_or(false, |n| n.contains("screen_retriever"))
 }
+
 
 /// Phase 1: register engine-only plugins (channels, etc.).
 pub fn load_engine_plugins(

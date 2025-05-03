@@ -97,6 +97,42 @@ pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
     engine
 }
 
+
+/// Like `create_flutter_engine`, but with explicit asset/ICU/AOT paths.
+pub fn create_flutter_engine_with_paths(
+    assets_path: Vec<u16>,
+    icu_data_path: Vec<u16>,
+    aot_library_path: Vec<u16>,
+) -> FlutterDesktopEngineRef {
+    // Prepare the same args as before...
+    let args_ptrs: Vec<*const i8> = crate::constants::DART_ENTRYPOINT_ARGS
+        .iter()
+        .map(|s| s.as_ptr() as *const i8)
+        .collect();
+
+    let props = flutter_bindings::FlutterDesktopEngineProperties {
+        assets_path:      assets_path.as_ptr(),
+        icu_data_path:    icu_data_path.as_ptr(),
+        aot_library_path: aot_library_path.as_ptr(),
+        dart_entrypoint:  std::ptr::null(),
+        dart_entrypoint_argc: args_ptrs.len() as i32,
+        dart_entrypoint_argv: if args_ptrs.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            args_ptrs.as_ptr() as *mut *const i8
+        },
+        ..unsafe { std::mem::zeroed() }
+    };
+
+    let engine = unsafe { flutter_bindings::FlutterDesktopEngineCreate(&props) };
+    if engine.is_null() {
+        // cleanup & abort
+        unsafe { windows::Win32::System::Com::CoUninitialize() };
+        crate::win32_utils::panic_with_error("FlutterDesktopEngineCreate failed");
+    }
+    engine
+}
+
 /// Creates a Flutter view controller of the given size for the specified engine.
 /// Panics (after cleanup) on failure.
 pub fn create_flutter_view_controller(

@@ -1,12 +1,43 @@
-//! Path utilities for Flutter desktop on Windows.
+//! Path-related utilities for Flutter desktop on Windows.
 //!
-//! Provides:
-//! 1. Resolving default Flutter asset, ICU data and AOT library paths based on
-//!    the directory where this DLL resides.
-//! 2. Resolving those same paths from an arbitrary root directory.
-//! 3. Displaying a native folder-picker dialog so the user can select a data directory.
+//! This module helps you locate Flutter’s runtime assets on disk and,
+//! if needed, prompt the user to pick a custom data directory. All
+//! returned paths are UTF-16, null-terminated `Vec<u16>` values suitable
+//! for passing directly into Win32 APIs.
 //!
-//! All returned paths are UTF-16, null-terminated vectors suitable for Win32 APIs.
+//! # Available functions
+//!
+//! - **`get_flutter_paths()`**  
+//!   Inspect the folder where your DLL (or EXE) lives, look for
+//!   `data/flutter_assets`, `data/icudtl.dat` and `data/app.so`, and
+//!   return their paths. Panics if any of these are missing.
+//!
+//! - **`get_flutter_paths_from(root_dir: &Path)`**  
+//!   Same as `get_flutter_paths()`, but rooted at an arbitrary
+//!   `root_dir` instead of the DLL’s location.
+//!
+//! - **`select_data_directory()`**  
+//!   Opens the standard Windows “Select Folder” dialog and returns the
+//!   chosen folder as a `PathBuf`, or `None` if the user cancels.
+//!
+//! - **`dll_directory()`**  
+//!   Returns the filesystem path of the directory containing this DLL
+//!   (or executable). You can use this as the default root for
+//!   `get_flutter_paths_from`.
+//!
+//! # Panics
+//!
+//! Both `get_flutter_paths()` and `get_flutter_paths_from(...)` will panic
+//! if the expected directory structure or files are not present:
+//! ```text
+//! <root_dir>/data/flutter_assets/
+//! <root_dir>/data/icudtl.dat
+//! <root_dir>/data/app.so
+//! ```
+//!
+//! If you need more control (for example, falling back when a directory
+//! is missing), call `select_data_directory()` first and then route its
+//! result into `get_flutter_paths_from(...)`.
 
 use std::{
     ffi::OsString,
@@ -29,15 +60,23 @@ use windows::{
     },
 };
 
-/// Returns `(assets_path, icu_data_path, aot_library_path)` based on the DLL’s directory.
-/// Panics if any of `data/{flutter_assets, icudtl.dat, app.so}` is missing.
+/// Returns `(assets_path, icu_data_path, aot_library_path)` by inspecting
+/// the folder where this DLL (or EXE) is located.  
+/// Panics if any of the following are missing:
+///
+/// - `data/flutter_assets/`  
+/// - `data/icudtl.dat`  
+/// - `data/app.so`
 pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let dll_dir = dll_directory();
     get_flutter_paths_from(&dll_dir)
 }
 
-/// Like `get_flutter_paths()`, but uses `root_dir` instead of the DLL’s location.
-/// Panics if `root_dir/data/{flutter_assets, icudtl.dat, app.so}` is missing.
+/// Like `get_flutter_paths()`, but rooted at the provided `root_dir`.
+/// Use this when you want to supply your own data folder (for example,
+/// after the user selects it via `select_data_directory()`).  
+/// Panics if the same files/directories above are not found under
+/// `root_dir/data/`.
 pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let data_dir   = root_dir.join("data");
     let assets_dir = data_dir.join("flutter_assets");
@@ -73,42 +112,39 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
     (to_wide(&assets_dir), to_wide(&icu_file), to_wide(&aot_lib))
 }
 
-/// Pops up the standard Windows “select folder” dialog and returns the chosen path,
-/// or `None` if the user cancels.
+/// Displays the standard Windows “Select Folder” dialog.  
+/// Returns `Some(PathBuf)` if the user picks a folder, or `None` if
+/// they cancel.
 pub fn select_data_directory() -> Option<PathBuf> {
     unsafe {
-        // Initialize COM (no-op if already initialized).
+        // Make sure COM is initialized (STA).
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-        // Create the folder-picker.
+        // Create and configure the folder-picker.
         let dialog: IFileOpenDialog = CoCreateInstance(
             &FileOpenDialog,
             None,
             CLSCTX_INPROC_SERVER,
         ).ok()?;
-
-        // Only allow folder selection.
         dialog.SetOptions(FOS_PICKFOLDERS).ok()?;
 
-        // Show the dialog (no owner window).
+        // Show it (no owner window).
         dialog.Show(HWND(0)).ok()?;
 
-        // Retrieve the selected item.
+        // Get the selected item and its filesystem path.
         let item = dialog.GetResult().ok()?;
-
-        // Get its filesystem path.
         let buf = [0u16; MAX_PATH as usize];
         item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
         let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        let os = OsString::from_wide(&buf[..len]);
-        Some(PathBuf::from(os))
+        Some(PathBuf::from(OsString::from_wide(&buf[..len])))
     }
 }
 
-/// Returns the directory containing this DLL, which serves as our default root.
+/// Returns the directory containing this DLL (or executable).  
+/// Internally uses `GetModuleHandleExW` and `GetModuleFileNameW` to
+/// locate the module by the address of this function.
 pub fn dll_directory() -> PathBuf {
     unsafe {
-        // Grab module handle by address of this function.
         let mut hmod = windows::Win32::Foundation::HMODULE(0);
         let addr = PCWSTR(dll_directory as *const () as _);
         let _ = GetModuleHandleExW(
@@ -118,10 +154,8 @@ pub fn dll_directory() -> PathBuf {
             &mut hmod,
         );
 
-        // Query its file name.
         let mut buf = [0u16; MAX_PATH as usize];
         let len = GetModuleFileNameW(hmod, &mut buf) as usize;
-        let os = OsString::from_wide(&buf[..len]);
-        PathBuf::from(os).parent().unwrap().to_path_buf()
+        PathBuf::from(OsString::from_wide(&buf[..len])).parent().unwrap().to_path_buf()
     }
 }

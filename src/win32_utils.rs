@@ -343,11 +343,10 @@ pub extern "system" fn wnd_proc(
     }
 }
 
-static REGISTER_CLASS_ONCE: Once = Once::new();
 
 /// Register our Win32 window class exactly once. Panics on failure.
 pub fn register_window_class() {
-    REGISTER_CLASS_ONCE.call_once(|| unsafe {
+    unsafe {
         let hinst = GetModuleHandleW(None).expect("GetModuleHandleW failed");
         let wc = WNDCLASSW {
             hInstance:    hinst.into(),
@@ -365,7 +364,7 @@ pub fn register_window_class() {
             panic!("[Win32 Utils] RegisterClassW failed: {:?}", GetLastError());
         }
         info!("[Win32 Utils] Window class registered");
-    });
+    }
 }
 
 /// Create the main parent window, passing `app_state_ptr` via `lpCreateParams`.

@@ -1,50 +1,79 @@
 # Flutter Rust Embedder
 
-A minimal Windows host application in Rust that embeds a Flutter engine and renders your Flutter UI in a native Win32 window.
-Advances. It loads the plugins not static. Compiled as lib other Rust Apps can load Flutter Apps into the same App Process whenever they want.
+A **Rust library** for hosting Flutter on Windows. Instead of building a standalone EXE, you now link this crate into your own Rust application and call its API to spin up a Flutter window (or composite Flutter into the same rust process). You can also build an .exe out of it by renaming lib to main, init or init from dir to main() and uncomment bin in the cargo toml.
+
+* **Dynamic plugin discovery**: scans your release folder for `*.dll` plugins at runtime
+* **Flexible asset paths**: choose the Flutter “data” directory yourself, or fall back to the DLL’s folder
+* **Load into same process**: loads the flutter ap into the same process, enabled zero copy heap ponter share
+
+---
 
 ## Prerequisites
 
-- **Rust** (stable toolchain)
-- **Windows 10+ SDK**
-- **Flutter 3.29.3** (only tested on this version)
+* **Rust** (stable toolchain, 1.70+ recommended)
+* **Windows 10 SDK** (for the `windows` crate bindings)
+* **Flutter 3.29.3+** (tested on 3.29.3) with Windows desktop support
+
+---
 
 ## 1. Build your Flutter app
 
-From your Flutter project directory:
+In your Flutter project:
 
 ```bash
 flutter build windows --release
-````
-
-This produces a `build/windows/runner/Release/` folder containing:
-
-* `flutter_assets/`
-* `icudtl.dat`
-* Your AOT library (e.g. `app.so`)
-* The as .cpp compiled .exe statically linked plugins (Rust Embedder replaces this - You dont need this .exe anymore normally)
-* Native Flutter Plugins
-
-All three must exist or it will not load!!!
-
-## 2. Build the Rust host
-
-```bash
-git clone https://gitlab.yasupa.de/nams/flutter-rust-embedder.git
-cd flutter-rust-embedder
-cargo build --release
 ```
 
-## 3. Prepare and run
+That produces a folder like:
 
-Copy the Rust flutter_rust_windows_embedder.exe into the release folder next to the original .exe of your App.
-Start the embedder.
+```
+build/windows/runner/Release/
+├── data/
+│   ├── flutter_assets/ /IMPORTANT
+│   ├── icudtl.dat !IMPORTANT
+│   └── app.so !IMPORTANT
+|-- Plugins !IMPORTANT
+|-- Cpp executable (not needed)
+|-- flutter_windows.dll !IMPORTANT
+```
 
-A window titled **“Flutter Rust App”** should appear, displaying your Flutter UI.
+All three of these **must** be present under `data/`, and any plugin DLLs must live alongside that folder.
+
+---
+
+## 2. Add this crate to your Rust project
+
+In your `Cargo.toml`:
+
+```toml
+[dependencies]
+flutter_rust_windows_embedder = { git = "https://gitlab.yasupa.de/nams/flutter-rust-embedder.git", branch = "master" }
+```
+
+Then in your code:
+
+```rust
+use flutter_rust_windows_embedder::{init_flutter_window, init_flutter_window_from_dir};
+use std::path::PathBuf;
+
+fn main() {
+    // 1) Simple: use the folder where this DLL/exe lives
+    init_flutter_window(); // blocking
+
+    // — or —
+
+    // 2) Custom: point at your release bundle
+     thread::spawn(|| { // non blocking
+        // r"C:\path\to\your\flutter\build\windows\runner\Release"
+        if let Some(dir) = select_data_directory() {
+            init_flutter_window_from_dir(Some(dir));
+        } else {
+            init_flutter_window_from_dir(None); // fallback to 1)
+        }
+}
+```
 
 ## License
 
-- **This project** is licensed under the MIT License. See [LICENSE](./LICENSE) for details.  
-- **Flutter engine & C API bindings** are distributed under the BSD 3-Clause (“New” or “Revised”) License. See [LICENSE-THIRD-PARTY](./LICENSE-THIRD-PARTY) for the full text.  
-
-```
+* **This crate** is licensed under **MIT**. See [LICENSE](./LICENSE).
+* **Flutter engine & C API** bindings are under the **BSD 3-Clause** (see [LICENSE-THIRD-PARTY](./LICENSE-THIRD-PARTY)).

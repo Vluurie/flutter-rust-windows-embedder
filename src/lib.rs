@@ -55,6 +55,20 @@ pub fn init_flutter_window() {
     let engine = flutter_utils::create_flutter_engine();
     info!("Flutter engine created");
 
+     // Get dll dir
+     let dll_dir = flutter_utils::dll_directory();
+
+     // Get the plugin registrar
+     let registrar = unsafe {
+         flutter_bindings::FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
+     };
+     // Load and register plugins DYNAMICALLY in runtime !!!!!!
+     if let Err(e) = plugin_loader::load_and_register_plugins(&dll_dir, registrar) {
+         error!("Plugin loading failed: {:?}", e);
+         std::process::exit(1); // rip
+     }
+     info!("Plugins loaded from {:?}", dll_dir);
+
     // --- Flutter View Controller Setup ---
     let controller = flutter_utils::create_flutter_view_controller(
         engine,
@@ -66,20 +80,6 @@ pub fn init_flutter_window() {
         constants::DEFAULT_WINDOW_WIDTH,
         constants::DEFAULT_WINDOW_HEIGHT
     );
-
-    // Get dll dir
-    let dll_dir = flutter_utils::dll_directory();
-
-    // Get the plugin registrar
-    let registrar = unsafe {
-        flutter_bindings::FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
-    };
-    // Load and register plugins DYNAMICALLY in runtime !!!!!!
-    if let Err(e) = plugin_loader::load_and_register_plugins(&dll_dir, registrar) {
-        error!("Plugin loading failed: {:?}", e);
-        std::process::exit(1); // rip
-    }
-    info!("Plugins loaded from {:?}", dll_dir);
 
     // --- Flutter View Embedding ---
     let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);

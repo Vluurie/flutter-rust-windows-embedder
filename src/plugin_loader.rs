@@ -81,7 +81,7 @@ pub fn load_and_register_plugins(
             .unwrap_or("");
         let c_name = CString::new(plugin_name)?;
         let registrar = unsafe {
-            FlutterDesktopEngineGetPluginRegistrar(engine, c_name.as_ptr())
+            FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
         };
         load_and_register(&dll_path, &symbols, registrar)?;
     }

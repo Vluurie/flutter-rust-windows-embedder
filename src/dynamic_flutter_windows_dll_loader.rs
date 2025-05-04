@@ -23,15 +23,16 @@ pub struct FlutterDll {
         ) -> b::FlutterDesktopPluginRegistrarRef,
     >,
     pub FlutterDesktopEngineProcessExternalWindowMessage: Symbol<
-        'static,
-        unsafe extern "C" fn(
-            b::FlutterDesktopEngineRef,
-            b::HWND,
-            u32,
-            b::WPARAM,
-            b::LPARAM,
-        ) -> b::LRESULT,
-    >,
+    'static,
+    unsafe extern "C" fn(
+        b::FlutterDesktopEngineRef, 
+        b::HWND,                    
+        u32,                      
+        b::WPARAM,                
+        b::LPARAM,                 
+        *mut b::LRESULT,            
+    ) -> bool,
+>,
     pub FlutterDesktopViewControllerCreate: Symbol<
         'static,
         unsafe extern "C" fn(
@@ -52,11 +53,12 @@ pub struct FlutterDll {
         'static,
         unsafe extern "C" fn(
             b::FlutterDesktopViewControllerRef,
-            b::HWND,
-            u32,
-            b::WPARAM,
-            b::LPARAM,
-        ) -> b::LRESULT,
+            b::HWND,                          
+            u32,                              
+            b::WPARAM,                        
+            b::LPARAM,                       
+            *mut b::LRESULT,                  
+        ) -> bool,
     >,
     pub FlutterDesktopViewControllerDestroy:
         Symbol<'static, unsafe extern "C" fn(b::FlutterDesktopViewControllerRef)>,

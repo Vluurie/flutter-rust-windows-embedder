@@ -3,8 +3,8 @@
 //! This module discovers all plugin DLLs in a given directory by
 //! scanning their export tables for symbols ending with
 //! `RegisterWithRegistrar`, loads each DLL, and invokes those
-//! registration functions so that each plugin is registered with
-//! the Flutter engine at runtime.
+//! registration functions so that each plugin is registered exactly
+//! once per Flutter engine at runtime.
 //!
 //! # Workflow
 //!
@@ -21,14 +21,16 @@
 //!
 //! 3. **load_and_register_plugins**  
 //!    Tie it all together: discover plugins, retrieve the engine’s
-//!    registrar, and register every discovered plugin DLL.
+//!    registrar, and register every discovered plugin DLL, but only
+//!    once *per engine* (so you can create multiple engines without
+//!    double‑registering the same plugin into one engine).
 //!
 
 use anyhow::{Context, Result};
 use goblin::Object;
 use libloading::{Library, Symbol};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::CString,
     fs,
     path::{Path, PathBuf},
@@ -41,18 +43,18 @@ use crate::{
 };
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
-static REGISTERED_PLUGINS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-/// Scan for DLL exporting a `*RegisterWithRegistrar` symbol.
-fn registered_set() -> &'static Mutex<HashSet<String>> {
-    REGISTERED_PLUGINS.get_or_init(|| Mutex::new(HashSet::new()))
+/// Global map: engine_ptr (usize) → set of plugin names already registered.
+static REGISTERED_PLUGINS: OnceLock<Mutex<HashMap<usize, HashSet<String>>>> =
+    OnceLock::new();
+
+/// Initialize or fetch our global registry.
+fn registered_map() -> &'static Mutex<HashMap<usize, HashSet<String>>> {
+    REGISTERED_PLUGINS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Scan the given directory for all DLLs exporting any symbol ending
 /// in `RegisterWithRegistrar`.
-///
-/// Returns a vector of `(dll_path, symbol_list)` for each DLL that
-/// exports one or more matching symbols.
 fn discover_plugins(release_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(release_dir)
@@ -83,10 +85,7 @@ fn discover_plugins(release_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>> {
 }
 
 /// Load the specified DLL and invoke each `xxxRegisterWithRegistrar`
-/// symbol, passing in the given `registrar`.
-///
-/// The `Library` is leaked so the DLL remains loaded for the lifetime
-/// of the process.
+/// symbol, passing in the given `registrar`. Leaks the Library.
 fn load_and_register(
     dll: &Path,
     symbols: &[String],
@@ -101,26 +100,24 @@ fn load_and_register(
         };
         unsafe { func(registrar) };
     }
+    // Keep the DLL loaded
     std::mem::forget(lib);
     Ok(())
 }
 
 /// Discover every plugin DLL in `release_dir` and register it with
-/// the Flutter engine.
-///
-/// For each discovered DLL:
-/// 1. Derive a plugin name from the DLL’s file stem (unused by the
-///    current API but kept for future compatibility).
-/// 2. Retrieve the engine’s plugin registrar via the dynamically
-///    loaded `FlutterDesktopEngineGetPluginRegistrar` symbol.
-/// 3. Load the DLL and invoke all its `RegisterWithRegistrar` symbols.
-/// only once per plugin‐name.
+/// the Flutter engine identified by `engine`.  Each plugin DLL
+/// (by its file‐stem name) runs *once* per engine.  
 pub fn load_and_register_plugins(
     release_dir: &Path,
     engine: FlutterDesktopEngineRef,
     dll: &Arc<FlutterDll>,
 ) -> Result<()> {
-    let mut seen = registered_set().lock().unwrap();
+    // Get (or create) this engine's seen‐set
+    let mut map = registered_map().lock().unwrap();
+    let seen = map.entry(engine as usize).or_default();
+
+    // Find all candidate plugin DLLs
     let plugins = discover_plugins(release_dir)
         .with_context(|| format!("discovering plugins in `{}`", release_dir.display()))?;
 
@@ -131,11 +128,9 @@ pub fn load_and_register_plugins(
             .unwrap_or("")
             .to_string();
 
+        // Skip if we've already registered that plugin into *this* engine
         if !seen.insert(plugin_name.clone()) {
-            log::debug!(
-                "[Plugin Loader] skipping `{}` (already registered)",
-                plugin_name
-            );
+            log::debug!("[Plugin Loader] skipping `{}` (already registered)", plugin_name);
             continue;
         }
 
@@ -145,8 +140,12 @@ pub fn load_and_register_plugins(
             dll_path.display()
         );
 
-        let registrar: FlutterDesktopPluginRegistrarRef =
-            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null()) };
+        // Grab the registrar from the Flutter engine
+        let registrar: FlutterDesktopPluginRegistrarRef = unsafe {
+            (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null())
+        };
+
+        // Load & invoke registration routines
         load_and_register(&dll_path, &symbols, registrar)?;
     }
 

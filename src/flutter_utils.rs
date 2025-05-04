@@ -25,10 +25,16 @@ pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
         .map(|arg| arg.as_ptr() as *const c_char)
         .collect();
 
+        let aot_ptr = if aot_w.is_empty() {
+            std::ptr::null()
+        } else {
+            aot_w.as_ptr()
+        };
+
     let props = flutter_bindings::FlutterDesktopEngineProperties {
         assets_path: assets_w.as_ptr(),
         icu_data_path: icu_w.as_ptr(),
-        aot_library_path: aot_w.as_ptr(),
+        aot_library_path: aot_ptr,
         dart_entrypoint: ptr::null(),
         dart_entrypoint_argc: args_ptrs.len() as i32,
         dart_entrypoint_argv: if args_ptrs.is_empty() {

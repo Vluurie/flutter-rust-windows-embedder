@@ -45,8 +45,7 @@ use crate::{
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
 
 /// Global map: engine_ptr (usize) → set of plugin names already registered.
-static REGISTERED_PLUGINS: OnceLock<Mutex<HashMap<usize, HashSet<String>>>> =
-    OnceLock::new();
+static REGISTERED_PLUGINS: OnceLock<Mutex<HashMap<usize, HashSet<String>>>> = OnceLock::new();
 
 /// Initialize or fetch our global registry.
 fn registered_map() -> &'static Mutex<HashMap<usize, HashSet<String>>> {
@@ -130,7 +129,10 @@ pub fn load_and_register_plugins(
 
         // Skip if we've already registered that plugin into *this* engine
         if !seen.insert(plugin_name.clone()) {
-            log::debug!("[Plugin Loader] skipping `{}` (already registered)", plugin_name);
+            log::debug!(
+                "[Plugin Loader] skipping `{}` (already registered)",
+                plugin_name
+            );
             continue;
         }
 
@@ -141,9 +143,9 @@ pub fn load_and_register_plugins(
         );
 
         // Grab the registrar from the Flutter engine
-        let registrar: FlutterDesktopPluginRegistrarRef = unsafe {
-            (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null())
-        };
+        let cname = std::ffi::CString::new(plugin_name.clone()).unwrap();
+        let registrar: FlutterDesktopPluginRegistrarRef =
+            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, cname.as_ptr() as *const u8) };
 
         // Load & invoke registration routines
         load_and_register(&dll_path, &symbols, registrar)?;

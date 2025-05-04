@@ -32,7 +32,7 @@ use std::{
     ffi::CString,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use crate::{
@@ -41,6 +41,12 @@ use crate::{
 };
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
+static REGISTERED_PLUGINS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+/// Scan for DLL exporting a `*RegisterWithRegistrar` symbol.
+fn registered_set() -> &'static Mutex<HashSet<String>> {
+    REGISTERED_PLUGINS.get_or_init(|| Mutex::new(HashSet::new()))
+}
 
 /// Scan the given directory for all DLLs exporting any symbol ending
 /// in `RegisterWithRegistrar`.
@@ -114,37 +120,35 @@ pub fn load_and_register_plugins(
     engine: FlutterDesktopEngineRef,
     dll: &Arc<FlutterDll>,
 ) -> Result<()> {
-    let mut seen = HashSet::new();
-    let all = discover_plugins(release_dir)
+    let mut seen = registered_set().lock().unwrap();
+    let plugins = discover_plugins(release_dir)
         .with_context(|| format!("discovering plugins in `{}`", release_dir.display()))?;
 
-    for (dll_path, symbols) in all {
-        // derive a stable plugin‐key – here we use the filename stem
+    for (dll_path, symbols) in plugins {
         let plugin_name = dll_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
 
-        // skip if we already registered this plugin once
         if !seen.insert(plugin_name.clone()) {
             log::debug!(
-                "[Plugin Loader] `{}` already registered, skipping",
+                "[Plugin Loader] skipping `{}` (already registered)",
                 plugin_name
             );
             continue;
         }
-
-        // get the registrar through dynamic‐DLL
-        let registrar: FlutterDesktopPluginRegistrarRef =
-            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null()) };
 
         log::info!(
             "[Plugin Loader] registering plugin `{}` from `{}`",
             plugin_name,
             dll_path.display()
         );
+
+        let registrar: FlutterDesktopPluginRegistrarRef =
+            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null()) };
         load_and_register(&dll_path, &symbols, registrar)?;
     }
+
     Ok(())
 }

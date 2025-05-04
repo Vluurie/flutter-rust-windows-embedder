@@ -2,7 +2,7 @@ use crate::flutter_bindings as b;
 use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;
-use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex, OnceLock}};
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 use anyhow::anyhow;
 
 #[derive(Debug)]

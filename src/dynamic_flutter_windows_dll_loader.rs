@@ -35,9 +35,9 @@ pub struct FlutterDll {
     pub FlutterDesktopViewControllerCreate: Symbol<
         'static,
         unsafe extern "C" fn(
+            i32,
+            i32,
             b::FlutterDesktopEngineRef,
-            i32,
-            i32,
         ) -> b::FlutterDesktopViewControllerRef,
     >,
     pub FlutterDesktopViewControllerGetView: Symbol<

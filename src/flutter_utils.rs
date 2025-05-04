@@ -107,7 +107,7 @@ pub fn create_flutter_view_controller(
 ) -> FlutterDesktopViewControllerRef {
     info!("[Flutter Utils] Creating view controller");
     let dll = DLL.get().expect("flutter_windows.dll not loaded");
-    let controller = unsafe { (dll.FlutterDesktopViewControllerCreate)(engine, width, height) };
+    let controller = unsafe { (dll.FlutterDesktopViewControllerCreate)(width, height, engine) };
     if controller.is_null() {
         error!("[Flutter Utils] View controller creation failed");
         unsafe {

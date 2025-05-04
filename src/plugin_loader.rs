@@ -33,10 +33,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::flutter_bindings::{
-    FlutterDesktopEngineRef,
-    FlutterDesktopPluginRegistrarRef,
-    FlutterDesktopEngineGetPluginRegistrar,
+use crate::{
+    dynamic_flutter_windows_dll_loader::DLL,
+    flutter_bindings::{
+        FlutterDesktopEngineRef,
+        FlutterDesktopPluginRegistrarRef,
+    },
 };
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
@@ -108,15 +110,20 @@ fn load_and_register(
 /// For each discovered DLL:
 /// 1. Derive a plugin name from the DLL’s file stem (unused by the
 ///    current API but kept for future compatibility).
-/// 2. Retrieve the engine’s plugin registrar via
-///    `FlutterDesktopEngineGetPluginRegistrar`.
+/// 2. Retrieve the engine’s plugin registrar via the dynamically
+///    loaded `FlutterDesktopEngineGetPluginRegistrar` symbol.
 /// 3. Load the DLL and invoke all its `RegisterWithRegistrar` symbols.
 pub fn load_and_register_plugins(
     release_dir: &Path,
     engine: FlutterDesktopEngineRef,
 ) -> Result<()> {
+    // Discover DLLs + matching symbols
     let plugins = discover_plugins(release_dir)
         .with_context(|| format!("discovering plugins in {}", release_dir.display()))?;
+
+    // Get our loaded FlutterDll
+    let dlls = DLL.get().expect("flutter_windows.dll not loaded");
+
     for (dll_path, symbols) in plugins {
         // Derive plugin name from file stem (not currently used).
         let plugin_name = dll_path
@@ -124,9 +131,12 @@ pub fn load_and_register_plugins(
             .and_then(|s| s.to_str())
             .unwrap_or("");
         let _c_name = CString::new(plugin_name)?;
-        let registrar = unsafe {
-            FlutterDesktopEngineGetPluginRegistrar(engine, std::ptr::null())
+
+        // Call into the dynamic symbol instead of static extern
+        let registrar: FlutterDesktopPluginRegistrarRef = unsafe {
+            (dlls.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null())
         };
+
         load_and_register(&dll_path, &symbols, registrar)?;
     }
     Ok(())

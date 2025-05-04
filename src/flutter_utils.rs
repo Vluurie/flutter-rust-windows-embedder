@@ -1,4 +1,6 @@
-use crate::{constants, flutter_bindings, path_utils, win32_utils};
+use crate::{
+    constants, dynamic_flutter_windows_dll_loader::DLL, flutter_bindings, path_utils, win32_utils,
+};
 use log::{error, info};
 use std::{ffi::c_char, mem, ptr};
 use windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
@@ -13,11 +15,10 @@ pub type FlutterLPARAM = flutter_bindings::LPARAM;
 pub type FlutterLRESULT = flutter_bindings::LRESULT;
 pub type FlutterUINT = flutter_bindings::UINT;
 
-
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
 pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
-    let (assets_w, icu_w, aot_w) = path_utils::get_flutter_paths();
+    let (assets_path, icu_data_path, aot_w) = path_utils::get_flutter_paths();
 
     // Prepare Dart entrypoint arguments
     let args_ptrs: Vec<*const c_char> = constants::DART_ENTRYPOINT_ARGS
@@ -25,28 +26,27 @@ pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
         .map(|arg| arg.as_ptr() as *const c_char)
         .collect();
 
-        let aot_ptr = if aot_w.is_empty() {
-            std::ptr::null()
-        } else {
-            aot_w.as_ptr()
-        };
+    let aot_ptr = if aot_w.is_empty() {
+        std::ptr::null()
+    } else {
+        aot_w.as_ptr()
+    };
 
-    let props = flutter_bindings::FlutterDesktopEngineProperties {
-        assets_path: assets_w.as_ptr(),
-        icu_data_path: icu_w.as_ptr(),
-        aot_library_path: aot_ptr,
-        dart_entrypoint: ptr::null(),
-        dart_entrypoint_argc: args_ptrs.len() as i32,
-        dart_entrypoint_argv: if args_ptrs.is_empty() {
-            ptr::null_mut()
-        } else {
-            args_ptrs.as_ptr() as *mut *const c_char
-        },
-        ..unsafe { mem::zeroed() }
+    let mut props: flutter_bindings::FlutterDesktopEngineProperties = unsafe { mem::zeroed() };
+    props.assets_path = assets_path.as_ptr();
+    props.icu_data_path = icu_data_path.as_ptr();
+    props.aot_library_path = aot_ptr;
+    props.dart_entrypoint = ptr::null();
+    props.dart_entrypoint_argc = args_ptrs.len() as i32;
+    props.dart_entrypoint_argv = if args_ptrs.is_empty() {
+        ptr::null_mut()
+    } else {
+        args_ptrs.as_ptr() as *mut *const i8
     };
 
     info!("[Flutter Utils] Initializing Flutter engine");
-    let engine = unsafe { flutter_bindings::FlutterDesktopEngineCreate(&props) };
+    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+    let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         error!("[Flutter Utils] Engine creation failed");
         unsafe { CoUninitialize() };
@@ -88,7 +88,8 @@ pub fn create_flutter_engine_with_paths(
         ..unsafe { std::mem::zeroed() }
     };
 
-    let engine = unsafe { flutter_bindings::FlutterDesktopEngineCreate(&props) };
+    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+    let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         // cleanup & abort
         unsafe { windows::Win32::System::Com::CoUninitialize() };
@@ -105,12 +106,12 @@ pub fn create_flutter_view_controller(
     height: i32,
 ) -> FlutterDesktopViewControllerRef {
     info!("[Flutter Utils] Creating view controller");
-    let controller =
-        unsafe { flutter_bindings::FlutterDesktopViewControllerCreate(width, height, engine) };
+    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+    let controller = unsafe { (dll.FlutterDesktopViewControllerCreate)(engine, width, height) };
     if controller.is_null() {
         error!("[Flutter Utils] View controller creation failed");
         unsafe {
-            flutter_bindings::FlutterDesktopEngineDestroy(engine);
+            (dll.FlutterDesktopEngineDestroy)(engine);
             CoUninitialize();
         }
         win32_utils::panic_with_error("FlutterDesktopViewControllerCreate failed");
@@ -125,22 +126,23 @@ pub fn get_flutter_view_and_hwnd(
     controller: FlutterDesktopViewControllerRef,
 ) -> (FlutterDesktopViewRef, HWND) {
     info!("[Flutter Utils] Obtaining Flutter view");
-    let view = unsafe { flutter_bindings::FlutterDesktopViewControllerGetView(controller) };
+    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+    let view = unsafe { (dll.FlutterDesktopViewControllerGetView)(controller) };
     if view.is_null() {
         error!("[Flutter Utils] Failed to get view");
         unsafe {
-            flutter_bindings::FlutterDesktopViewControllerDestroy(controller);
+            (dll.FlutterDesktopViewControllerDestroy)(controller);
             CoUninitialize();
         }
         win32_utils::panic_with_error("FlutterDesktopViewControllerGetView failed");
     }
 
     info!("[Flutter Utils] Obtaining HWND from view");
-    let raw = unsafe { flutter_bindings::FlutterDesktopViewGetHWND(view) };
+    let raw = unsafe { (dll.FlutterDesktopViewGetHWND)(view) };
     if raw.is_null() {
         error!("[Flutter Utils] View returned null HWND");
         unsafe {
-            flutter_bindings::FlutterDesktopViewControllerDestroy(controller);
+            (dll.FlutterDesktopViewControllerDestroy)(controller);
             CoUninitialize();
         }
         win32_utils::panic_with_error("FlutterDesktopViewGetHWND failed");

@@ -1,8 +1,11 @@
 use crate::flutter_bindings as b;
 use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, sync::OnceLock};
 
+pub static DLL: OnceLock<FlutterDll> = OnceLock::new();
+
+#[derive(Debug)]
 pub struct FlutterDll {
     _lib: &'static Library,
 

@@ -76,11 +76,16 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
         None => path_utils::get_flutter_paths(),
     };
 
-    dynamic_flutter_windows_dll_loader::FlutterDll::load(data_dir.as_deref()).unwrap_or_else(|e| {
+    let dll_instance = dynamic_flutter_windows_dll_loader::FlutterDll::load(data_dir.as_deref())
+    .unwrap_or_else(|e| {
         error!("Failed to load flutter_windows.dll: {:?}", e);
         std::process::exit(1);
     });
-    
+
+    dynamic_flutter_windows_dll_loader::DLL
+    .set(dll_instance)
+    .expect("flutter_windows.dll was already loaded");
+
     info!("Loaded flutter_windows.dll");
 
     // 2) Create the engine with explicit paths

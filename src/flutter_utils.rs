@@ -1,5 +1,5 @@
 use crate::{constants, flutter_bindings, path_utils, win32_utils};
-use log::{debug, error, info};
+use log::{error, info};
 use std::{ffi::c_char, mem, ptr};
 use windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
 
@@ -13,53 +13,51 @@ pub type FlutterLPARAM = flutter_bindings::LPARAM;
 pub type FlutterLRESULT = flutter_bindings::LRESULT;
 pub type FlutterUINT = flutter_bindings::UINT;
 
-/// Determine and validate the platform‐specific Flutter asset paths:
-/// 1. `<dll_dir>/data/flutter_assets`  
-/// 2. `<dll_dir>/data/icudtl.dat`  
-/// 3. `<dll_dir>/data/app.so`  
+/// Determine and validate the platform‑specific Flutter asset and ICU paths, and optionally the AOT library path.
 ///
-/// Panics if any of the above are missing. Returns each path as a null-terminated UTF-16 vector.
+/// - Expects:
+///   1. `<dll_dir>/data/flutter_assets`
+///   2. `<dll_dir>/data/icudtl.dat`
+///   3. `<dll_dir>/data/app.so` (optional – if missing, we fall back to JIT)
+///
+/// Panics if `flutter_assets` or `icudtl.dat` are missing.  
+/// If the AOT library (`app.so` / `app.dll`) is not found, logs an info message and returns
+/// an empty Vec<u16> for the AOT path, indicating that the engine should drop into JIT mode.
+///
+/// Returns a tuple of null‑terminated UTF‑16 vectors for:
+/// 1. `flutter_assets` path  
+/// 2. `icudtl.dat` path  
+/// 3. `app.so` path (empty if missing → JIT)
 fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    let root_dir = path_utils::dll_directory();
-    let data_dir_path = root_dir.join("data");
-    info!("[Flutter Utils] Data directory path: {:?}", data_dir_path);
-
-    let assets_dir = data_dir_path.join("flutter_assets");
-    let icu_file = data_dir_path.join("icudtl.dat");
-    let aot_lib = data_dir_path.join("app.so");
+    let root_dir    = path_utils::dll_directory();
+    let data_dir    = root_dir.join("data");
+    let assets_dir  = data_dir.join("flutter_assets");
+    let icu_file    = data_dir.join("icudtl.dat");
+    let aot_lib     = data_dir.join("app.so");
 
     if !assets_dir.is_dir() {
-        panic!(
-            "[Flutter Utils] Missing flutter_assets at `{}`",
-            assets_dir.display()
-        );
+        panic!("[Flutter Utils] Missing flutter_assets at `{}`", assets_dir.display());
     }
     if !icu_file.is_file() {
-        panic!(
-            "[Flutter Utils] Missing icudtl.dat at `{}`",
-            icu_file.display()
-        );
+        panic!("[Flutter Utils] Missing icudtl.dat at `{}`", icu_file.display());
     }
-    if !aot_lib.is_file() {
-        panic!(
-            "[Flutter Utils] Missing AOT library at `{}`",
-            aot_lib.display()
-        );
-    }
-
-    debug!(
-        "[Flutter Utils] Validated paths: assets=`{}`, icu=`{}`, aot=`{}`",
-        assets_dir.display(),
-        icu_file.display(),
-        aot_lib.display(),
-    );
 
     let assets_w = win32_utils::to_wide(assets_dir.to_str().unwrap());
-    let icu_w = win32_utils::to_wide(icu_file.to_str().unwrap());
-    let aot_w = win32_utils::to_wide(aot_lib.to_str().unwrap());
+    let icu_w    = win32_utils::to_wide(icu_file.to_str().unwrap());
+
+    let aot_w = if aot_lib.is_file() {
+        win32_utils::to_wide(aot_lib.to_str().unwrap())
+    } else {
+        info!(
+            "[Flutter Utils] AOT library not found at `{}`, falling back to JIT mode",
+            aot_lib.display()
+        );
+        Vec::new()
+    };
 
     (assets_w, icu_w, aot_w)
 }
+
 
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
@@ -109,10 +107,16 @@ pub fn create_flutter_engine_with_paths(
         .map(|s| s.as_ptr() as *const i8)
         .collect();
 
+    let aot_ptr = if aot_library_path.is_empty() {
+        std::ptr::null()
+    } else {
+        aot_library_path.as_ptr()
+    };
+
     let props = flutter_bindings::FlutterDesktopEngineProperties {
         assets_path: assets_path.as_ptr(),
         icu_data_path: icu_data_path.as_ptr(),
-        aot_library_path: aot_library_path.as_ptr(),
+        aot_library_path: aot_ptr,
         dart_entrypoint: std::ptr::null(),
         dart_entrypoint_argc: args_ptrs.len() as i32,
         dart_entrypoint_argv: if args_ptrs.is_empty() {

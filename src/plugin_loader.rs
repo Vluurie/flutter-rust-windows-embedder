@@ -143,9 +143,10 @@ pub fn load_and_register_plugins(
         );
 
         // Grab the registrar from the Flutter engine
-        let cname = std::ffi::CString::new(plugin_name.clone()).unwrap();
+        let cname = std::ffi::CString::new(plugin_name).unwrap();
+        let name_ptr = cname.as_ptr() as *const u8;
         let registrar: FlutterDesktopPluginRegistrarRef =
-            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, cname.as_ptr() as *const u8) };
+            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, name_ptr) };
 
         // Load & invoke registration routines
         load_and_register(&dll_path, &symbols, registrar)?;

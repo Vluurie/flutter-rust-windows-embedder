@@ -73,11 +73,10 @@ pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     info!("[Path Utils] Using DLL directory as root: {}", dll_dir.display());
     get_flutter_paths_from(&dll_dir)
 }
-
 /// Like `get_flutter_paths()`, but rooted at the provided `root_dir`.
 /// Use this after calling `select_data_directory()` to let the user choose.
-/// Panics if the same files/directories above are not found under
-/// `root_dir/data/`.
+/// Panics if `flutter_assets` or `icudtl.dat` are not found under `root_dir/data/`;
+/// but if `app.so` is missing, falls back to JIT mode (returns an empty AOT path).
 pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     info!("[Path Utils] Resolving Flutter paths under `{}`", root_dir.display());
 
@@ -86,26 +85,39 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
     let icu_file   = data_dir.join("icudtl.dat");
     let aot_lib    = data_dir.join("app.so");
 
+    // 1) flutter_assets must exist
     debug!("[Path Utils] Checking for `{}`", assets_dir.display());
     if !assets_dir.is_dir() {
         error!("[Path Utils] Missing directory `{}`", assets_dir.display());
         panic!("[Path Utils] Missing `flutter_assets` at `{}`", assets_dir.display());
     }
 
+    // 2) icudtl.dat must exist
     debug!("[Path Utils] Checking for `{}`", icu_file.display());
     if !icu_file.is_file() {
         error!("[Path Utils] Missing file `{}`", icu_file.display());
         panic!("[Path Utils] Missing `icudtl.dat` at `{}`", icu_file.display());
     }
 
+    // 3) app.so (AOT lib) is optional — fall back to JIT if missing
     debug!("[Path Utils] Checking for `{}`", aot_lib.display());
-    if !aot_lib.is_file() {
-        error!("[Path Utils] Missing file `{}`", aot_lib.display());
-        panic!("[Path Utils] Missing AOT library `app.so` at `{}`", aot_lib.display());
-    }
+    let aot_path_vec = if aot_lib.is_file() {
+        // Found AOT library → use ahead‐of‐time mode
+        info!("[Path Utils] Found AOT library at `{}`", aot_lib.display());
+        to_wide(&aot_lib)
+    } else {
+        // Missing AOT lib → JIT mode
+        info!(
+            "[Path Utils] AOT library not found at `{}`, falling back to JIT mode",
+            aot_lib.display()
+        );
+        Vec::new()
+    };
 
     // Helper: turn a Path → Vec<u16> with trailing NUL
     fn to_wide(p: &Path) -> Vec<u16> {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = OsString::from(p)
             .encode_wide()
             .chain(std::iter::once(0))
@@ -114,13 +126,14 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
         wide
     }
 
+    // Build wide strings for assets & ICU (always present)
     let assets = to_wide(&assets_dir);
     let icu    = to_wide(&icu_file);
-    let aot    = to_wide(&aot_lib);
 
     info!("[Path Utils] Resolved Flutter asset paths successfully");
-    (assets, icu, aot)
+    (assets, icu, aot_path_vec)
 }
+
 
 /// Displays the standard Windows “Select Folder” dialog.  
 /// Returns `Some(PathBuf)` if the user picks a folder, or `None` if

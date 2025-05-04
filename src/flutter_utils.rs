@@ -1,8 +1,8 @@
 use crate::{
-    constants, dynamic_flutter_windows_dll_loader::DLL, flutter_bindings, path_utils, win32_utils,
+    constants, dynamic_flutter_windows_dll_loader::FlutterDll, flutter_bindings, path_utils, win32_utils
 };
 use log::{error, info};
-use std::{ffi::c_char, mem, ptr};
+use std::{ffi::c_char, mem, ptr, sync::Arc};
 use windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
 
 /// Alias for the raw Flutter engine handles
@@ -17,7 +17,7 @@ pub type FlutterUINT = flutter_bindings::UINT;
 
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
-pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
+pub fn create_flutter_engine( dll: &Arc<FlutterDll>,) -> FlutterDesktopEngineRef {
     let (assets_path, icu_data_path, aot_w) = path_utils::get_flutter_paths();
 
     // Prepare Dart entrypoint arguments
@@ -45,7 +45,6 @@ pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
     };
 
     info!("[Flutter Utils] Initializing Flutter engine");
-    let dll = DLL.get().expect("flutter_windows.dll not loaded");
     let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         error!("[Flutter Utils] Engine creation failed");
@@ -61,6 +60,7 @@ pub fn create_flutter_engine_with_paths(
     assets_path: Vec<u16>,
     icu_data_path: Vec<u16>,
     aot_library_path: Vec<u16>,
+    dll: &Arc<FlutterDll>,
 ) -> FlutterDesktopEngineRef {
     // Prepare the same args as before...
     let args_ptrs: Vec<*const i8> = crate::constants::DART_ENTRYPOINT_ARGS
@@ -88,7 +88,6 @@ pub fn create_flutter_engine_with_paths(
         ..unsafe { std::mem::zeroed() }
     };
 
-    let dll = DLL.get().expect("flutter_windows.dll not loaded");
     let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         // cleanup & abort
@@ -104,9 +103,9 @@ pub fn create_flutter_view_controller(
     engine: FlutterDesktopEngineRef,
     width: i32,
     height: i32,
+    dll: &Arc<FlutterDll>,
 ) -> FlutterDesktopViewControllerRef {
     info!("[Flutter Utils] Creating view controller");
-    let dll = DLL.get().expect("flutter_windows.dll not loaded");
     let controller = unsafe { (dll.FlutterDesktopViewControllerCreate)(width, height, engine) };
     if controller.is_null() {
         error!("[Flutter Utils] View controller creation failed");
@@ -124,9 +123,9 @@ pub fn create_flutter_view_controller(
 /// On failure, cleans up and aborts.
 pub fn get_flutter_view_and_hwnd(
     controller: FlutterDesktopViewControllerRef,
+    dll: &Arc<FlutterDll>,
 ) -> (FlutterDesktopViewRef, HWND) {
     info!("[Flutter Utils] Obtaining Flutter view");
-    let dll = DLL.get().expect("flutter_windows.dll not loaded");
     let view = unsafe { (dll.FlutterDesktopViewControllerGetView)(controller) };
     if view.is_null() {
         error!("[Flutter Utils] Failed to get view");

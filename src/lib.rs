@@ -76,20 +76,21 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
         None => path_utils::get_flutter_paths(),
     };
 
-    let dll_instance = dynamic_flutter_windows_dll_loader::FlutterDll::load(data_dir.as_deref())
-    .unwrap_or_else(|e| {
-        error!("Failed to load flutter_windows.dll: {:?}", e);
-        std::process::exit(1);
-    });
-
-    dynamic_flutter_windows_dll_loader::DLL
-    .set(dll_instance)
-    .expect("flutter_windows.dll was already loaded");
-
-    info!("Loaded flutter_windows.dll");
+    let dir_ref = data_dir.as_deref();
+    let dll = dynamic_flutter_windows_dll_loader::FlutterDll::get_for(dir_ref)
+        .unwrap_or_else(|e| {
+            error!("Failed to load flutter_windows.dll from `{:?}`: {:?}", dir_ref, e);
+            std::process::exit(1);
+        });
+    
+    info!("Loaded flutter_windows.dll from `{}`",
+        dir_ref
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "EXE folder".into())
+    );
 
     // 2) Create the engine with explicit paths
-    let engine = flutter_utils::create_flutter_engine_with_paths(assets, icu, aot);
+    let engine = flutter_utils::create_flutter_engine_with_paths(assets, icu, aot, &dll);
     info!("Flutter engine created");
 
     // 3) Create the view controller
@@ -97,6 +98,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
         engine,
         constants::DEFAULT_WINDOW_WIDTH,
         constants::DEFAULT_WINDOW_HEIGHT,
+        &dll
     );
     info!(
         "Flutter view controller created ({}×{})",
@@ -107,7 +109,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     // 4) Register plugins from the same directory
     let binding = path_utils::dll_directory();
     let plugin_dir = data_dir.as_ref().unwrap_or(&binding);
-    plugin_loader::load_and_register_plugins(plugin_dir, engine).unwrap_or_else(|e| {
+    plugin_loader::load_and_register_plugins(plugin_dir, engine, &dll).unwrap_or_else(|e| {
         error!(
             "Plugin load failed from `{}`: {:?}",
             plugin_dir.display(),
@@ -118,10 +120,11 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     info!("All plugins registered from `{}`", plugin_dir.display());
 
     // 5) Embed Flutter’s HWND in a Win32 window
-    let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);
+    let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller, &dll);
     let state = Box::new(app_state::AppState {
         controller,
         child_hwnd: flutter_child_hwnd,
+        dll: dll.clone(),
     });
     let state_ptr = Box::into_raw(state);
 

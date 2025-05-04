@@ -43,36 +43,36 @@
 use crate::{
     app_state::AppState,
     constants,
+    dynamic_flutter_windows_dll_loader::DLL,
     flutter_bindings::{
-        self, FlutterDesktopEngineProcessExternalWindowMessage, FlutterDesktopViewControllerGetEngine, FlutterDesktopViewControllerHandleTopLevelWindowProc, HWND   as RawHWND, LPARAM as RawLPARAM, LRESULT as RawLRESULT, UINT   as RawUINT, WPARAM as RawWPARAM
+        self, HWND as RawHWND, LPARAM as RawLPARAM, UINT as RawUINT, WPARAM as RawWPARAM,
     },
 };
 use log::{debug, error, info, warn};
 use std::{ffi::OsStr, ffi::c_void, os::windows::ffi::OsStrExt, sync::Once};
 use windows::{
-    core::PCWSTR,
     Win32::{
         Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::HBRUSH,
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW,
-            DestroyWindow, DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect,
-            GetMessageW, GetWindowLongPtrW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW,
-            LoadCursorW, MSG, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-            SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-            SWP_NOZORDER, SendMessageW, SetParent, SetWindowLongPtrW, SetWindowPos,
-            TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATE, WM_CLOSE, WM_DESTROY,
-            WM_DPICHANGED, WM_KILLFOCUS, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCCREATE,
-            WM_NCHITTEST, WM_NCPAINT, WM_PAINT, WM_SETFOCUS, WM_SIZE, WNDCLASSW,
+            CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+            DispatchMessageW, GWL_STYLE, GWLP_USERDATA, GetClientRect, GetMessageW,
+            GetWindowLongPtrW, HMENU, HTCAPTION, HTCLIENT, IDC_ARROW, LoadCursorW, MSG, MoveWindow,
+            PostMessageW, PostQuitMessage, RegisterClassW, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetParent,
+            SetWindowLongPtrW, SetWindowPos, TranslateMessage, WINDOW_EX_STYLE, WM_ACTIVATE,
+            WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_KILLFOCUS, WM_NCACTIVATE, WM_NCCALCSIZE,
+            WM_NCCREATE, WM_NCHITTEST, WM_NCPAINT, WM_PAINT, WM_SETFOCUS, WM_SIZE, WNDCLASSW,
             WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
         },
     },
+    core::PCWSTR,
 };
 
 /// Fake constants for UxTheme-drawn non-client messages
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
-const WM_NCUAHDRAWFRAME:   u32 = 0x00AF;
+const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -90,12 +90,7 @@ unsafe extern "system" {
 /// # Safety
 /// - Must be registered as `lpfnWndProc` in your `WNDCLASSW`.
 /// - Assumes `lpCreateParams` in `WM_NCCREATE` is a valid `*mut AppState`.
-pub extern "system" fn wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState;
 
@@ -114,29 +109,35 @@ pub extern "system" fn wnd_proc(
             }
 
             // 2) Non-client sizing/painting/activation (including UxTheme)
-            WM_NCCALCSIZE | WM_NCPAINT | WM_NCACTIVATE
-            | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => {
+            WM_NCCALCSIZE | WM_NCPAINT | WM_NCACTIVATE | WM_NCUAHDRAWCAPTION
+            | WM_NCUAHDRAWFRAME => {
                 if let Some(state) = state_ptr.as_mut() {
-                    // a) Engine/plugins
-                    let engine = FlutterDesktopViewControllerGetEngine(state.controller);
-                    let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
-                    let raw_msg: RawUINT   = msg as _;
-                    let raw_wp:  RawWPARAM = wparam.0 as _;
-                    let raw_lp:  RawLPARAM = lparam.0 as _;
-                    let mut raw_out: RawLRESULT = 0;
+                    let dlls = DLL.get().expect("flutter_windows.dll not loaded");
+                    let engine = (dlls.FlutterDesktopViewControllerGetEngine)(state.controller);
 
-                    if FlutterDesktopEngineProcessExternalWindowMessage(
-                        engine, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut raw_out
-                    ) {
-                        return LRESULT(raw_out.try_into().unwrap());
+                    let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
+                    let raw_msg: RawUINT = msg as _;
+                    let raw_wp: RawWPARAM = wparam.0 as _;
+                    let raw_lp: RawLPARAM = lparam.0 as _;
+
+                    // Engine/plugins
+                    let ext_out: i64 = (dlls.FlutterDesktopEngineProcessExternalWindowMessage)(
+                        engine, raw_hwnd, raw_msg, raw_wp, raw_lp,
+                    );
+                    if ext_out != 0 {
+                        return LRESULT(ext_out as isize);
                     }
 
-                    // b) View controller
-                    let mut view_out: RawLRESULT = 0;
-                    if FlutterDesktopViewControllerHandleTopLevelWindowProc(
-                        state.controller, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut view_out
-                    ) {
-                        return LRESULT(view_out.try_into().unwrap());
+                    // View controller
+                    let vc_out: i64 = (dlls.FlutterDesktopViewControllerHandleTopLevelWindowProc)(
+                        state.controller,
+                        raw_hwnd,
+                        raw_msg,
+                        raw_wp,
+                        raw_lp,
+                    );
+                    if vc_out != 0 {
+                        return LRESULT(vc_out as isize);
                     }
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -145,25 +146,34 @@ pub extern "system" fn wnd_proc(
             // 3) Client-area resize
             WM_SIZE => {
                 if let Some(state) = state_ptr.as_mut() {
+                    // Resize native child
                     let mut rc = RECT::default();
                     if GetClientRect(hwnd, &mut rc).as_bool() {
                         MoveWindow(
                             state.child_hwnd,
-                            0, 0,
+                            0,
+                            0,
                             rc.right - rc.left,
                             rc.bottom - rc.top,
                             true,
                         );
                     }
-                    // Forward to Flutter view
+
+                    // Forward to Flutter view controller
+                    let dlls = DLL.get().unwrap();
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
-                    let raw_wp:  RawWPARAM = wparam.0 as _;
-                    let raw_lp:  RawLPARAM = lparam.0 as _;
-                    let mut raw_out: RawLRESULT = 0;
-                    if FlutterDesktopViewControllerHandleTopLevelWindowProc(
-                        state.controller, raw_hwnd, WM_SIZE as _, raw_wp, raw_lp, &mut raw_out
-                    ) {
-                        return LRESULT(raw_out.try_into().unwrap());
+                    let raw_wp: RawWPARAM = wparam.0 as _;
+                    let raw_lp: RawLPARAM = lparam.0 as _;
+
+                    let out: i64 = (dlls.FlutterDesktopViewControllerHandleTopLevelWindowProc)(
+                        state.controller,
+                        raw_hwnd,
+                        WM_SIZE as _,
+                        raw_wp,
+                        raw_lp,
+                    );
+                    if out != 0 {
+                        return LRESULT(out as isize);
                     }
                 }
                 LRESULT(0)
@@ -202,30 +212,38 @@ pub extern "system" fn wnd_proc(
                 LRESULT(0)
             }
 
-            // 8) Hit-test → client clicks become caption (after engine/view)
+            // 8) Hit-test → client clicks become caption
             WM_NCHITTEST => {
                 if let Some(state) = state_ptr.as_mut() {
-                    // Engine sees this too
-                    let engine = FlutterDesktopViewControllerGetEngine(state.controller);
+                    let dlls = DLL.get().unwrap();
+                    let engine = (dlls.FlutterDesktopViewControllerGetEngine)(state.controller);
+
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
-                    let raw_msg: RawUINT   = WM_NCHITTEST as _;
-                    let raw_wp:  RawWPARAM = wparam.0 as _;
-                    let raw_lp:  RawLPARAM = lparam.0 as _;
-                    let mut ext_out: RawLRESULT = 0;
-                    if FlutterDesktopEngineProcessExternalWindowMessage(
-                        engine, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut ext_out
-                    ) {
-                        return LRESULT(ext_out.try_into().unwrap());
+                    let raw_wp: RawWPARAM = wparam.0 as _;
+                    let raw_lp: RawLPARAM = lparam.0 as _;
+
+                    let ext_out: i64 = (dlls.FlutterDesktopEngineProcessExternalWindowMessage)(
+                        engine,
+                        raw_hwnd,
+                        WM_NCHITTEST as _,
+                        raw_wp,
+                        raw_lp,
+                    );
+                    if ext_out != 0 {
+                        return LRESULT(ext_out as isize);
                     }
-                    // Then view
-                    let mut view_out: RawLRESULT = 0;
-                    if FlutterDesktopViewControllerHandleTopLevelWindowProc(
-                        state.controller, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut view_out
-                    ) {
-                        return LRESULT(view_out.try_into().unwrap());
+
+                    let vc_out: i64 = (dlls.FlutterDesktopViewControllerHandleTopLevelWindowProc)(
+                        state.controller,
+                        raw_hwnd,
+                        WM_NCHITTEST as _,
+                        raw_wp,
+                        raw_lp,
+                    );
+                    if vc_out != 0 {
+                        return LRESULT(vc_out as isize);
                     }
                 }
-                // Fallback: HTCAPTION on client area
                 let hit = DefWindowProcW(hwnd, msg, wparam, lparam);
                 if hit.0 as u32 == HTCLIENT {
                     return LRESULT(HTCAPTION as isize);
@@ -241,7 +259,8 @@ pub extern "system" fn wnd_proc(
                     SetWindowPos(
                         hwnd,
                         HWND(0),
-                        r.left, r.top,
+                        r.left,
+                        r.top,
                         r.right - r.left,
                         r.bottom - r.top,
                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
@@ -256,22 +275,29 @@ pub extern "system" fn wnd_proc(
             // 11) All others → engine → view → default
             other => {
                 if let Some(state) = state_ptr.as_mut() {
-                    let engine = FlutterDesktopViewControllerGetEngine(state.controller);
+                    let dlls = DLL.get().unwrap();
+                    let engine = (dlls.FlutterDesktopViewControllerGetEngine)(state.controller);
+
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
-                    let raw_msg: RawUINT   = other as _;
-                    let raw_wp:  RawWPARAM = wparam.0 as _;
-                    let raw_lp:  RawLPARAM = lparam.0 as _;
-                    let mut ext_out: RawLRESULT = 0;
-                    if FlutterDesktopEngineProcessExternalWindowMessage(
-                       	engine, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut ext_out
-                    ) {
-                        return LRESULT(ext_out.try_into().unwrap());
+                    let raw_wp: RawWPARAM = wparam.0 as _;
+                    let raw_lp: RawLPARAM = lparam.0 as _;
+
+                    let ext_out: i64 = (dlls.FlutterDesktopEngineProcessExternalWindowMessage)(
+                        engine, raw_hwnd, other as _, raw_wp, raw_lp,
+                    );
+                    if ext_out != 0 {
+                        return LRESULT(ext_out as isize);
                     }
-                    let mut view_out: RawLRESULT = 0;
-                    if FlutterDesktopViewControllerHandleTopLevelWindowProc(
-                        state.controller, raw_hwnd, raw_msg, raw_wp, raw_lp, &mut view_out
-                    ) {
-                        return LRESULT(view_out.try_into().unwrap());
+
+                    let vc_out: i64 = (dlls.FlutterDesktopViewControllerHandleTopLevelWindowProc)(
+                        state.controller,
+                        raw_hwnd,
+                        other as _,
+                        raw_wp,
+                        raw_lp,
+                    );
+                    if vc_out != 0 {
+                        return LRESULT(vc_out as isize);
                     }
                 }
                 DefWindowProcW(hwnd, other, wparam, lparam)
@@ -287,16 +313,16 @@ pub fn register_window_class() {
     REGISTER_CLASS_ONCE.call_once(|| unsafe {
         let hinst = GetModuleHandleW(None).expect("GetModuleHandleW failed");
         let wc = WNDCLASSW {
-            hInstance:     hinst.into(),
+            hInstance: hinst.into(),
             lpszClassName: constants::WINDOW_CLASS_NAME,
-            lpfnWndProc:   Some(wnd_proc),
-            style:         CS_HREDRAW | CS_VREDRAW,
-            hCursor:       LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            lpfnWndProc: Some(wnd_proc),
+            style: CS_HREDRAW | CS_VREDRAW,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hbrBackground: HBRUSH::default(),
-            lpszMenuName:  PCWSTR::null(),
-            hIcon:         Default::default(),
-            cbClsExtra:    0,
-            cbWndExtra:    0,
+            lpszMenuName: PCWSTR::null(),
+            hIcon: Default::default(),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
         };
         if RegisterClassW(&wc) == 0 {
             panic!("[Win32 Utils] RegisterClassW failed: {:?}", GetLastError());
@@ -315,7 +341,8 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
             constants::WINDOW_CLASS_NAME,
             constants::WINDOW_TITLE,
             WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
-            100, 100,
+            100,
+            100,
             constants::DEFAULT_WINDOW_WIDTH,
             constants::DEFAULT_WINDOW_HEIGHT,
             None::<&HWND>,
@@ -328,8 +355,9 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
         let err = unsafe { GetLastError() };
         error!("[Win32 Utils] CreateWindowExW failed: {:?}", err);
         unsafe {
+            let dlls = DLL.get().unwrap();
             drop(Box::from_raw(app_state_ptr));
-            flutter_bindings::FlutterDesktopViewControllerDestroy((*app_state_ptr).controller);
+            (dlls.FlutterDesktopViewControllerDestroy)((*app_state_ptr).controller);
             windows::Win32::System::Com::CoUninitialize();
         }
         panic!("[Win32 Utils] Could not create main window");
@@ -346,7 +374,10 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
 /// 5. Paint immediately  
 /// 6. Post WM_SIZE so Flutter updates viewport
 pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
-    info!("[Win32 Utils] Embedding Flutter HWND {:?} into {:?}", child, parent);
+    info!(
+        "[Win32 Utils] Embedding Flutter HWND {:?} into {:?}",
+        child, parent
+    );
     let old = unsafe { GetWindowLongPtrW(child, GWL_STYLE) };
     let new = (old & !(WS_POPUP.0 as isize | WS_OVERLAPPEDWINDOW.0 as isize))
         | WS_CHILD.0 as isize
@@ -356,14 +387,17 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
         SetWindowPos(
             child,
             HWND(0),
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
         );
     }
     debug!("[Win32 Utils] Child style {:#x} → {:#x}", old, new);
 
     let prev = unsafe { SetParent(child, parent) };
-    let err  = unsafe { GetLastError() };
+    let err = unsafe { GetLastError() };
     if err.0 != 0 {
         warn!("[Win32 Utils] SetParent error: {:?}", err);
     } else if prev.0 != 0 {
@@ -375,8 +409,12 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
         unsafe { MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, true) };
     }
 
-    unsafe { SendMessageW(child, WM_PAINT, WPARAM(0), LPARAM(0)); }
-    unsafe { PostMessageW(parent, WM_SIZE, WPARAM(0), LPARAM(0)); }
+    unsafe {
+        SendMessageW(child, WM_PAINT, WPARAM(0), LPARAM(0));
+    }
+    unsafe {
+        PostMessageW(parent, WM_SIZE, WPARAM(0), LPARAM(0));
+    }
 }
 
 /// Run the Win32 message loop until `WM_QUIT`, then drop any leftover `AppState`.

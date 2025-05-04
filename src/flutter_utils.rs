@@ -13,56 +13,11 @@ pub type FlutterLPARAM = flutter_bindings::LPARAM;
 pub type FlutterLRESULT = flutter_bindings::LRESULT;
 pub type FlutterUINT = flutter_bindings::UINT;
 
-/// Determine and validate the platform‑specific Flutter asset and ICU paths, and optionally the AOT library path.
-///
-/// - Expects:
-///   1. `<dll_dir>/data/flutter_assets`
-///   2. `<dll_dir>/data/icudtl.dat`
-///   3. `<dll_dir>/data/app.so` (optional – if missing, we fall back to JIT)
-///
-/// Panics if `flutter_assets` or `icudtl.dat` are missing.  
-/// If the AOT library (`app.so` / `app.dll`) is not found, logs an info message and returns
-/// an empty Vec<u16> for the AOT path, indicating that the engine should drop into JIT mode.
-///
-/// Returns a tuple of null‑terminated UTF‑16 vectors for:
-/// 1. `flutter_assets` path  
-/// 2. `icudtl.dat` path  
-/// 3. `app.so` path (empty if missing → JIT)
-fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    let root_dir    = path_utils::dll_directory();
-    let data_dir    = root_dir.join("data");
-    let assets_dir  = data_dir.join("flutter_assets");
-    let icu_file    = data_dir.join("icudtl.dat");
-    let aot_lib     = data_dir.join("app.so");
-
-    if !assets_dir.is_dir() {
-        panic!("[Flutter Utils] Missing flutter_assets at `{}`", assets_dir.display());
-    }
-    if !icu_file.is_file() {
-        panic!("[Flutter Utils] Missing icudtl.dat at `{}`", icu_file.display());
-    }
-
-    let assets_w = win32_utils::to_wide(assets_dir.to_str().unwrap());
-    let icu_w    = win32_utils::to_wide(icu_file.to_str().unwrap());
-
-    let aot_w = if aot_lib.is_file() {
-        win32_utils::to_wide(aot_lib.to_str().unwrap())
-    } else {
-        info!(
-            "[Flutter Utils] AOT library not found at `{}`, falling back to JIT mode",
-            aot_lib.display()
-        );
-        Vec::new()
-    };
-
-    (assets_w, icu_w, aot_w)
-}
-
 
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
 pub fn create_flutter_engine() -> FlutterDesktopEngineRef {
-    let (assets_w, icu_w, aot_w) = get_flutter_paths();
+    let (assets_w, icu_w, aot_w) = path_utils::get_flutter_paths();
 
     // Prepare Dart entrypoint arguments
     let args_ptrs: Vec<*const c_char> = constants::DART_ENTRYPOINT_ARGS

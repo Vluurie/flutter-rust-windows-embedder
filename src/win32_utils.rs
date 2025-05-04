@@ -43,7 +43,7 @@
 use crate::{
     app_state::AppState,
     constants,
-    dynamic_flutter_windows_dll_loader::DLL,
+
     flutter_bindings::{
         HWND as RawHWND, LPARAM as RawLPARAM, LRESULT as RawLRESULT, UINT as RawUINT,
         WPARAM as RawWPARAM,
@@ -114,7 +114,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             | WM_NCUAHDRAWFRAME => {
                 if let Some(state) = state_ptr.as_mut() {
                     // a) Engine/plugins
-                    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+                    let dll = &state.dll;
                     let engine = (dll.FlutterDesktopViewControllerGetEngine)(state.controller);
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
                     let raw_msg: RawUINT = msg as _;
@@ -152,6 +152,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             // 3) Client-area resize
             WM_SIZE => {
                 if let Some(state) = state_ptr.as_mut() {
+                    let dll = &state.dll;
                     let mut rc = RECT::default();
                     if GetClientRect(hwnd, &mut rc).as_bool() {
                         MoveWindow(
@@ -168,7 +169,6 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                     let raw_wp: RawWPARAM = wparam.0 as _;
                     let raw_lp: RawLPARAM = lparam.0 as _;
                     let mut raw_out: RawLRESULT = 0;
-                    let dll = DLL.get().expect("flutter_windows.dll not loaded");
                     if (dll.FlutterDesktopViewControllerHandleTopLevelWindowProc)(
                         state.controller,
                         raw_hwnd,
@@ -220,7 +220,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             WM_NCHITTEST => {
                 if let Some(state) = state_ptr.as_mut() {
                     // Engine sees this too
-                    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+                    let dll = &state.dll;
                     let engine = (dll.FlutterDesktopViewControllerGetEngine)(state.controller);
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
                     let raw_msg: RawUINT = WM_NCHITTEST as _;
@@ -282,7 +282,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             // 11) All others → engine → view → default
             other => {
                 if let Some(state) = state_ptr.as_mut() {
-                    let dll = DLL.get().expect("flutter_windows.dll not loaded");
+                    let dll = &state.dll;
                     let engine = (dll.FlutterDesktopViewControllerGetEngine)(state.controller);
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
                     let raw_msg: RawUINT = other as _;
@@ -367,7 +367,7 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
         error!("[Win32 Utils] CreateWindowExW failed: {:?}", err);
         unsafe {
             drop(Box::from_raw(app_state_ptr));
-            let dll = DLL.get().expect("flutter_windows.dll not loaded");
+            let dll = &(*app_state_ptr).dll;
             (dll.FlutterDesktopViewControllerDestroy)((*app_state_ptr).controller);
             windows::Win32::System::Com::CoUninitialize();
         }

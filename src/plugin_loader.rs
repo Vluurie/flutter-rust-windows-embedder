@@ -30,16 +30,13 @@ use libloading::{Library, Symbol};
 use std::{
     ffi::CString,
     fs,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, sync::Arc,
 };
 
-use crate::{
-    dynamic_flutter_windows_dll_loader::DLL,
-    flutter_bindings::{
+use crate::{dynamic_flutter_windows_dll_loader::FlutterDll, flutter_bindings::{
         FlutterDesktopEngineRef,
         FlutterDesktopPluginRegistrarRef,
-    },
-};
+    }};
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
 
@@ -116,13 +113,12 @@ fn load_and_register(
 pub fn load_and_register_plugins(
     release_dir: &Path,
     engine: FlutterDesktopEngineRef,
+    dll: &Arc<FlutterDll>,
 ) -> Result<()> {
     // Discover DLLs + matching symbols
     let plugins = discover_plugins(release_dir)
         .with_context(|| format!("discovering plugins in {}", release_dir.display()))?;
 
-    // Get our loaded FlutterDll
-    let dlls = DLL.get().expect("flutter_windows.dll not loaded");
 
     for (dll_path, symbols) in plugins {
         // Derive plugin name from file stem (not currently used).
@@ -134,7 +130,7 @@ pub fn load_and_register_plugins(
 
         // Call into the dynamic symbol instead of static extern
         let registrar: FlutterDesktopPluginRegistrarRef = unsafe {
-            (dlls.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null())
+            (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, std::ptr::null())
         };
 
         load_and_register(&dll_path, &symbols, registrar)?;

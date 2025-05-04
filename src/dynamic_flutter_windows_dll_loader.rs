@@ -1,9 +1,9 @@
 use crate::flutter_bindings as b;
 use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
-use std::{path::{Path, PathBuf}, sync::OnceLock};
-
-pub static DLL: OnceLock<FlutterDll> = OnceLock::new();
+use once_cell::sync::Lazy;
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex, OnceLock}};
+use anyhow::anyhow;
 
 #[derive(Debug)]
 pub struct FlutterDll {
@@ -65,6 +65,9 @@ pub struct FlutterDll {
     pub FlutterDesktopViewGetHWND:
         Symbol<'static, unsafe extern "C" fn(b::FlutterDesktopViewRef) -> b::HWND>,
 }
+
+static DLL_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<FlutterDll>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl FlutterDll {
     pub fn load(dir: Option<&Path>) -> Result<Self> {
@@ -130,5 +133,26 @@ impl FlutterDll {
                 FlutterDesktopViewGetHWND,
             })
         }
+    }
+
+    pub fn get_for(dir: Option<&Path>) -> Result<Arc<Self>> {
+        let key = if let Some(d) = dir {
+            d.to_path_buf()
+        } else {
+            std::env::current_exe()?
+                .parent()
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow!("Exe has no parent directory"))?
+        };
+
+        let mut cache = DLL_CACHE.lock().unwrap();
+        if let Some(existing) = cache.get(&key) {
+            return Ok(existing.clone());
+        }
+
+        let dll = FlutterDll::load(Some(&key))?;
+        let arc = Arc::new(dll);
+        cache.insert(key.clone(), arc.clone());
+        Ok(arc)
     }
 }

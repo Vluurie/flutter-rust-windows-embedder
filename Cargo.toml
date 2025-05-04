@@ -19,12 +19,10 @@ goblin = "0.7"
 libloading = "0.7"
 log         = "0.4"  
 env_logger  = "0.10"
-serde = { version = "1.0", features = ["derive"] }
 windows = { version = "0.48", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
-    'Win32_Graphics',
     "Win32_System_Com",
     "Win32_Graphics_Gdi",
     "Win32_UI_Shell"

@@ -14,14 +14,9 @@ fn main() {
         lib_dir.join("flutter_windows.lib").is_file(),
         "missing flutter_windows.lib"
     );
-    assert!(
-        lib_dir.join("flutter_engine.lib").is_file(),
-        "missing flutter_engine.lib"
-    );
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=flutter_windows");
-    println!("cargo:rustc-link-lib=dylib=flutter_engine");
 
     println!(
         "cargo:rerun-if-changed={}",

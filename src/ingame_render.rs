@@ -112,8 +112,8 @@ impl FlutterOverlay {
                 Quality: 0,
             },
             Usage: D3D11_USAGE_DYNAMIC,
-            BindFlags: D3D11_BIND_SHADER_RESOURCE,
-            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
             ..Default::default()
         };
         let mut texture_opt = None;

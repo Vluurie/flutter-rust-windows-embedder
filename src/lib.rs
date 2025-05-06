@@ -4,24 +4,28 @@
 
 use env_logger::{Builder, Env};
 use log::{LevelFilter, error, info};
+use ::windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use ::windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_SHOWNORMAL};
 use std::path::PathBuf;
 use std::sync::Once;
 
-use windows::Win32::{
-    System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
-    UI::WindowsAndMessaging::{SW_SHOWNORMAL, SetForegroundWindow, ShowWindow},
-};
+
 
 mod app_state;
 mod constants;
+mod ingame_render;
 mod dynamic_flutter_windows_dll_loader;
 pub mod flutter_utils;
 pub mod path_utils;
 pub mod plugin_loader;
 pub mod win32_utils;
 
-mod flutter_bindings {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+pub mod windows {
+    include!(concat!(env!("OUT_DIR"), "/flutter_windows_bindings.rs"));
+}
+
+pub mod embedder {
+    include!(concat!(env!("OUT_DIR"), "/flutter_embedder_bindings.rs"));
 }
 
 static LOGGER_INIT: Once = Once::new();
@@ -109,7 +113,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     // 4) Register plugins from the same directory
     let binding = path_utils::dll_directory();
     let plugin_dir = data_dir.as_ref().unwrap_or(&binding);
-    plugin_loader::load_and_register_plugins(plugin_dir, engine, &dll).unwrap_or_else(|e| {
+    plugin_loader::load_and_register_plugins(plugin_dir, engine, Some(&dll)).unwrap_or_else(|e| {
         error!(
             "Plugin load failed from `{}`: {:?}",
             plugin_dir.display(),

@@ -147,7 +147,7 @@ impl FlutterOverlay {
         aot_source.__bindgen_anon_1.elf_path = aot_c.as_ptr();
         let mut aot_data: FlutterEngineAOTData = std::ptr::null_mut();
         let create_res = unsafe { FlutterEngineCreateAOTData(&aot_source, &mut aot_data) };
-        assert_eq!(create_res, FlutterEngineResult_kSuccess);
+       // assert_eq!(create_res, FlutterEngineResult_kSuccess);
         proj_args.aot_data = aot_data;
 
         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };

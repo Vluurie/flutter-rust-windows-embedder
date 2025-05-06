@@ -9,20 +9,12 @@
 //!
 //! - **`get_flutter_paths()`**  
 //!   Inspect the folder where your DLL (or EXE) lives, look for
-//!   `data/flutter_assets` and `data/icudtl.dat`, and return their paths.
-//!   If *both* these are present, it then looks for `data/app.so`
-//!   - Panics if *either* `flutter_assets` or `icudtl.dat` is missing.  
-//!   - If the AOT library is not found, logs an informational message and
-//!     returns an empty `Vec<u16>` for the AOT path, indicating the engine
-//!     should fall back to JIT mode.
+//!   `data/flutter_assets`, `data/icudtl.dat` and `data/app.so`, and
+//!   return their paths. Panics if any of these are missing.
 //!
 //! - **`get_flutter_paths_from(root_dir: &Path)`**  
 //!   Same as `get_flutter_paths()`, but rooted at an arbitrary
-//!   `root_dir` instead of the DLL’s location.  
-//!   - Panics if `data/flutter_assets` or `data/icudtl.dat` are missing
-//!     under `root_dir`.  
-//!   - Logs and returns an empty `Vec<u16>` for the AOT path if
-//!     `data/app.so is not found, causing JIT fallback.
+//!   `root_dir` instead of the DLL’s location.
 //!
 //! - **`select_data_directory()`**  
 //!   Opens the standard Windows “Select Folder” dialog and returns the
@@ -36,14 +28,16 @@
 //! # Panics
 //!
 //! Both `get_flutter_paths()` and `get_flutter_paths_from(...)` will panic
-//! if the required **non‑AOT** assets are missing:
+//! if the expected directory structure or files are not present:
 //! ```text
 //! <root_dir>/data/flutter_assets/
 //! <root_dir>/data/icudtl.dat
+//! <root_dir>/data/app.so
 //! ```
-//! If the AOT library file (`app.so`) is missing, they will
-//! *not* panic but instead log an info message and return an empty
-//! `Vec<u16>` for the AOT path (triggering JIT mode).
+//!
+//! If you need more control (for example, falling back when a directory
+//! is missing), call `select_data_directory()` first and then route its
+//! result into `get_flutter_paths_from(...)`.
 
 use log::{debug, error, info};
 use std::{
@@ -68,44 +62,51 @@ use windows::{
 };
 
 /// Returns `(assets_path, icu_data_path, aot_library_path)` by inspecting
-/// the folder where this DLL (or EXE) is located.
-/// Panics if `flutter_assets` or `icudtl.dat` are missing.  
-/// If the AOT library isn’t found, logs an info message and returns
-/// an empty `Vec<u16>` for the AOT path (→ JIT).
+/// the folder where this DLL (or EXE) is located.  
+/// Panics if any of the following are missing:
+///
+/// - `data/flutter_assets/`  
+/// - `data/icudtl.dat`  
+/// - `data/app.so`
 pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let dll_dir = dll_directory();
     info!("[Path Utils] Using DLL directory as root: {}", dll_dir.display());
     get_flutter_paths_from(&dll_dir)
 }
-
 /// Like `get_flutter_paths()`, but rooted at the provided `root_dir`.
-/// Panics if `flutter_assets` or `icudtl.dat` are missing under `root_dir`.
-/// Logs and returns an empty `Vec<u16>` for the AOT path if `app.so`
-/// is not found, causing JIT fallback.
+/// Use this after calling `select_data_directory()` to let the user choose.
+/// Panics if `flutter_assets` or `icudtl.dat` are not found under `root_dir/data/`;
+/// but if `app.so` is missing, falls back to JIT mode (returns an empty AOT path).
 pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     info!("[Path Utils] Resolving Flutter paths under `{}`", root_dir.display());
 
     let data_dir   = root_dir.join("data");
     let assets_dir = data_dir.join("flutter_assets");
     let icu_file   = data_dir.join("icudtl.dat");
-    let aot_lib    = data_dir.join("app.so"); // or `.dll` on Windows
+    let aot_lib    = data_dir.join("app.so");
 
+    // 1) flutter_assets must exist
     debug!("[Path Utils] Checking for `{}`", assets_dir.display());
     if !assets_dir.is_dir() {
         error!("[Path Utils] Missing directory `{}`", assets_dir.display());
         panic!("[Path Utils] Missing `flutter_assets` at `{}`", assets_dir.display());
     }
 
+    // 2) icudtl.dat must exist
     debug!("[Path Utils] Checking for `{}`", icu_file.display());
     if !icu_file.is_file() {
         error!("[Path Utils] Missing file `{}`", icu_file.display());
         panic!("[Path Utils] Missing `icudtl.dat` at `{}`", icu_file.display());
     }
 
+    // 3) app.so (AOT lib) is optional — fall back to JIT if missing
     debug!("[Path Utils] Checking for `{}`", aot_lib.display());
-    let aot_w = if aot_lib.is_file() {
+    let aot_path_vec = if aot_lib.is_file() {
+        // Found AOT library → use ahead‐of‐time mode
+        info!("[Path Utils] Found AOT library at `{}`", aot_lib.display());
         to_wide(&aot_lib)
     } else {
+        // Missing AOT lib → JIT mode
         info!(
             "[Path Utils] AOT library not found at `{}`, falling back to JIT mode",
             aot_lib.display()
@@ -113,22 +114,28 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
         Vec::new()
     };
 
+    // Helper: turn a Path → Vec<u16> with trailing NUL
+    fn to_wide(p: &Path) -> Vec<u16> {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = OsString::from(p)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        debug!("[Path Utils] UTF-16 path: {:?}", wide);
+        wide
+    }
+
+    // Build wide strings for assets & ICU (always present)
     let assets = to_wide(&assets_dir);
     let icu    = to_wide(&icu_file);
 
     info!("[Path Utils] Resolved Flutter asset paths successfully");
-    (assets, icu, aot_w)
+    (assets, icu, aot_path_vec)
 }
 
-/// Helper: turn a Path → Vec<u16> with trailing NUL
-fn to_wide(p: &Path) -> Vec<u16> {
-    OsString::from(p)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
 
-/// Displays the standard Windows “Select Folder” dialog.
+/// Displays the standard Windows “Select Folder” dialog.  
 /// Returns `Some(PathBuf)` if the user picks a folder, or `None` if
 /// they cancel.
 pub fn select_data_directory() -> Option<PathBuf> {
@@ -178,8 +185,10 @@ pub fn select_data_directory() -> Option<PathBuf> {
     }
 }
 
-/// Returns the directory containing this DLL (or executable).
-/// Internally uses Win32 APIs to locate the module by the address of this function.
+
+/// Returns the directory containing this DLL (or executable).  
+/// Internally uses `GetModuleHandleExW` and `GetModuleFileNameW` to
+/// locate the module by the address of this function.
 pub fn dll_directory() -> PathBuf {
     unsafe {
         debug!("[Path Utils] Locating module filename via Win32 APIs");

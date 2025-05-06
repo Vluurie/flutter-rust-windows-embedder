@@ -15,9 +15,6 @@ fn main() {
         "missing flutter_windows.lib"
     );
 
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=dylib=flutter_windows");
-
     println!(
         "cargo:rerun-if-changed={}",
         include_dir.join("flutter_windows.h").display()

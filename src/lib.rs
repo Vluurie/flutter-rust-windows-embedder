@@ -2,21 +2,22 @@
 #![allow(dead_code)]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use env_logger::{Builder, Env};
+use log::{LevelFilter, error, info};
 use std::path::PathBuf;
 use std::sync::Once;
-use log::{error, info, LevelFilter};
-use env_logger::{Builder, Env};
 
 use windows::Win32::{
-    System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
-    UI::WindowsAndMessaging::{ShowWindow, SetForegroundWindow, SW_SHOWNORMAL},
+    System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
+    UI::WindowsAndMessaging::{SW_SHOWNORMAL, SetForegroundWindow, ShowWindow},
 };
 
 mod app_state;
 mod constants;
+mod dynamic_flutter_windows_dll_loader;
 pub mod flutter_utils;
-pub mod plugin_loader;
 pub mod path_utils;
+pub mod plugin_loader;
 pub mod win32_utils;
 
 mod flutter_bindings {
@@ -62,22 +63,34 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
 
     // --- COM init (STA) ---
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-            .unwrap_or_else(|e| {
-                error!("COM initialization failed: {:?}", e);
-                std::process::exit(1);
-            });
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).unwrap_or_else(|e| {
+            error!("COM initialization failed: {:?}", e);
+            std::process::exit(1);
+        });
     }
     info!("COM initialized (STA)");
 
     // 1) Resolve Flutter asset paths
     let (assets, icu, aot) = match data_dir.as_ref() {
         Some(dir) => path_utils::get_flutter_paths_from(dir),
-        None      => path_utils::get_flutter_paths(),
+        None => path_utils::get_flutter_paths(),
     };
 
+    let dir_ref = data_dir.as_deref();
+    let dll = dynamic_flutter_windows_dll_loader::FlutterDll::get_for(dir_ref)
+        .unwrap_or_else(|e| {
+            error!("Failed to load flutter_windows.dll from `{:?}`: {:?}", dir_ref, e);
+            std::process::exit(1);
+        });
+    
+    info!("Loaded flutter_windows.dll from `{}`",
+        dir_ref
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "EXE folder".into())
+    );
+
     // 2) Create the engine with explicit paths
-    let engine = flutter_utils::create_flutter_engine_with_paths(assets, icu, aot);
+    let engine = flutter_utils::create_flutter_engine_with_paths(assets, icu, aot, &dll);
     info!("Flutter engine created");
 
     // 3) Create the view controller
@@ -85,6 +98,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
         engine,
         constants::DEFAULT_WINDOW_WIDTH,
         constants::DEFAULT_WINDOW_HEIGHT,
+        &dll
     );
     info!(
         "Flutter view controller created ({}×{})",
@@ -94,21 +108,23 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
 
     // 4) Register plugins from the same directory
     let binding = path_utils::dll_directory();
-    let plugin_dir = data_dir
-        .as_ref()
-        .unwrap_or(&binding);
-    plugin_loader::load_and_register_plugins(plugin_dir, engine)
-        .unwrap_or_else(|e| {
-            error!("Plugin load failed from `{}`: {:?}", plugin_dir.display(), e);
-            std::process::exit(1);
-        });
+    let plugin_dir = data_dir.as_ref().unwrap_or(&binding);
+    plugin_loader::load_and_register_plugins(plugin_dir, engine, &dll).unwrap_or_else(|e| {
+        error!(
+            "Plugin load failed from `{}`: {:?}",
+            plugin_dir.display(),
+            e
+        );
+        std::process::exit(1);
+    });
     info!("All plugins registered from `{}`", plugin_dir.display());
 
     // 5) Embed Flutter’s HWND in a Win32 window
-    let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller);
+    let (_view, flutter_child_hwnd) = flutter_utils::get_flutter_view_and_hwnd(controller, &dll);
     let state = Box::new(app_state::AppState {
         controller,
         child_hwnd: flutter_child_hwnd,
+        dll: dll.clone(),
     });
     let state_ptr = Box::into_raw(state);
 
@@ -126,6 +142,8 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     win32_utils::run_message_loop(parent_hwnd, state_ptr);
     info!("Message loop exited");
 
-    unsafe { CoUninitialize(); }
+    unsafe {
+        CoUninitialize();
+    }
     info!("Application exiting");
 }

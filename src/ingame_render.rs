@@ -86,11 +86,15 @@ impl FlutterOverlay {
         height: u32,
     ) -> Self {
         // 1) Locate Flutter assets (UTF-16 on Windows).
-        let (assets_wide, icu_wide, _aot_wide) = match data_dir.as_ref() {
+        let (mut assets_wide, mut icu_wide, mut aot_wide) = match data_dir.as_ref() {
             Some(dir) => path_utils::get_flutter_paths_from(dir),
-            None => path_utils::get_flutter_paths(),
+            None      => path_utils::get_flutter_paths(),
         };
-        // Vec<u16> → OsString → Rust String → CString
+        if assets_wide.last() == Some(&0) { assets_wide.pop(); }
+        if icu_wide  .last() == Some(&0) { icu_wide  .pop(); }
+        if aot_wide  .last() == Some(&0) { aot_wide  .pop(); }
+    
+        // Vec<u16> → OsString → CString
         let assets_c = {
             let os: OsString = OsString::from_wide(&assets_wide);
             CString::new(os.to_string_lossy().into_owned()).unwrap()
@@ -98,7 +102,7 @@ impl FlutterOverlay {
         let icu_c = {
             let os: OsString = OsString::from_wide(&icu_wide);
             CString::new(os.to_string_lossy().into_owned()).unwrap()
-        };
+        };   
 
         // 2) Create dynamic RGBA8 D3D11 texture & SRV.
         let tex_desc = D3D11_TEXTURE2D_DESC {

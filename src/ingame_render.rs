@@ -113,14 +113,14 @@ impl FlutterOverlay {
         unsafe { device.CreateTexture2D(&tex_desc, None, Some(&mut texture_opt)).unwrap(); }
         let texture = texture_opt.unwrap();
 
-        let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-            Format: tex_desc.Format,
-            ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
-            Anonymous: unsafe { mem::zeroed() },
-            ..Default::default()
-        };
+        // let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+        //     Format: tex_desc.Format,
+        //     ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
+        //     Anonymous: unsafe { mem::zeroed() },
+        //     ..Default::default()
+        // };
         let mut srv_opt = None;
-        unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv_opt)).unwrap(); }
+        unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv_opt)).unwrap(); }
         let srv = srv_opt.unwrap();
 
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };

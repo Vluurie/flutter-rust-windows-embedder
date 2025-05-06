@@ -43,7 +43,6 @@
 use crate::{
     app_state::AppState,
     constants,
-
     windows::{
         HWND as RawHWND, LPARAM as RawLPARAM, LRESULT as RawLRESULT, UINT as RawUINT,
         WPARAM as RawWPARAM,
@@ -154,8 +153,8 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                 if let Some(state) = state_ptr.as_mut() {
                     let dll = &state.dll;
                     let mut rc = RECT::default();
-                    if GetClientRect(hwnd, &mut rc).as_bool() {
-                        MoveWindow(
+                    if GetClientRect(hwnd, &mut rc).is_ok() {
+                        let _ = MoveWindow(
                             state.child_hwnd,
                             0,
                             0,
@@ -164,6 +163,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                             true,
                         );
                     }
+
                     // Forward to Flutter view
                     let raw_hwnd: RawHWND = std::mem::transmute(hwnd);
                     let raw_wp: RawWPARAM = wparam.0 as _;
@@ -201,7 +201,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             // 6) Close → DestroyWindow
             WM_CLOSE => {
                 info!("[WndProc] WM_CLOSE → DestroyWindow");
-                DestroyWindow(hwnd);
+                let _ = DestroyWindow(hwnd);
                 LRESULT(0)
             }
 
@@ -263,7 +263,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                 let new_rc = lparam.0 as *const RECT;
                 if !new_rc.is_null() {
                     let r = *new_rc;
-                    SetWindowPos(
+                    let _ = SetWindowPos(
                         hwnd,
                         HWND(0),
                         r.left,
@@ -395,7 +395,7 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
         | WS_VISIBLE.0 as isize;
     unsafe {
         SetWindowLongPtrW(child, GWL_STYLE, new);
-        SetWindowPos(
+        let _ = SetWindowPos(
             child,
             HWND(0),
             0,
@@ -408,23 +408,23 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
     debug!("[Win32 Utils] Child style {:#x} → {:#x}", old, new);
 
     let prev = unsafe { SetParent(child, parent) };
-    let err = unsafe { GetLastError() };
-    if err.0 != 0 {
-        warn!("[Win32 Utils] SetParent error: {:?}", err);
-    } else if prev.0 != 0 {
+    if prev == HWND(0) {
+        let err = windows::core::Error::from_win32();
+        warn!("[Win32 Utils] SetParent failed: {:?}", err);
+    } else {
         debug!("[Win32 Utils] Child already under {:?}", prev);
     }
 
     let mut rc = RECT::default();
-    if unsafe { GetClientRect(parent, &mut rc) }.as_bool() {
-        unsafe { MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, true) };
+    if unsafe { GetClientRect(parent, &mut rc) }.is_ok() {
+        unsafe { let _ = MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, true); };
     }
 
     unsafe {
         SendMessageW(child, WM_PAINT, WPARAM(0), LPARAM(0));
     }
     unsafe {
-        PostMessageW(parent, WM_SIZE, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(parent, WM_SIZE, WPARAM(0), LPARAM(0));
     }
 }
 

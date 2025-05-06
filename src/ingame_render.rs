@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC};
 
-use crate::{embedder, path_utils};
+use crate::{embedder::{self, FlutterEngineAOTData, FlutterEngineAOTDataSource, FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath, FlutterEngineCreateAOTData, FlutterEngineInitialize, FlutterEngineResult_kSuccess, FlutterEngineRunInitialized, FlutterRendererType_kSoftware}, path_utils};
 
 /// Must match C `#define FLUTTER_ENGINE_VERSION 1`.
 const FLUTTER_ENGINE_VERSION: usize = 1;
@@ -85,47 +85,32 @@ impl FlutterOverlay {
         width: u32,
         height: u32,
     ) -> Self {
-        // 1) Locate Flutter assets (UTF-16 on Windows).
-        let (mut assets_wide, mut icu_wide, mut aot_wide) = match data_dir.as_ref() {
-            Some(dir) => path_utils::get_flutter_paths_from(dir),
-            None      => path_utils::get_flutter_paths(),
+        let (mut assets_wide, mut icu_wide, mut aot_wide) = match data_dir {
+            Some(ref dir) => path_utils::get_flutter_paths_from(dir),
+            None => path_utils::get_flutter_paths(),
         };
         if assets_wide.last() == Some(&0) { assets_wide.pop(); }
-        if icu_wide  .last() == Some(&0) { icu_wide  .pop(); }
-        if aot_wide  .last() == Some(&0) { aot_wide  .pop(); }
-    
-        // Vec<u16> → OsString → CString
-        let assets_c = {
-            let os: OsString = OsString::from_wide(&assets_wide);
-            CString::new(os.to_string_lossy().into_owned()).unwrap()
-        };
-        let icu_c = {
-            let os: OsString = OsString::from_wide(&icu_wide);
-            CString::new(os.to_string_lossy().into_owned()).unwrap()
-        };   
+        if icu_wide.last()   == Some(&0) { icu_wide.pop(); }
+        if aot_wide.last()   == Some(&0) { aot_wide.pop(); }
 
-        // 2) Create dynamic RGBA8 D3D11 texture & SRV.
+        let assets_c = CString::new(OsString::from_wide(&assets_wide).to_string_lossy().into_owned()).unwrap();
+        let icu_c    = CString::new(OsString::from_wide(&icu_wide).to_string_lossy().into_owned()).unwrap();
+        let aot_c    = CString::new(OsString::from_wide(&aot_wide).to_string_lossy().into_owned()).unwrap();
+
         let tex_desc = D3D11_TEXTURE2D_DESC {
             Width: width,
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_DYNAMIC,
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
             CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
             ..Default::default()
         };
         let mut texture_opt = None;
-        unsafe {
-            device
-                .CreateTexture2D(&tex_desc, None, Some(&mut texture_opt))
-                .unwrap();
-        }
+        unsafe { device.CreateTexture2D(&tex_desc, None, Some(&mut texture_opt)).unwrap(); }
         let texture = texture_opt.unwrap();
 
         let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
@@ -135,35 +120,46 @@ impl FlutterOverlay {
             ..Default::default()
         };
         let mut srv_opt = None;
-        unsafe {
-            device
-                .CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv_opt))
-                .unwrap();
-        }
+        unsafe { device.CreateShaderResourceView(&texture, Some(&srv_desc), Some(&mut srv_opt)).unwrap(); }
         let srv = srv_opt.unwrap();
 
-        // 3) Build FlutterProjectArgs.
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-        proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
-        proj_args.assets_path = assets_c.as_ptr();
-        proj_args.icu_data_path = icu_c.as_ptr();
-        proj_args.dart_entrypoint_argc = 0;
-        proj_args.dart_entrypoint_argv = std::ptr::null_mut();
+        proj_args.struct_size                   = mem::size_of::<FlutterProjectArgs>();
+        proj_args.assets_path                   = assets_c.as_ptr();
+        proj_args.icu_data_path                 = icu_c.as_ptr();
+        proj_args.command_line_argc             = 0;
+        proj_args.command_line_argv             = std::ptr::null();
+        proj_args.platform_message_callback     = None;
+        proj_args.persistent_cache_path         = std::ptr::null();
+        proj_args.is_persistent_cache_read_only = false;
+        proj_args.shutdown_dart_vm_when_done    = false;
+        proj_args.dart_entrypoint_argc          = 0;
+        proj_args.dart_entrypoint_argv          = std::ptr::null();
+        proj_args.log_message_callback          = None;
+        proj_args.log_tag                       = std::ptr::null();
+        proj_args.on_pre_engine_restart_callback= None;
+        proj_args.update_semantics_callback     = None;
+        proj_args.update_semantics_callback2    = None;
+        proj_args.channel_update_callback       = None;
 
-        // 4) Build FlutterSoftwareRendererConfig.
+        let mut aot_source: FlutterEngineAOTDataSource = unsafe { mem::zeroed() };
+        aot_source.type_ = FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath;
+        aot_source.__bindgen_anon_1.elf_path = aot_c.as_ptr();
+        let mut aot_data: FlutterEngineAOTData = std::ptr::null_mut();
+        let create_res = unsafe { FlutterEngineCreateAOTData(&aot_source, &mut aot_data) };
+        assert_eq!(create_res, FlutterEngineResult_kSuccess);
+        proj_args.aot_data = aot_data;
+
         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
-        sw_cfg.struct_size = mem::size_of::<FlutterSoftwareRendererConfig>();
+        sw_cfg.struct_size              = mem::size_of::<FlutterSoftwareRendererConfig>();
         sw_cfg.surface_present_callback = Some(on_present);
 
-        // 5) Build FlutterRendererConfig.
         let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
-        rdr_cfg.type_ = embedder::FlutterRendererType_kSoftware;
+        rdr_cfg.type_ = FlutterRendererType_kSoftware;
+         rdr_cfg.__bindgen_anon_1.software = sw_cfg;
 
-        rdr_cfg.__bindgen_anon_1.software = sw_cfg;
-
-        // 6) Box our Rust state and grab a stable pointer for callbacks.
         let mut state = Box::new(FlutterOverlay {
-            engine: std::ptr::null_mut(),
+            engine:       std::ptr::null_mut(),
             pixel_buffer: vec![0; (width as usize) * (height as usize) * 4],
             width,
             height,
@@ -172,25 +168,27 @@ impl FlutterOverlay {
         });
         let user_data = &mut *state as *mut _ as *mut c_void;
 
-        // 7) Initialize & run the Flutter engine, passing our `user_data`.
         let mut engine: FlutterEngineRef = std::ptr::null_mut();
         let init_res = unsafe {
-            embedder::FlutterEngineInitialize(
+            FlutterEngineInitialize(
                 FLUTTER_ENGINE_VERSION,
                 &rdr_cfg,
                 &proj_args,
-                user_data, // ← here!
+                user_data,
                 &mut engine,
             )
         };
-        assert_eq!(init_res, embedder::FlutterEngineResult_kSuccess);
+        assert_eq!(init_res, FlutterEngineResult_kSuccess);
 
-        let run_res = unsafe { embedder::FlutterEngineRunInitialized(engine) };
-        assert_eq!(run_res, embedder::FlutterEngineResult_kSuccess);
+        let run_res = unsafe { FlutterEngineRunInitialized(engine) };
+        assert_eq!(run_res, FlutterEngineResult_kSuccess);
 
         state.engine = engine;
         *state
     }
+    
+    
+    
 
     /// Pump Flutter (animations, timers) and upload the latest RGBA frame.
     /// Call **once per frame** before your D3D11 draw pass.

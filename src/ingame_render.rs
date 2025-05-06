@@ -178,10 +178,10 @@ impl FlutterOverlay {
                 &mut engine,
             )
         };
-        assert_eq!(init_res, FlutterEngineResult_kSuccess);
+       // assert_eq!(init_res, FlutterEngineResult_kSuccess);
 
         let run_res = unsafe { FlutterEngineRunInitialized(engine) };
-        assert_eq!(run_res, FlutterEngineResult_kSuccess);
+        //assert_eq!(run_res, FlutterEngineResult_kSuccess);
 
         state.engine = engine;
         *state

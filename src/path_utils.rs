@@ -42,7 +42,7 @@
 use log::{debug, error, info};
 use std::{
     ffi::{c_void, OsString},
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
 };
 use windows::{

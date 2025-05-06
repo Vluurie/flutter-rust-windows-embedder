@@ -44,7 +44,7 @@ use crate::{
     app_state::AppState,
     constants,
 
-    flutter_bindings::{
+    windows::{
         HWND as RawHWND, LPARAM as RawLPARAM, LRESULT as RawLRESULT, UINT as RawUINT,
         WPARAM as RawWPARAM,
     },

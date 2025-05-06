@@ -39,7 +39,7 @@ use std::{
 
 use crate::{
     dynamic_flutter_windows_dll_loader::FlutterDll,
-    flutter_bindings::{FlutterDesktopEngineRef, FlutterDesktopPluginRegistrarRef},
+    windows::{FlutterDesktopEngineRef, FlutterDesktopPluginRegistrarRef},
 };
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";
@@ -110,7 +110,7 @@ fn load_and_register(
 pub fn load_and_register_plugins(
     release_dir: &Path,
     engine: FlutterDesktopEngineRef,
-    dll: &Arc<FlutterDll>,
+    dll: Option<&Arc<FlutterDll>>,
 ) -> Result<()> {
     // Get (or create) this engine's seen‐set
     let mut map = registered_map().lock().unwrap();
@@ -146,7 +146,7 @@ pub fn load_and_register_plugins(
         let cname = std::ffi::CString::new(plugin_name).unwrap();
         let name_ptr = cname.as_ptr() as *const u8;
         let registrar: FlutterDesktopPluginRegistrarRef =
-            unsafe { (dll.FlutterDesktopEngineGetPluginRegistrar)(engine, name_ptr) };
+            unsafe { (dll.unwrap().FlutterDesktopEngineGetPluginRegistrar)(engine, name_ptr) };
 
         // Load & invoke registration routines
         load_and_register(&dll_path, &symbols, registrar)?;

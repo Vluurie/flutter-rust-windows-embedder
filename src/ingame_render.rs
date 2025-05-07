@@ -171,12 +171,21 @@ impl FlutterOverlay {
         // 5) Build FlutterProjectArgs (with log callback)
         println!("[init] Building FlutterProjectArgs...");
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-        proj_args.struct_size            = mem::size_of::<FlutterProjectArgs>();
-        proj_args.assets_path            = assets_c.as_ptr();
-        proj_args.icu_data_path          = icu_c.as_ptr();
-        proj_args.aot_data               = std::ptr::null_mut();
-        proj_args.log_message_callback   = Some(flutter_log_callback);
-        proj_args.log_tag                = FLUTTER_LOG_TAG.as_ptr();
+
+        proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
+        
+        proj_args.assets_path   = assets_c.as_ptr();
+        proj_args.icu_data_path = icu_c.as_ptr();
+        
+        proj_args.aot_data = std::ptr::null_mut();
+        
+        proj_args.command_line_argc = 0;
+        proj_args.command_line_argv = std::ptr::null();
+        
+        proj_args.platform_message_callback = None;
+        
+        proj_args.log_message_callback = Some(flutter_log_callback);
+        proj_args.log_tag              = FLUTTER_LOG_TAG.as_ptr();
 
         // 6) Load AOT data if provided
         println!("[init] Loading AOT data if available...");

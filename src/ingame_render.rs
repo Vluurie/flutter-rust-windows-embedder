@@ -219,6 +219,7 @@ impl FlutterOverlay {
         // 7) Configure software renderer
         println!("[init] Configuring software renderer...");
         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
+        sw_cfg.struct_size = mem::size_of::<FlutterSoftwareRendererConfig>();
         sw_cfg.surface_present_callback = Some(on_present);
         let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
         rdr_cfg.type_ = FlutterRendererType_kSoftware;

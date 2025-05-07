@@ -1,7 +1,7 @@
 use std::{
     ffi::{c_void, CString, OsString}, io::Read, mem, os::windows::ffi::OsStringExt, path::PathBuf
 };
-use gag::{BufferRedirect};
+use gag::BufferRedirect;
 use windows::Win32::Graphics::Direct3D::D3D11_SRV_DIMENSION_TEXTURE2D;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, D3D11_MAP_WRITE_DISCARD,
@@ -16,7 +16,7 @@ use crate::{
         self, FlutterEngineAOTData, FlutterEngineAOTDataSource,
         FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
         FlutterEngineCreateAOTData, FlutterEngineInitialize,
-        FlutterEngineResult_kSuccess, FlutterEngineRunInitialized,
+        FlutterEngineResult_kSuccess, FlutterEngineRunInitialized, FlutterEngineRunTask,
         FlutterEngineSendWindowMetricsEvent, FlutterProjectArgs, FlutterRendererConfig,
         FlutterRendererType_kSoftware, FlutterSoftwareRendererConfig, FlutterWindowMetricsEvent,
     },
@@ -259,6 +259,26 @@ impl FlutterOverlay {
         println!("[init] Initialization complete.");
         overlay.engine = engine;
         *overlay
+    }
+
+    /// Pump tasks and upload the latest frame to the D3D11 texture.
+    pub fn tick(&mut self, context: &ID3D11DeviceContext) {
+        unsafe {
+            FlutterEngineRunTask(self.engine, std::ptr::null());
+            let mut m: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+            context
+                .Map(&self.texture, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m))
+                .unwrap();
+            let row_pitch = m.RowPitch as usize;
+            let src_pitch = (self.width as usize) * 4;
+            let src_ptr = self.pixel_buffer.as_ptr();
+            for y in 0..(self.height as usize) {
+                let dst = (m.pData as *mut u8).add(y * row_pitch);
+                let src = src_ptr.add(y * src_pitch);
+                std::ptr::copy_nonoverlapping(src, dst, src_pitch);
+            }
+            context.Unmap(&self.texture, 0);
+        }
     }
 }
 

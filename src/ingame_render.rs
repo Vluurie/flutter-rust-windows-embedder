@@ -117,7 +117,7 @@ impl FlutterOverlay {
             // Anonymous is zeroed; no need for other fields
             let mut opt = None;
             device
-                .CreateShaderResourceView(&texture, Some(&desc), Some(&mut opt))
+                .CreateShaderResourceView(&texture, None, Some(&mut opt))
                 .expect("CreateShaderResourceView failed");
             opt.unwrap()
         };

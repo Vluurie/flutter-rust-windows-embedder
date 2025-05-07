@@ -339,50 +339,46 @@ impl FlutterOverlay {
     }
 
 
-    /// Runs engine tasks and updates the D3D texture from the pixel buffer.
-    /// This version operates on the globally stored raw pointer.
-    /// Must only be called when FLUTTER_OVERLAY_RAW_PTR is non-null.
-    ///
-    /// Args:
-    ///   context: The D3D11 device context to use for texture mapping.
+       
+    
+    
+    
+    
+    
     pub unsafe fn tick_global(context: &ID3D11DeviceContext) {
-        unsafe {
-        // Get the raw pointer from the global static
+        
         let overlay_ptr = FLUTTER_OVERLAY_RAW_PTR;
-        if overlay_ptr.is_null() {
-             // eprintln!("[tick_global] Flutter overlay not initialized, skipping tick.");
-             return;
+        
+        if overlay_ptr.is_null() || (*overlay_ptr).engine.is_null() {
+            return;
         }
-        // Get a mutable reference to the FlutterOverlay instance on the heap
+        
         let overlay = &mut *overlay_ptr;
 
-        // --- Original Tick Logic ---
-        if overlay.engine.is_null() {
-            // eprintln!("[tick_global] Engine handle is null, skipping FlutterEngineRunTask.");
-             return;
-        }
-        // Run pending Flutter tasks
+        
         FlutterEngineRunTask(overlay.engine, ptr::null());
 
-        // Check dimensions before mapping/copying
+        
         if overlay.width == 0 || overlay.height == 0 {
-            // eprintln!("[tick_global] Overlay dimensions are zero ({}x{}), skipping texture update.", overlay.width, overlay.height);
+            
+            
             return;
         }
 
-        // Map the texture, copy pixel data, unmap
+        
         let mut m: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
         match context.Map(&overlay.texture, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut m)) {
             Ok(_) => {
                 if m.pData.is_null() {
-                    // eprintln!("[tick_global] Mapped pData is null after successful Map call.");
+                    
+                    eprintln!("[tick_global] ERROR: Mapped pData is null after successful Map call.");
                     context.Unmap(&overlay.texture, 0);
                     return;
                 }
                 let texture_row_pitch = m.RowPitch as usize;
                 let buffer_row_pitch = (overlay.width as usize) * 4;
 
-                // Basic validation
+                
                 if texture_row_pitch < buffer_row_pitch {
                     eprintln!("[tick_global] ERROR: Texture RowPitch ({}) is less than buffer pitch ({}). Cannot copy.", texture_row_pitch, buffer_row_pitch);
                     context.Unmap(&overlay.texture, 0);
@@ -395,10 +391,8 @@ impl FlutterOverlay {
                      return;
                 }
 
-
+                
                 let src_base_ptr = overlay.pixel_buffer.as_ptr();
-
-                // Copy pixel data row by row
                 for y in 0..(overlay.height as usize) {
                     let dst_row_ptr = (m.pData as *mut u8).add(y * texture_row_pitch);
                     let src_row_ptr = src_base_ptr.add(y * buffer_row_pitch);
@@ -407,84 +401,53 @@ impl FlutterOverlay {
                 context.Unmap(&overlay.texture, 0);
             }
             Err(e) => {
-                eprintln!("[tick_global] Failed to map texture: {:?}", e);
-                // even on Map failure? Might not be necessary.
+                
+                eprintln!("[tick_global] ERROR: Failed to map texture: {:?}", e);
             }
         }
-    }
-}
+    } 
 }
 
 extern "C" fn on_present(
     user_data: *mut c_void,
-    allocation: *const c_void, 
-    row_bytes_flutter: usize,  
-    height_flutter: usize,     
+    allocation: *const c_void,
+    row_bytes_flutter: usize,
+    height_flutter: usize,
 ) -> bool {
+    if user_data.is_null() {
+         eprintln!("[on_present] ERROR: user_data is NULL!");
+         return true; 
+    }
     let ov = unsafe { &mut *(user_data as *mut FlutterOverlay) };
 
-    
-    println!("[on_present] Flutter data received: allocation_ptr={:?}, row_bytes_flutter={}, height_flutter={}", allocation, row_bytes_flutter, height_flutter);
-    println!("[on_present] Overlay buffer expecting: width={}, height={}, overlay_pitch={}", ov.width, ov.height, ov.width as usize * 4);
-    
-
-    
     if allocation.is_null() {
         eprintln!("[on_present] ERROR: Flutter allocation pointer is NULL!");
-        
-        
+        return true;
+    }
+    if ov.width == 0 || ov.height == 0 || ov.pixel_buffer.is_empty() {
+        eprintln!("[on_present] ERROR: Overlay dimensions zero or pixel_buffer empty (width={}, height={})!", ov.width, ov.height);
         return true;
     }
 
     
-    if ov.pixel_buffer.is_empty() {
-        eprintln!("[on_present] ERROR: Overlay pixel_buffer is empty or not initialized!");
-        return true;
-    }
-
-
     let overlay_pitch = (ov.width as usize) * 4;
-
     let copy_height = std::cmp::min(height_flutter, ov.height as usize);
     let bytes_to_copy_per_row = std::cmp::min(row_bytes_flutter, overlay_pitch);
 
+    
     if bytes_to_copy_per_row == 0 || copy_height == 0 {
-        println!("[on_present] Warning: Calculated zero bytes to copy or zero height. Skipping copy. bytes_per_row={}, height={}", bytes_to_copy_per_row, copy_height);
+        
+        
         return true;
     }
 
-    if row_bytes_flutter < overlay_pitch {
-        println!("[on_present] Warning: Flutter row_bytes ({}) is less than overlay pitch ({}). Will copy only {} bytes per row.", row_bytes_flutter, overlay_pitch, bytes_to_copy_per_row);
-    }
-    if height_flutter < ov.height as usize {
-         println!("[on_present] Warning: Flutter height ({}) is less than overlay height ({}). Will copy only {} rows.", height_flutter, ov.height, copy_height);
-    }
-     if row_bytes_flutter > overlay_pitch {
-        println!("[on_present] Note: Flutter row_bytes ({}) is greater than overlay pitch ({}). This is okay, copying overlay_pitch.", row_bytes_flutter, overlay_pitch);
-    }
-    if height_flutter > ov.height as usize {
-         println!("[on_present] Note: Flutter height ({}) is greater than overlay height ({}). This is okay, copying ov.height.", height_flutter, ov.height);
-    }
-
-
     let src_base = allocation as *const u8;
     let dst_base = ov.pixel_buffer.as_mut_ptr();
-
     for y in 0..copy_height {
         unsafe {
             let src_ptr_row = src_base.add(y * row_bytes_flutter);
-            let dst_ptr_row = dst_base.add(y * overlay_pitch); 
-
-            
-            
-            
-            
-
-            std::ptr::copy_nonoverlapping(
-                src_ptr_row,
-                dst_ptr_row,
-                bytes_to_copy_per_row, 
-            );
+            let dst_ptr_row = dst_base.add(y * overlay_pitch);
+            std::ptr::copy_nonoverlapping(src_ptr_row, dst_ptr_row, bytes_to_copy_per_row);
         }
     }
     true

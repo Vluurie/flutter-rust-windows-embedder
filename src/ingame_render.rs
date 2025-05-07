@@ -15,12 +15,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SA
 
 use crate::{
     embedder::{
-        self, FlutterEngineAOTData, FlutterEngineAOTDataSource,
-        FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-        FlutterEngineCreateAOTData, FlutterEngineInitialize, FlutterEngineResult_kSuccess,
-        FlutterEngineRunInitialized, FlutterEngineRunTask, FlutterEngineSendWindowMetricsEvent,
-        FlutterRendererConfig, FlutterRendererType_kSoftware, FlutterSoftwareRendererConfig,
-        FlutterWindowMetricsEvent,
+        self, FlutterEngineAOTData, FlutterEngineAOTDataSource, FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath, FlutterEngineCreateAOTData, FlutterEngineInitialize, FlutterEngineResult_kSuccess, FlutterEngineRunInitialized, FlutterEngineRunTask, FlutterEngineSendWindowMetricsEvent, FlutterProjectArgs, FlutterRendererConfig, FlutterRendererType_kSoftware, FlutterSoftwareRendererConfig, FlutterWindowMetricsEvent
     },
     path_utils::{get_flutter_paths, get_flutter_paths_from},
 };
@@ -131,53 +126,58 @@ impl FlutterOverlay {
             opt.unwrap()
         };
     
-        // 5) Build FlutterProjectArgs:
-        println!("[init] Building FlutterProjectArgs...");
-        let mut proj_args: embedder::FlutterProjectArgs = unsafe { mem::zeroed() };
-        proj_args.struct_size = mem::size_of::<usize>();
-        proj_args.assets_path = assets_c.as_ptr();
-        proj_args.icu_data_path = icu_c.as_ptr();
-    
-        // 6) Load AOT data if present:
-        if !aot_wide.is_empty() {
-            println!("[init] AOT path provided, loading...");
-            let aot_c = CString::new(OsString::from_wide(&aot_wide).to_string_lossy().as_ref()).unwrap();
-            println!("[init] aot_path = {:?}", aot_c);
-            let mut src: FlutterEngineAOTDataSource = unsafe { mem::zeroed() };
-            src.type_ = FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath;
-            src.__bindgen_anon_1.elf_path = aot_c.as_ptr();
-    
-            let mut aot_data: FlutterEngineAOTData = std::ptr::null_mut();
-            let r = unsafe { FlutterEngineCreateAOTData(&src, &mut aot_data) };
-            assert_eq!(r, FlutterEngineResult_kSuccess, "CreateAOTData failed: {:?}", r);
-            println!("[init] AOT data loaded successfully.");
-            proj_args.aot_data = aot_data;
-        } else {
-            println!("[init] No AOT data found.");
-            proj_args.aot_data = std::ptr::null_mut();
-        }
-    
-        // 7) Renderer config
-        println!("[init] Setting up renderer config...");
-        let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
-        sw_cfg.struct_size = mem::size_of::<usize>();
-        sw_cfg.surface_present_callback = Some(on_present);
-    
-        let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
-        rdr_cfg.type_ = FlutterRendererType_kSoftware;
-        rdr_cfg.__bindgen_anon_1.software = sw_cfg;
-    
-        // 8) Box and user_data
-        println!("[init] Creating FlutterOverlay structure...");
-        let mut overlay = Box::new(FlutterOverlay {
-            engine: std::ptr::null_mut(),
-            pixel_buffer: vec![0; (width as usize) * (height as usize) * 4],
-            width,
-            height,
-            texture,
-            srv,
-        });
-        let user_data = &mut *overlay as *mut _ as *mut c_void;
+         // 5) Load AOT data if present and prepare aot_data_handle
+         let mut aot_data_handle: FlutterEngineAOTData = std::ptr::null_mut();
+         let _aot_c_string_holder: Option<CString> = if !aot_wide.is_empty() {
+             println!("[init] AOT path provided, loading...");
+             let aot_c = CString::new(OsString::from_wide(&aot_wide).to_string_lossy().as_ref()).unwrap();
+             println!("[init] aot_path = {:?}", aot_c);
+ 
+             let mut src: FlutterEngineAOTDataSource = unsafe { mem::zeroed() };
+             src.type_ = FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath;
+             src.__bindgen_anon_1.elf_path = aot_c.as_ptr();
+ 
+             let r = unsafe { FlutterEngineCreateAOTData(&src, &mut aot_data_handle) };
+             assert_eq!(r, FlutterEngineResult_kSuccess, "CreateAOTData failed: {:?}", r);
+             println!("[init] AOT data loaded successfully.");
+             Some(aot_c) // Keep CString alive
+         } else {
+             println!("[init] No AOT data found.");
+             None
+         };
+ 
+         // 6) Build FlutterProjectArgs
+         println!("[init] Building FlutterProjectArgs...");
+         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
+         proj_args.struct_size = std::mem::size_of::<FlutterProjectArgs>(); 
+         proj_args.assets_path = assets_c.as_ptr();
+         proj_args.icu_data_path = icu_c.as_ptr();
+         proj_args.aot_data = aot_data_handle;
+         // proj_args.command_line_argc = 0;
+         // proj_args.command_line_argv = std::ptr::null();
+ 
+ 
+         // 7) Renderer config
+         println!("[init] Setting up renderer config...");
+         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
+         sw_cfg.struct_size = std::mem::size_of::<FlutterSoftwareRendererConfig>();
+         sw_cfg.surface_present_callback = Some(on_present);
+ 
+         let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
+         rdr_cfg.type_ = FlutterRendererType_kSoftware;
+         rdr_cfg.__bindgen_anon_1.software = sw_cfg;
+ 
+         // 8) Box and user_data
+         println!("[init] Creating FlutterOverlay structure...");
+         let mut overlay = Box::new(FlutterOverlay {
+             engine: std::ptr::null_mut(),
+             pixel_buffer: vec![0; (width as usize) * (height as usize) * 4],
+             width,
+             height,
+             texture: texture,
+             srv: srv,
+         });
+         let user_data = &mut *overlay as *mut _ as *mut c_void;
     
         // 9) Initialize engine
         println!("[init] Initializing Flutter engine...");

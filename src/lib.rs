@@ -1,5 +1,6 @@
 #![allow(non_camel_case_types, non_upper_case_globals, non_snake_case)]
 #![allow(dead_code)]
+#![allow(static_mut_refs)]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use env_logger::{Builder, Env};

@@ -64,15 +64,9 @@ impl FlutterOverlay {
                 get_flutter_paths()
             }
         };
-        if assets_wide.last() == Some(&0) {
-            assets_wide.pop();
-        }
-        if icu_wide.last() == Some(&0) {
-            icu_wide.pop();
-        }
-        if aot_wide.last() == Some(&0) {
-            aot_wide.pop();
-        }
+        if assets_wide.last() == Some(&0) { assets_wide.pop(); }
+        if icu_wide.last()    == Some(&0) { icu_wide.pop(); }
+        if aot_wide.last()    == Some(&0) { aot_wide.pop(); }
 
         // 2) Convert to UTF-8 CStrings:
         let assets_c = {
@@ -98,10 +92,7 @@ impl FlutterOverlay {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             Usage: D3D11_USAGE_DYNAMIC,
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
             CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
@@ -130,77 +121,68 @@ impl FlutterOverlay {
             opt.unwrap()
         };
 
-        // 5) Load AOT data if present and prepare aot_data_handle
+        // 5) Load AOT data if present and prepare handle
         println!("[LOG] Preparing aot_data_handle, initially null.");
         let mut aot_data_handle: FlutterEngineAOTData = std::ptr::null_mut();
         println!("[LOG] Checking if aot_wide is empty. Is empty: {}", aot_wide.is_empty());
-        
-        let _aot_c_string_holder: Option<CString> = if !aot_wide.is_empty() {
-            println!("[LOG] AOT path (aot_wide) is present. Length: {}. Attempting to load.", aot_wide.len());
-            // For more detailed debugging of the path itself:
-            // let dbg_aot_path_lossy = OsString::from_wide(&aot_wide).to_string_lossy().into_owned();
-            // println!("[LOG] aot_wide (debug, lossy UTF-8): {:?}", dbg_aot_path_lossy);
-        
-            println!("[LOG] Creating CString from aot_wide...");
-            let aot_c =
-                CString::new(OsString::from_wide(&aot_wide).to_string_lossy().as_ref()).unwrap();
-            println!("[LOG] aot_path (CString) = {:?}", aot_c);
+
+        let _aot_c_holder: Option<CString> = if !aot_wide.is_empty() {
+            println!("[LOG] AOT path present. Attempting to load.");
+            let aot_str = OsString::from_wide(&aot_wide).to_string_lossy().into_owned();
+            println!("[LOG] aot_path (lossy) = {}", aot_str);
+            let aot_c = CString::new(aot_str.as_bytes())
+            .expect("CString::new failed");
             println!("[LOG] aot_c pointer = {:p}", aot_c.as_ptr());
-        
-            println!("[LOG] Initializing FlutterEngineAOTDataSource 'src' with provided fields...");
-            let src: FlutterEngineAOTDataSource = FlutterEngineAOTDataSource {
+
+            // Build and log the source struct (no struct_size!)
+            let src = FlutterEngineAOTDataSource {
                 type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-                __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 { // Ensure this union path is correct for your bindings
+                __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
                     elf_path: aot_c.as_ptr(),
                 },
-                // If there are other fields you've added, their initialization would be here.
-                // Per your instruction, no 'struct_size' is being added here.
             };
-            // Log the fields of `src`
-           
-           unsafe {
-            println!("[LOG] 'src' initialized with type: {:?}, elf_path pointer: {:p}",
-                src.type_, // Assuming FlutterEngineAOTDataSourceType derives Debug or is an int
-                src.__bindgen_anon_1.elf_path
-            );
-        }
-        
-            println!("[LOG] Calling unsafe FlutterEngineCreateAOTData with 'src' (pointer: {:p}) and 'aot_data_handle' (pointer to pointer: {:p})...",
+            unsafe {
+                println!("[LOG] src.type_    = {:?}", src.type_);
+                println!("[LOG] src.elf_path = {:p}", src.__bindgen_anon_1.elf_path);
+            }
+
+            println!(
+                "[LOG] Calling FlutterEngineCreateAOTData(&src @ {:p}, &mut aot_data_handle @ {:p})...",
                 &src, &aot_data_handle
             );
-            let r: FlutterEngineResult =
-                unsafe { FlutterEngineCreateAOTData(&src, &mut aot_data_handle) };
-            
-            println!("[LOG] FlutterEngineCreateAOTData returned: {:?}", r); // Log the raw result code
-            println!("[LOG] aot_data_handle after call: {:p}", aot_data_handle); // Log the handle value (should be non-null on success)
-        
-            // The existing assert will trigger if 'r' is not kSuccess
-            assert_eq!(
-                r, FlutterEngineResult_kSuccess,
-                "CreateAOTData failed: {:?} (see logs above for details on 'src' and pointers)", // Enhanced assert message
-                r
-            );
-            println!("[LOG] AOT data loaded successfully (assert_eq passed).");
-            Some(aot_c) // Keep CString alive
+            let result = unsafe { FlutterEngineCreateAOTData(&src, &mut aot_data_handle) };
+            println!("[LOG] FlutterEngineCreateAOTData returned: {:?}", result);
+            println!("[LOG] aot_data_handle now = {:p}", aot_data_handle);
+
+            if result != FlutterEngineResult_kSuccess {
+                let name = match result {
+                    FlutterEngineResult_kSuccess           => "kSuccess",
+                    FlutterEngineResult_kInvalidArguments => "kInvalidArguments",
+                    _                                     => "UnknownResult",
+                };
+                panic!(
+                    "CreateAOTData failed: {} ({:?}); elf_path={:?}",
+                    name, result, aot_c
+                );
+            }
+
+            println!("[LOG] AOT data loaded successfully.");
+            Some(aot_c)
         } else {
-            println!("[LOG] No AOT data found (aot_wide is empty). Skipping AOT data loading.");
+            println!("[LOG] No AOT data found; skipping load.");
             None
         };
 
-        // 6) Build FlutterProjectArgs
+        // 6) Build FlutterProjectArgs (no struct_size)
         println!("[init] Building FlutterProjectArgs...");
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-        proj_args.struct_size = std::mem::size_of::<FlutterProjectArgs>();
-        proj_args.assets_path = assets_c.as_ptr();
+        proj_args.assets_path   = assets_c.as_ptr();
         proj_args.icu_data_path = icu_c.as_ptr();
-        proj_args.aot_data = aot_data_handle;
-        // proj_args.command_line_argc = 0;
-        // proj_args.command_line_argv = std::ptr::null();
+        proj_args.aot_data      = aot_data_handle;
 
-        // 7) Renderer config
+        // 7) Renderer config (no struct_size)
         println!("[init] Setting up renderer config...");
         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
-        sw_cfg.struct_size = std::mem::size_of::<FlutterSoftwareRendererConfig>();
         sw_cfg.surface_present_callback = Some(on_present);
 
         let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
@@ -208,14 +190,14 @@ impl FlutterOverlay {
         rdr_cfg.__bindgen_anon_1.software = sw_cfg;
 
         // 8) Box and user_data
-        println!("[init] Creating FlutterOverlay structure...");
+        println!("[init] Creating FlutterOverlay struct...");
         let mut overlay = Box::new(FlutterOverlay {
             engine: std::ptr::null_mut(),
             pixel_buffer: vec![0; (width as usize) * (height as usize) * 4],
             width,
             height,
-            texture: texture,
-            srv: srv,
+            texture,
+            srv,
         });
         let user_data = &mut *overlay as *mut _ as *mut c_void;
 
@@ -231,45 +213,38 @@ impl FlutterOverlay {
                 &mut engine,
             )
         };
-        assert_eq!(
-            init_r, FlutterEngineResult_kSuccess,
-            "Initialize failed: {:?}",
-            init_r
-        );
+        assert_eq!(init_r, FlutterEngineResult_kSuccess, "Initialize failed: {:?}", init_r);
         println!("[init] Flutter engine initialized.");
 
         let run_r = unsafe { FlutterEngineRunInitialized(engine) };
-        assert_eq!(
-            run_r, FlutterEngineResult_kSuccess,
-            "RunInitialized failed: {:?}",
-            run_r
-        );
+        assert_eq!(run_r, FlutterEngineResult_kSuccess, "RunInitialized failed: {:?}", run_r);
         println!("[init] Flutter engine run initialized.");
 
-        // 10) Send initial window metrics
+        // 10) Send initial window metrics (no struct_size)
         println!("[init] Sending initial window metrics...");
-        let mut wm: FlutterWindowMetricsEvent = unsafe { std::mem::zeroed() };
-        wm.struct_size = std::mem::size_of::<FlutterWindowMetricsEvent>();
-        wm.width = width as usize;
-        wm.height = height as usize;
-        wm.pixel_ratio = 1.0;
-        wm.left = 0;
-        wm.top = 0;
-        wm.physical_view_inset_top = 0.0;
-        wm.physical_view_inset_right = 0.0;
+        let mut wm: FlutterWindowMetricsEvent = unsafe { mem::zeroed() };
+        wm.width                    = width as usize;
+        wm.height                   = height as usize;
+        wm.pixel_ratio              = 1.0;
+        wm.left                     = 0;
+        wm.top                      = 0;
+        wm.physical_view_inset_top    = 0.0;
+        wm.physical_view_inset_right  = 0.0;
         wm.physical_view_inset_bottom = 0.0;
-        wm.physical_view_inset_left = 0.0;
-        wm.display_id = 0;
-        wm.view_id = 0;
-        let res = unsafe { FlutterEngineSendWindowMetricsEvent(engine, &wm) };
+        wm.physical_view_inset_left   = 0.0;
+        wm.display_id               = 0;
+        wm.view_id                  = 0;
+
+        let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine, &wm) };
         assert_eq!(
-            res, FlutterEngineResult_kSuccess,
+            metrics_r,
+            FlutterEngineResult_kSuccess,
             "SendWindowMetricsEvent failed: {:?}",
-            res
+            metrics_r
         );
         println!("[init] Window metrics sent.");
 
-        // 11) Return overlay
+        // 11) Finish
         println!("[init] Initialization complete. Returning FlutterOverlay.");
         overlay.engine = engine;
         *overlay

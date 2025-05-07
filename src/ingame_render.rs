@@ -307,19 +307,73 @@ impl FlutterOverlay {
 
 extern "C" fn on_present(
     user_data: *mut c_void,
-    allocation: *const c_void,
-    row_bytes: usize,
-    height: usize,
+    allocation: *const c_void, // Pixeldaten von Flutter
+    row_bytes_flutter: usize,  // Pitch der Flutter-Daten
+    height_flutter: usize,     // Höhe der Flutter-Daten
 ) -> bool {
     let ov = unsafe { &mut *(user_data as *mut FlutterOverlay) };
-    let src = allocation as *const u8;
-    let dst = ov.pixel_buffer.as_mut_ptr();
-    for y in 0..height {
+
+    // --- DEBUGGING AUSGABEN HINZUFÜGEN ---
+    println!("[on_present] Flutter data received: allocation_ptr={:?}, row_bytes_flutter={}, height_flutter={}", allocation, row_bytes_flutter, height_flutter);
+    println!("[on_present] Overlay buffer expecting: width={}, height={}, overlay_pitch={}", ov.width, ov.height, ov.width as usize * 4);
+    // --- ENDE DEBUGGING AUSGABEN ---
+
+    // Null-Pointer Check für die Flutter-Daten
+    if allocation.is_null() {
+        eprintln!("[on_present] ERROR: Flutter allocation pointer is NULL!");
+        // Überlege, ob du hier `false` zurückgeben sollst, um der Engine einen Fehler zu signalisieren.
+        // true bedeutet meist "erfolgreich", auch wenn nichts getan wurde.
+        return true;
+    }
+
+    // Null-Pointer Check für deinen Puffer (sollte nicht passieren, wenn `init` korrekt war)
+    if ov.pixel_buffer.is_empty() {
+        eprintln!("[on_present] ERROR: Overlay pixel_buffer is empty or not initialized!");
+        return true;
+    }
+
+
+    let overlay_pitch = (ov.width as usize) * 4;
+
+    let copy_height = std::cmp::min(height_flutter, ov.height as usize);
+    let bytes_to_copy_per_row = std::cmp::min(row_bytes_flutter, overlay_pitch);
+
+    if bytes_to_copy_per_row == 0 || copy_height == 0 {
+        println!("[on_present] Warning: Calculated zero bytes to copy or zero height. Skipping copy. bytes_per_row={}, height={}", bytes_to_copy_per_row, copy_height);
+        return true;
+    }
+
+    if row_bytes_flutter < overlay_pitch {
+        println!("[on_present] Warning: Flutter row_bytes ({}) is less than overlay pitch ({}). Will copy only {} bytes per row.", row_bytes_flutter, overlay_pitch, bytes_to_copy_per_row);
+    }
+    if height_flutter < ov.height as usize {
+         println!("[on_present] Warning: Flutter height ({}) is less than overlay height ({}). Will copy only {} rows.", height_flutter, ov.height, copy_height);
+    }
+     if row_bytes_flutter > overlay_pitch {
+        println!("[on_present] Note: Flutter row_bytes ({}) is greater than overlay pitch ({}). This is okay, copying overlay_pitch.", row_bytes_flutter, overlay_pitch);
+    }
+    if height_flutter > ov.height as usize {
+         println!("[on_present] Note: Flutter height ({}) is greater than overlay height ({}). This is okay, copying ov.height.", height_flutter, ov.height);
+    }
+
+
+    let src_base = allocation as *const u8;
+    let dst_base = ov.pixel_buffer.as_mut_ptr();
+
+    for y in 0..copy_height {
         unsafe {
+            let src_ptr_row = src_base.add(y * row_bytes_flutter);
+            let dst_ptr_row = dst_base.add(y * overlay_pitch); // Wichtig: Inkrementiere mit dem Pitch des Zielpuffers!
+
+            // if src_ptr_row.is_null() || dst_ptr_row.is_null() {
+            //     eprintln!("[on_present] ERROR: Calculated NULL pointer for row {} (src: {:?}, dst: {:?})", y, src_ptr_row, dst_ptr_row);
+            //     continue; 
+            // }
+
             std::ptr::copy_nonoverlapping(
-                src.add(y * row_bytes),
-                dst.add((y as usize) * (ov.width as usize) * 4),
-                (ov.width as usize) * 4,
+                src_ptr_row,
+                dst_ptr_row,
+                bytes_to_copy_per_row, 
             );
         }
     }

@@ -159,29 +159,27 @@ impl FlutterOverlay {
 
         // 5) Build FlutterProjectArgs (with verbose-system-logs)
         println!("[init] Building FlutterProjectArgs...");
+
+        let argv_store = {
+            let flag = CString::new("--verbose-system-logs").unwrap();
+            vec![flag]
+        };
+        let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
+    
+        println!("[init] Building FlutterProjectArgs...");
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-
-        // Required header
+    
         proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
-
-        // Paths
+    
         proj_args.assets_path   = assets_c.as_ptr();
         proj_args.icu_data_path = icu_c.as_ptr();
-
-        // AOT (filled below if present)
+    
         proj_args.aot_data = std::ptr::null_mut();
-
-        // Command-line: enable verbose system logs
-        let flag = CString::new("--verbose-system-logs").unwrap();
-        let mut argv_store = vec![flag];
-        let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
-        proj_args.command_line_argc = argv_ptrs.len() as i32; // 1
+    
+        proj_args.command_line_argc = argv_ptrs.len() as i32;
         proj_args.command_line_argv = argv_ptrs.as_ptr();
-
-        // Platform message (unused)
+    
         proj_args.platform_message_callback = None;
-
-        // Log callback
         proj_args.log_message_callback = Some(flutter_log_callback);
         proj_args.log_tag              = FLUTTER_LOG_TAG.as_ptr();
 

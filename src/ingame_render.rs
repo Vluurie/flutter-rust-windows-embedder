@@ -27,7 +27,6 @@ use crate::{
     path_utils::{get_flutter_paths, get_flutter_paths_from},
 };
 
-/// Must match C `#define FLUTTER_ENGINE_VERSION 1`.
 const FLUTTER_ENGINE_VERSION: usize = 1;
 
 unsafe extern "C" fn flutter_log_callback(
@@ -58,7 +57,6 @@ pub struct FlutterOverlay {
 }
 
 impl EmbedderContext {
-    /// Initialize the software‐renderer embedder.
     pub fn new(data_dir: Option<PathBuf>, device: &ID3D11Device, width: u32, height: u32) -> Self {
         let overlay = FlutterOverlay::init(data_dir, device, width, height);
         EmbedderContext { overlay }
@@ -66,34 +64,9 @@ impl EmbedderContext {
 }
 
 impl FlutterOverlay {
-    /// Initialize a new `FlutterOverlay`:
-    ///
-    /// 1. Find asset/ICU/AOT paths (from `data_dir` or defaults).  
-    /// 2. Convert those wide-char paths to `CString`.  
-    /// 3. Create a dynamic D3D11 texture + SRV of size `width`×`height`.  
-    /// 4. If an AOT ELF is present, canonicalize the path, verify it exists,
-    ///    then call `FlutterEngineCreateAOTData` under stderr capture, panicking
-    ///    with the full error text on failure.  
-    /// 5. Build `FlutterProjectArgs` pointing at assets, ICU, and (optional) AOT,
-    ///    and pass `--verbose-system-logs` so all embedder errors go to stderr.  
-    /// 6. Configure software renderer callback.  
-    /// 7. Box the `FlutterOverlay` and pass it as `user_data`.  
-    /// 8. Call `FlutterEngineInitialize`, `FlutterEngineRunInitialized`, and
-    ///    `FlutterEngineSendWindowMetricsEvent` each under stderr capture,
-    ///    panicking with full text on any non-`kSuccess`.  
-    ///
-    /// # Panics
-    /// Panics if any embedder call returns a non-`kSuccess` enum, printing
-    /// the exact stderr output from the engine.
-    pub fn init(
-        data_dir: Option<PathBuf>,
-        device: &ID3D11Device,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn init(data_dir: Option<PathBuf>, device: &ID3D11Device, width: u32, height: u32) -> Self {
         println!("[init] Starting FlutterOverlay::init");
 
-        // 1) Locate paths
         let (mut assets_wide, mut icu_wide, mut aot_wide) = match data_dir {
             Some(ref dir) => {
                 println!("[init] Using custom data_dir: {:?}", dir);
@@ -105,22 +78,26 @@ impl FlutterOverlay {
             }
         };
         for w in [&mut assets_wide, &mut icu_wide, &mut aot_wide] {
-            if w.last() == Some(&0) { w.pop(); }
+            if w.last() == Some(&0) {
+                w.pop();
+            }
         }
 
-        // 2) Wide→CString
         let assets_c = {
-            let s = OsString::from_wide(&assets_wide).to_string_lossy().into_owned();
+            let s = OsString::from_wide(&assets_wide)
+                .to_string_lossy()
+                .into_owned();
             println!("[init] assets_path = {}", s);
             CString::new(s).unwrap()
         };
         let icu_c = {
-            let s = OsString::from_wide(&icu_wide).to_string_lossy().into_owned();
+            let s = OsString::from_wide(&icu_wide)
+                .to_string_lossy()
+                .into_owned();
             println!("[init] icu_data_path = {}", s);
             CString::new(s).unwrap()
         };
 
-        // 3) Create D3D11 texture
         println!("[init] Creating D3D11 texture...");
         let tex_desc = D3D11_TEXTURE2D_DESC {
             Width: width,
@@ -128,7 +105,10 @@ impl FlutterOverlay {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_DYNAMIC,
             BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
             CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
@@ -143,12 +123,12 @@ impl FlutterOverlay {
             tx.unwrap()
         };
 
-        // 4) Create SRV
         println!("[init] Creating ShaderResourceView...");
         let srv = unsafe {
             let mut desc: D3D11_SHADER_RESOURCE_VIEW_DESC = mem::zeroed();
             desc.Format = tex_desc.Format;
             desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+
             let mut view = None;
             device
                 .CreateShaderResourceView(&texture, None, Some(&mut view))
@@ -157,36 +137,34 @@ impl FlutterOverlay {
             view.unwrap()
         };
 
-        // 5) Build FlutterProjectArgs (with verbose-system-logs)
         println!("[init] Building FlutterProjectArgs...");
-
         let argv_store = {
             let flag = CString::new("--verbose-system-logs").unwrap();
             vec![flag]
         };
         let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
-    
-        println!("[init] Building FlutterProjectArgs...");
+
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-    
+
         proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
-    
-        proj_args.assets_path   = assets_c.as_ptr();
+
+        proj_args.assets_path = assets_c.as_ptr();
         proj_args.icu_data_path = icu_c.as_ptr();
-    
+
         proj_args.aot_data = std::ptr::null_mut();
-    
+
         proj_args.command_line_argc = argv_ptrs.len() as i32;
         proj_args.command_line_argv = argv_ptrs.as_ptr();
-    
+
         proj_args.platform_message_callback = None;
         proj_args.log_message_callback = Some(flutter_log_callback);
-        proj_args.log_tag              = FLUTTER_LOG_TAG.as_ptr();
+        proj_args.log_tag = FLUTTER_LOG_TAG.as_ptr();
 
-        // 6) Load AOT data if provided
         println!("[init] Loading AOT data if available...");
         if !aot_wide.is_empty() {
-            let raw = OsString::from_wide(&aot_wide).to_string_lossy().into_owned();
+            let raw = OsString::from_wide(&aot_wide)
+                .to_string_lossy()
+                .into_owned();
             let canon = PathBuf::from(&raw)
                 .canonicalize()
                 .unwrap_or_else(|e| panic!("canonicalize {:?} failed: {}", raw, e));
@@ -194,38 +172,40 @@ impl FlutterOverlay {
             assert!(canon.exists(), "AOT ELF not found at {:?}", canon);
 
             let aot_c = CString::new(canon.to_string_lossy().as_ref()).unwrap();
-            let mut buf = BufferRedirect::stderr().unwrap();
-            let result = unsafe {
-                FlutterEngineCreateAOTData(
-                    &FlutterEngineAOTDataSource {
-                        type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-                        __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
-                            elf_path: aot_c.as_ptr(),
+
+            {
+                let mut buf = BufferRedirect::stderr().unwrap();
+                let result = unsafe {
+                    FlutterEngineCreateAOTData(
+                        &FlutterEngineAOTDataSource {
+                            type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
+                            __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
+                                elf_path: aot_c.as_ptr(),
+                            },
                         },
-                    },
-                    &mut proj_args.aot_data,
-                )
-            };
-            if result != FlutterEngineResult_kSuccess {
-                let mut err = String::new();
-                buf.read_to_string(&mut err).unwrap();
-                panic!("FlutterEngineCreateAOTData failed ({:?}): {}", result, err);
+                        &mut proj_args.aot_data,
+                    )
+                };
+                if result != FlutterEngineResult_kSuccess {
+                    let mut err = String::new();
+                    buf.read_to_string(&mut err).unwrap();
+                    panic!("FlutterEngineCreateAOTData failed ({:?}): {}", result, err);
+                }
             }
             println!("[init] AOT data loaded successfully.");
         } else {
             println!("[init] No AOT data found; continuing.");
         }
 
-        // 7) Configure software renderer
         println!("[init] Configuring software renderer...");
         let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
         sw_cfg.struct_size = mem::size_of::<FlutterSoftwareRendererConfig>();
         sw_cfg.surface_present_callback = Some(on_present);
+
         let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
         rdr_cfg.type_ = FlutterRendererType_kSoftware;
         rdr_cfg.__bindgen_anon_1.software = sw_cfg;
 
-        // 8) Box overlay + user_data
         println!("[init] Allocating FlutterOverlay struct...");
         let mut overlay = Box::new(FlutterOverlay {
             engine: std::ptr::null_mut(),
@@ -237,56 +217,58 @@ impl FlutterOverlay {
         });
         let user_data = &mut *overlay as *mut _ as *mut _;
 
-        // 9) FlutterEngineInitialize
+        let mut engine_ptr: embedder::FlutterEngine = std::ptr::null_mut();
+
         println!("[init] Calling FlutterEngineInitialize...");
-        let mut engine = std::ptr::null_mut();
-        let mut buf = BufferRedirect::stderr().unwrap();
-        let init_r = unsafe {
-            FlutterEngineInitialize(
-                FLUTTER_ENGINE_VERSION,
-                &rdr_cfg,
-                &proj_args,
-                user_data,
-                &mut engine,
-            )
-        };
-        if init_r != FlutterEngineResult_kSuccess {
-            let mut err = String::new();
-            buf.read_to_string(&mut err).unwrap();
-            panic!("FlutterEngineInitialize failed ({:?}): {}", init_r, err);
+        {
+            let mut buf = BufferRedirect::stderr().unwrap();
+            let init_r = unsafe {
+                FlutterEngineInitialize(
+                    FLUTTER_ENGINE_VERSION,
+                    &rdr_cfg,
+                    &proj_args,
+                    user_data,
+                    &mut engine_ptr,
+                )
+            };
+            if init_r != FlutterEngineResult_kSuccess {
+                let mut err = String::new();
+                buf.read_to_string(&mut err).unwrap();
+                panic!("FlutterEngineInitialize failed ({:?}): {}", init_r, err);
+            }
         }
         println!("[init] Flutter engine initialized.");
 
-        // 10) FlutterEngineRunInitialized
         println!("[init] Running FlutterEngineRunInitialized...");
-        let mut buf = BufferRedirect::stderr().unwrap();
-        let run_r = unsafe { FlutterEngineRunInitialized(engine) };
-        if run_r != FlutterEngineResult_kSuccess {
-            let mut err = String::new();
-            buf.read_to_string(&mut err).unwrap();
-            panic!("FlutterEngineRunInitialized failed ({:?}): {}", run_r, err);
+        {
+            let mut buf = BufferRedirect::stderr().unwrap();
+            let run_r = unsafe { FlutterEngineRunInitialized(engine_ptr) };
+            if run_r != FlutterEngineResult_kSuccess {
+                let mut err = String::new();
+                buf.read_to_string(&mut err).unwrap();
+                panic!("FlutterEngineRunInitialized failed ({:?}): {}", run_r, err);
+            }
         }
         println!("[init] Flutter engine run initialized.");
 
-        // 11) Send window metrics
         println!("[init] Sending initial window metrics...");
         let mut wm: FlutterWindowMetricsEvent = unsafe { mem::zeroed() };
         wm.struct_size = mem::size_of::<FlutterWindowMetricsEvent>();
-        wm.width                     = width as usize;
-        wm.height                    = height as usize;
-        wm.pixel_ratio               = 1.0;
-        wm.left                      = 0;
-        wm.top                       = 0;
-        wm.physical_view_inset_top   = 0.0;
+        wm.width = width as usize;
+        wm.height = height as usize;
+        wm.pixel_ratio = 1.0;
+        wm.left = 0;
+        wm.top = 0;
+        wm.physical_view_inset_top = 0.0;
         wm.physical_view_inset_right = 0.0;
-        wm.physical_view_inset_bottom= 0.0;
-        wm.physical_view_inset_left  = 0.0;
-        wm.display_id                = 0;
-        wm.view_id                   = 0;
+        wm.physical_view_inset_bottom = 0.0;
+        wm.physical_view_inset_left = 0.0;
+        wm.display_id = 0;
+        wm.view_id = 0;
 
-         { // Expliziter Scope für diesen BufferRedirect
+        {
             let mut buf = BufferRedirect::stderr().unwrap();
-            let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine, &wm) };
+            let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine_ptr, &wm) };
             if metrics_r != FlutterEngineResult_kSuccess {
                 let mut err = String::new();
                 buf.read_to_string(&mut err).unwrap();
@@ -298,13 +280,11 @@ impl FlutterOverlay {
         }
         println!("[init] Window metrics sent.");
 
-        // 12) Finish
         println!("[init] Initialization complete.");
-        overlay.engine = engine;
+        overlay.engine = engine_ptr;
         *overlay
     }
 
-    /// Pump tasks and upload the latest frame to the D3D11 texture.
     pub fn tick(&mut self, context: &ID3D11DeviceContext) {
         unsafe {
             FlutterEngineRunTask(self.engine, std::ptr::null());

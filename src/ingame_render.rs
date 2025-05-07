@@ -69,36 +69,22 @@ impl FlutterOverlay {
     /// Initialize a new `FlutterOverlay`:
     ///
     /// 1. Find asset/ICU/AOT paths (from `data_dir` or defaults).  
-    /// 2. Convert those wide‐char paths to `CString`.  
+    /// 2. Convert those wide-char paths to `CString`.  
     /// 3. Create a dynamic D3D11 texture + SRV of size `width`×`height`.  
-    /// 4. If an AOT ELF is present, **canonicalize** the path, verify it exists,
+    /// 4. If an AOT ELF is present, canonicalize the path, verify it exists,
     ///    then call `FlutterEngineCreateAOTData` under stderr capture, panicking
     ///    with the full error text on failure.  
-    /// 5. Build `FlutterProjectArgs` pointing at assets, ICU, and (optional) AOT.  
+    /// 5. Build `FlutterProjectArgs` pointing at assets, ICU, and (optional) AOT,
+    ///    and pass `--verbose-system-logs` so all embedder errors go to stderr.  
     /// 6. Configure software renderer callback.  
     /// 7. Box the `FlutterOverlay` and pass it as `user_data`.  
     /// 8. Call `FlutterEngineInitialize`, `FlutterEngineRunInitialized`, and
     ///    `FlutterEngineSendWindowMetricsEvent` each under stderr capture,
-    ///    panicking with full text on any non‑`kSuccess`.  
+    ///    panicking with full text on any non-`kSuccess`.  
     ///
     /// # Panics
-    /// Panics if any embedder call returns a non‑`kSuccess` enum, printing
+    /// Panics if any embedder call returns a non-`kSuccess` enum, printing
     /// the exact stderr output from the engine.
-    /// Initialize a new `FlutterOverlay`:
-    ///
-    /// 1. Find asset/ICU/AOT paths (from `data_dir` or defaults).  
-    /// 2. Convert those wide‐char paths to `CString`.  
-    /// 3. Create a dynamic D3D11 texture + SRV of size `width`×`height`.  
-    /// 4. Build `FlutterProjectArgs` (with log callback).  
-    /// 5. If an AOT ELF is present, canonicalize the path, then call
-    ///    `FlutterEngineCreateAOTData` under stderr capture, panicking on failure.  
-    /// 6. Configure software renderer callback.  
-    /// 7. Box the `FlutterOverlay` and pass it as `user_data`.  
-    /// 8. Call `FlutterEngineInitialize`, `FlutterEngineRunInitialized`, and
-    ///    `FlutterEngineSendWindowMetricsEvent`, each under stderr capture.  
-    ///
-    /// # Panics
-    /// Panics if any embedder call fails, printing the exact stderr output.
     pub fn init(
         data_dir: Option<PathBuf>,
         device: &ID3D11Device,
@@ -150,7 +136,9 @@ impl FlutterOverlay {
         };
         let texture = unsafe {
             let mut tx = None;
-            device.CreateTexture2D(&tex_desc, None, Some(&mut tx)).expect("CreateTexture2D failed");
+            device
+                .CreateTexture2D(&tex_desc, None, Some(&mut tx))
+                .expect("CreateTexture2D failed");
             println!("[init] Texture created successfully.");
             tx.unwrap()
         };
@@ -162,28 +150,38 @@ impl FlutterOverlay {
             desc.Format = tex_desc.Format;
             desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
             let mut view = None;
-            device.CreateShaderResourceView(&texture, None, Some(&mut view))
+            device
+                .CreateShaderResourceView(&texture, None, Some(&mut view))
                 .expect("CreateShaderResourceView failed");
             println!("[init] ShaderResourceView created.");
             view.unwrap()
         };
 
-        // 5) Build FlutterProjectArgs (with log callback)
+        // 5) Build FlutterProjectArgs (with verbose-system-logs)
         println!("[init] Building FlutterProjectArgs...");
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
 
+        // Required header
         proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
-        
+
+        // Paths
         proj_args.assets_path   = assets_c.as_ptr();
         proj_args.icu_data_path = icu_c.as_ptr();
-        
+
+        // AOT (filled below if present)
         proj_args.aot_data = std::ptr::null_mut();
-        
-        proj_args.command_line_argc = 0;
-        proj_args.command_line_argv = std::ptr::null();
-        
+
+        // Command-line: enable verbose system logs
+        let flag = CString::new("--verbose-system-logs").unwrap();
+        let mut argv_store = vec![flag];
+        let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
+        proj_args.command_line_argc = argv_ptrs.len() as i32; // 1
+        proj_args.command_line_argv = argv_ptrs.as_ptr();
+
+        // Platform message (unused)
         proj_args.platform_message_callback = None;
-        
+
+        // Log callback
         proj_args.log_message_callback = Some(flutter_log_callback);
         proj_args.log_tag              = FLUTTER_LOG_TAG.as_ptr();
 
@@ -191,7 +189,8 @@ impl FlutterOverlay {
         println!("[init] Loading AOT data if available...");
         if !aot_wide.is_empty() {
             let raw = OsString::from_wide(&aot_wide).to_string_lossy().into_owned();
-            let canon = PathBuf::from(&raw).canonicalize()
+            let canon = PathBuf::from(&raw)
+                .canonicalize()
                 .unwrap_or_else(|e| panic!("canonicalize {:?} failed: {}", raw, e));
             println!("[init] canonical aot_path = {:?}", canon);
             assert!(canon.exists(), "AOT ELF not found at {:?}", canon);
@@ -232,7 +231,10 @@ impl FlutterOverlay {
         let mut overlay = Box::new(FlutterOverlay {
             engine: std::ptr::null_mut(),
             pixel_buffer: vec![0; (width as usize) * (height as usize) * 4],
-            width, height, texture, srv,
+            width,
+            height,
+            texture,
+            srv,
         });
         let user_data = &mut *overlay as *mut _ as *mut _;
 
@@ -299,7 +301,6 @@ impl FlutterOverlay {
         overlay.engine = engine;
         *overlay
     }
-    
 
     /// Pump tasks and upload the latest frame to the D3D11 texture.
     pub fn tick(&mut self, context: &ID3D11DeviceContext) {

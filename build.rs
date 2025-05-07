@@ -54,6 +54,7 @@ fn main() {
         .allowlist_type("FlutterRendererConfig.*")
         .allowlist_type("FlutterRendererType.*")
         .allowlist_type("FlutterEngineResult.*")
+        .allowlist_type("FlutterWindowMetricsEvent*")
         .allowlist_function("FlutterEngine.*")
         .generate()
         .expect("Unable to generate flutter_embedder bindings");

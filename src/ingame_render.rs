@@ -271,6 +271,7 @@ impl FlutterOverlay {
         // 11) Send window metrics
         println!("[init] Sending initial window metrics...");
         let mut wm: FlutterWindowMetricsEvent = unsafe { mem::zeroed() };
+        wm.struct_size = mem::size_of::<FlutterWindowMetricsEvent>();
         wm.width                     = width as usize;
         wm.height                    = height as usize;
         wm.pixel_ratio               = 1.0;
@@ -283,15 +284,17 @@ impl FlutterOverlay {
         wm.display_id                = 0;
         wm.view_id                   = 0;
 
-        let mut buf = BufferRedirect::stderr().unwrap();
-        let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine, &wm) };
-        if metrics_r != FlutterEngineResult_kSuccess {
-            let mut err = String::new();
-            buf.read_to_string(&mut err).unwrap();
-            panic!(
-                "FlutterEngineSendWindowMetricsEvent failed ({:?}): {}",
-                metrics_r, err
-            );
+         { // Expliziter Scope für diesen BufferRedirect
+            let mut buf = BufferRedirect::stderr().unwrap();
+            let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine, &wm) };
+            if metrics_r != FlutterEngineResult_kSuccess {
+                let mut err = String::new();
+                buf.read_to_string(&mut err).unwrap();
+                panic!(
+                    "FlutterEngineSendWindowMetricsEvent failed ({:?}): {}",
+                    metrics_r, err
+                );
+            }
         }
         println!("[init] Window metrics sent.");
 

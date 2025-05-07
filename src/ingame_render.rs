@@ -143,7 +143,7 @@ impl FlutterOverlay {
             desc.Anonymous.Texture2D.MipLevels = tex_desc.MipLevels;
             desc.Anonymous.Texture2D.MostDetailedMip = 0;
             let mut view = None;
-            device.CreateShaderResourceView(&texture, Some(&desc), Some(&mut view))
+            device.CreateShaderResourceView(&texture, None, Some(&mut view))
                  .map_err(|e| format!("CreateShaderResourceView failed: HRESULT {}", e.code().0))
                  .expect("CreateShaderResourceView failure");
             view.unwrap()

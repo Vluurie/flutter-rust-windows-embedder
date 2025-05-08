@@ -268,7 +268,7 @@ impl FlutterOverlay {
         }
 
         // Command-line args
-        let argv_store: Vec<CString> = vec![CString::new("--verbose-system-logs").unwrap(), CString::new("--enable-vm-service").unwrap()];
+        let argv_store: Vec<CString> = vec![ CString::new("dummy_app_name").unwrap(),CString::new("--verbose-system-logs").unwrap(), CString::new("--enable-vm-service").unwrap()];
         let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
         proj_args.command_line_argc = argv_ptrs.len() as i32;
         proj_args.command_line_argv = argv_ptrs.as_ptr();

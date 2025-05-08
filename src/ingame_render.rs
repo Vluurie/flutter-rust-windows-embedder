@@ -1,11 +1,11 @@
 use gag::BufferRedirect;
 use std::{
-    ffi::{CStr, CString, OsString, c_char, c_void},
+    ffi::{c_char, c_void, CStr, CString, OsString},
     io::Read,
     mem,
     os::windows::ffi::OsStringExt,
     path::PathBuf,
-    ptr,
+    ptr::{self, null_mut},
 };
 use windows::Win32::Graphics::Direct3D::D3D11_SRV_DIMENSION_TEXTURE2D;
 use windows::Win32::Graphics::Direct3D11::{
@@ -209,7 +209,7 @@ impl FlutterOverlay {
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
         proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
         proj_args.assets_path = assets_c.as_ptr();
-        proj_args.icu_data_path = icu_c.as_ptr();
+        proj_args.icu_data_path = null_mut();
 
         // AOT data if present
         println!("[init] Setting up AOT data if path was found...");

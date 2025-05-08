@@ -67,76 +67,60 @@ impl FlutterOverlay {
             "[init] Starting FlutterOverlay::init with received width={}, height={}",
             width, height
         );
-
+    
         if width == 0 || height == 0 {
             panic!(
                 "[init] ERROR: Received width ({}) or height ({}) is zero!",
                 width, height
             );
         }
-
-        // ─── Resolve asset, ICU and (optionally) AOT paths ─────────────────────────────────────────────
-        let (assets_c, icu_c, aot_wide_path_opt) = {
-            let (mut assets_wide, mut icu_wide, mut aot_wide) = match data_dir {
-                Some(ref dir) => {
-                    println!("[init] Using custom data_dir: {:?}", dir);
-                    if !dir.exists() {
-                        panic!("[init] Provided data_dir does not exist: {:?}", dir);
-                    }
-                    let canon_dir = dir.canonicalize().unwrap_or_else(|e| {
-                        panic!("Failed to canonicalize data_dir {:?}: {}", dir, e)
-                    });
-                    get_flutter_paths_from(&canon_dir)
-                }
-                None => {
-                    println!("[init] Using default flutter paths");
-                    get_flutter_paths()
-                }
-            };
-
-            // strip trailing null
-            for w in [&mut assets_wide, &mut icu_wide, &mut aot_wide] {
-                if w.last() == Some(&0) {
-                    w.pop();
-                }
-            }
-
-            let assets_s = OsString::from_wide(&assets_wide)
-                .to_string_lossy()
-                .into_owned();
-            let icu_s = OsString::from_wide(&icu_wide)
-                .to_string_lossy()
-                .into_owned();
-            println!("[init] assets_path = {}", assets_s);
-            println!("[init] icu_data_path = {}", icu_s);
-
-            if assets_s.is_empty() || !PathBuf::from(&assets_s).exists() {
-                panic!(
-                    "[init] Resolved assets path is empty or does not exist: {}",
-                    assets_s
-                );
-            }
-            if icu_s.is_empty() || !PathBuf::from(&icu_s).exists() {
-                panic!(
-                    "[init] Resolved icu_data path is empty or does not exist: {}",
-                    icu_s
-                );
-            }
-
-            let aot_option = if aot_wide.is_empty() {
-                None
+    
+        
+        
+        
+        const HARDCODED_ASSETS_PATH: &str = "F:\\test_zwo\\build\\windows\\x64\\runner\\Release\\data\\flutter_assets";
+        const HARDCODED_ICU_PATH: &str = "F:\\test_zwo\\build\\windows\\x64\\runner\\Release\\data\\icudtl.dat";
+        
+        const HARDCODED_AOT_PATH_OPT: Option<&str> = Some("F:\\test_zwo\\build\\windows\\x64\\runner\\Release\\data\\app.so");
+        
+    
+        
+        let (assets_c, icu_c, aot_path_str_opt) = {
+            println!("[init] Using hardcoded assets_path: {}", HARDCODED_ASSETS_PATH);
+            println!("[init] Using hardcoded icu_data_path: {}", HARDCODED_ICU_PATH);
+            if let Some(p) = HARDCODED_AOT_PATH_OPT {
+                 println!("[init] Using hardcoded AOT path: {}", p);
             } else {
-                Some(aot_wide)
-            };
-
+                 println!("[init] Using hardcoded paths: No AOT path specified.");
+            }
+    
+            
+            if !PathBuf::from(HARDCODED_ASSETS_PATH).exists() {
+                 panic!("[init] Hardcoded assets path does not exist: {}", HARDCODED_ASSETS_PATH);
+            }
+             if !PathBuf::from(HARDCODED_ICU_PATH).exists() {
+                 panic!("[init] Hardcoded icu_data path does not exist: {}", HARDCODED_ICU_PATH);
+            }
+            if let Some(p) = HARDCODED_AOT_PATH_OPT {
+                 if !PathBuf::from(p).exists() {
+                     panic!("[init] Hardcoded AOT path does not exist: {}", p);
+                 }
+            }
+    
+    
             (
-                CString::new(assets_s).expect("Failed to create CString for assets_path"),
-                CString::new(icu_s).expect("Failed to create CString for icu_data_path"),
-                aot_option,
+                CString::new(HARDCODED_ASSETS_PATH)
+                    .expect("Failed to create CString for hardcoded assets_path"),
+                CString::new(HARDCODED_ICU_PATH)
+                    .expect("Failed to create CString for hardcoded icu_data_path"),
+                HARDCODED_AOT_PATH_OPT, 
             )
         };
-
-        // ─── Create D3D11 texture + SRV ─────────────────────────────────────────────────────────────────
+        
+    
+    
+        
+        
         println!("[init] Creating D3D11 texture ({}x{})...", width, height);
         let tex_desc = D3D11_TEXTURE2D_DESC {
             Width: width,
@@ -162,7 +146,7 @@ impl FlutterOverlay {
             tx.unwrap()
         };
         println!("[init] Texture created successfully.");
-
+    
         println!("[init] Creating ShaderResourceView...");
         let srv = unsafe {
             let mut desc: D3D11_SHADER_RESOURCE_VIEW_DESC = mem::zeroed();
@@ -178,8 +162,9 @@ impl FlutterOverlay {
             view.unwrap()
         };
         println!("[init] ShaderResourceView created.");
-
-        // ─── Allocate overlay and stash raw pointer ────────────────────────────────────────────────────
+    
+        
+        
         println!("[init] Allocating FlutterOverlay struct on heap...");
         let overlay_boxed = Box::new(FlutterOverlay {
             engine: ptr::null_mut(),
@@ -201,74 +186,64 @@ impl FlutterOverlay {
             );
         }
         let user_data = overlay_raw_ptr as *mut c_void;
-
-        // ─── Build FlutterProjectArgs ─────────────────────────────────────────────────────────────────
-        let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
-        proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
+    
+        
+        
+        let mut proj_args: embedder::FlutterProjectArgs = unsafe { mem::zeroed() };
+        proj_args.struct_size = mem::size_of::<embedder::FlutterProjectArgs>();
         proj_args.assets_path = assets_c.as_ptr();
-        proj_args.icu_data_path = icu_c.as_ptr();
-
-        // AOT data if present
+        proj_args.icu_data_path = icu_c.as_ptr(); 
+    
+        
         println!("[init] Setting up AOT data if path was found...");
-        if let Some(aot_wide) = aot_wide_path_opt {
-            println!("[init] AOT path found, processing...");
-            let raw = OsString::from_wide(&aot_wide)
-                .to_string_lossy()
-                .into_owned();
-            let canon = PathBuf::from(&raw).canonicalize().unwrap_or_else(|e| {
-                unsafe {
-                    drop(Box::from_raw(overlay_raw_ptr));
-                    FLUTTER_OVERLAY_RAW_PTR = ptr::null_mut();
-                }
-                panic!("Canonicalize AOT path {:?} failed: {}", raw, e)
-            });
-            println!("[init] Canonical AOT path = {:?}", canon);
-            if !canon.exists() {
-                unsafe {
-                    drop(Box::from_raw(overlay_raw_ptr));
-                    FLUTTER_OVERLAY_RAW_PTR = ptr::null_mut();
-                }
-                panic!("AOT ELF not found at canonical path: {:?}", canon);
-            }
-
-            let aot_c = CString::new(canon.to_string_lossy().as_ref())
-                .expect("Failed to create CString for canonical AOT path");
+        let mut aot_c_holder: Option<CString> = None; 
+    
+        if let Some(aot_path_str) = aot_path_str_opt {
+            println!("[init] AOT path found (hardcoded), processing: {}", aot_path_str);
+            
+            
+    
+            let aot_c = CString::new(aot_path_str)
+                 .expect("Failed to create CString for hardcoded AOT path");
             {
-                let mut buf = BufferRedirect::stderr().unwrap();
+                
+                
                 println!("[init] Calling FlutterEngineCreateAOTData...");
                 let result = unsafe {
-                    FlutterEngineCreateAOTData(
-                        &FlutterEngineAOTDataSource {
-                            type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-                            __bindgen_anon_1: FlutterEngineAOTDataSource__bindgen_ty_1 {
-                                elf_path: aot_c.as_ptr(),
+                    embedder::FlutterEngineCreateAOTData(
+                        &embedder::FlutterEngineAOTDataSource {
+                            type_: embedder::FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
+                            __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
+                                elf_path: aot_c.as_ptr(), 
                             },
                         },
                         &mut proj_args.aot_data,
                     )
                 };
                 println!("[DEBUG] FlutterEngineCreateAOTData result code: {:?}", result);
-                if result != FlutterEngineResult_kSuccess {
-                    let mut err = String::new();
-                    buf.read_to_string(&mut err).unwrap();
+                if result != embedder::FlutterEngineResult_kSuccess {
+                    
+                    
                     eprintln!(
-                        "[init] FlutterEngineCreateAOTData failed ({:?}): {}",
-                        result, err
+                        "[init] FlutterEngineCreateAOTData failed ({:?})", 
+                        result 
                     );
                     unsafe {
                         drop(Box::from_raw(overlay_raw_ptr));
                         FLUTTER_OVERLAY_RAW_PTR = ptr::null_mut();
                     }
-                    panic!("FlutterEngineCreateAOTData failed!");
+                    panic!("FlutterEngineCreateAOTData failed! Result: {:?}", result);
                 }
             }
             println!("[init] AOT data loaded successfully and linked to proj_args.");
+            aot_c_holder = Some(aot_c); 
         } else {
             println!("[init] No AOT data path found; continuing in JIT/Kernel mode.");
             proj_args.aot_data = ptr::null_mut();
         }
-
-        // Command-line args
+    
+        
+        
         let argv_store: Vec<CString> = vec![ CString::new("dummy_app_name").unwrap(),CString::new("--verbose-system-logs").unwrap(), CString::new("--enable-vm-service").unwrap()];
         let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
         proj_args.command_line_argc = argv_ptrs.len() as i32;
@@ -276,30 +251,38 @@ impl FlutterOverlay {
         proj_args.platform_message_callback = None;
         proj_args.log_message_callback = Some(flutter_log_callback);
         proj_args.log_tag = FLUTTER_LOG_TAG.as_ptr();
-
-        // ─── Configure software renderer ───────────────────────────────────────────────────────────────
+    
+        
+        
         println!("[init] Configuring software renderer...");
-        let mut sw_cfg: FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
-        sw_cfg.struct_size = mem::size_of::<FlutterSoftwareRendererConfig>();
+        let mut sw_cfg: embedder::FlutterSoftwareRendererConfig = unsafe { mem::zeroed() };
+        sw_cfg.struct_size = mem::size_of::<embedder::FlutterSoftwareRendererConfig>();
         sw_cfg.surface_present_callback = Some(on_present);
-
-        let mut rdr_cfg: FlutterRendererConfig = unsafe { mem::zeroed() };
-        rdr_cfg.type_ = FlutterRendererType_kSoftware;
+    
+        let mut rdr_cfg: embedder::FlutterRendererConfig = unsafe { mem::zeroed() };
+        rdr_cfg.type_ = embedder::FlutterRendererType_kSoftware;
         rdr_cfg.__bindgen_anon_1.software = sw_cfg;
-
-        // ─── Replace Initialize + RunInitialized with a single FlutterEngineRun ────────────────────────
+    
+        
+        
         println!("[init] Calling FlutterEngineRun...");
         let mut engine_handle: embedder::FlutterEngine = ptr::null_mut();
         let run_result = unsafe {
-            FlutterEngineRun(
-                FLUTTER_ENGINE_VERSION,
+            embedder::FlutterEngineRun(
+                FLUTTER_ENGINE_VERSION, 
                 &rdr_cfg,
                 &proj_args,
                 user_data,
                 &mut engine_handle,
             )
         };
-        if run_result != FlutterEngineResult_kSuccess {
+    
+        
+        
+        drop(aot_c_holder);
+    
+    
+        if run_result != embedder::FlutterEngineResult_kSuccess {
             eprintln!("[init] FlutterEngineRun failed ({:?})", run_result);
             unsafe {
                 drop(Box::from_raw(overlay_raw_ptr));
@@ -311,10 +294,12 @@ impl FlutterOverlay {
         unsafe {
             (*overlay_raw_ptr).engine = engine_handle;
         }
-
+    
+        
+        
         println!("[init] Sending initial window metrics...");
-        let mut wm: FlutterWindowMetricsEvent = unsafe { mem::zeroed() };
-        wm.struct_size = mem::size_of::<FlutterWindowMetricsEvent>();
+        let mut wm: embedder::FlutterWindowMetricsEvent = unsafe { mem::zeroed() };
+        wm.struct_size = mem::size_of::<embedder::FlutterWindowMetricsEvent>();
         wm.width = width as usize;
         wm.height = height as usize;
         wm.pixel_ratio = 1.0;
@@ -326,15 +311,16 @@ impl FlutterOverlay {
         wm.physical_view_inset_left = 0.0;
         wm.display_id = 0;
         wm.view_id = 0;
-        let metrics_r = unsafe { FlutterEngineSendWindowMetricsEvent(engine_handle, &wm) };
-        if metrics_r != FlutterEngineResult_kSuccess {
+        let metrics_r = unsafe { embedder::FlutterEngineSendWindowMetricsEvent(engine_handle, &wm) };
+        if metrics_r != embedder::FlutterEngineResult_kSuccess {
             eprintln!(
                 "[init] FlutterEngineSendWindowMetricsEvent failed ({:?})",
                 metrics_r
             );
         }
-
-        // ─── Done: clone and return ───────────────────────────────────────────────────────────────────
+    
+        
+        
         println!("[init] Initialization fully complete. Cloning data and returning Self.");
         unsafe {
             let temp_box_for_clone = Box::from_raw(overlay_raw_ptr);

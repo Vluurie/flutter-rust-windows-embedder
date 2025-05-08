@@ -18,10 +18,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SA
 
 use crate::{
     embedder::{
-        self, FlutterEngineInitialize, FlutterEngineResult_kSuccess, FlutterEngineRun,
-        FlutterEngineRunInitialized, FlutterEngineRunTask, FlutterEngineSendWindowMetricsEvent,
-        FlutterProjectArgs, FlutterRendererConfig, FlutterRendererType_kSoftware,
-        FlutterSoftwareRendererConfig, FlutterWindowMetricsEvent,
+        self, FlutterEngineAOTDataSource, FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath, FlutterEngineAOTDataSource__bindgen_ty_1, FlutterEngineCreateAOTData, FlutterEngineResult_kSuccess, FlutterEngineRun, FlutterEngineRunTask, FlutterEngineSendWindowMetricsEvent, FlutterProjectArgs, FlutterRendererConfig, FlutterRendererType_kSoftware, FlutterSoftwareRendererConfig, FlutterWindowMetricsEvent
     },
     path_utils::{get_flutter_paths, get_flutter_paths_from},
 };
@@ -240,10 +237,10 @@ impl FlutterOverlay {
                 let mut buf = BufferRedirect::stderr().unwrap();
                 println!("[init] Calling FlutterEngineCreateAOTData...");
                 let result = unsafe {
-                    embedder::FlutterEngineCreateAOTData(
-                        &embedder::FlutterEngineAOTDataSource {
-                            type_: embedder::FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-                            __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
+                    FlutterEngineCreateAOTData(
+                        &FlutterEngineAOTDataSource {
+                            type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
+                            __bindgen_anon_1: FlutterEngineAOTDataSource__bindgen_ty_1 {
                                 elf_path: aot_c.as_ptr(),
                             },
                         },
@@ -271,7 +268,7 @@ impl FlutterOverlay {
         }
 
         // Command-line args
-        let argv_store: Vec<CString> = vec![CString::new("--verbose-system-logs").unwrap()];
+        let argv_store: Vec<CString> = vec![CString::new("--verbose-system-logs").unwrap(), CString::new("--enable-vm-service").unwrap()];
         let argv_ptrs: Vec<*const c_char> = argv_store.iter().map(|s| s.as_ptr()).collect();
         proj_args.command_line_argc = argv_ptrs.len() as i32;
         proj_args.command_line_argv = argv_ptrs.as_ptr();

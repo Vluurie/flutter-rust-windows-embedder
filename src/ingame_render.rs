@@ -206,7 +206,7 @@ impl FlutterOverlay {
         let mut proj_args: FlutterProjectArgs = unsafe { mem::zeroed() };
         proj_args.struct_size = mem::size_of::<FlutterProjectArgs>();
         proj_args.assets_path = assets_c.as_ptr();
-        proj_args.icu_data_path = null_mut();
+        proj_args.icu_data_path = icu_c.as_ptr();
 
         // AOT data if present
         println!("[init] Setting up AOT data if path was found...");
@@ -247,6 +247,7 @@ impl FlutterOverlay {
                         &mut proj_args.aot_data,
                     )
                 };
+                println!("[DEBUG] FlutterEngineCreateAOTData result code: {:?}", result);
                 if result != FlutterEngineResult_kSuccess {
                     let mut err = String::new();
                     buf.read_to_string(&mut err).unwrap();

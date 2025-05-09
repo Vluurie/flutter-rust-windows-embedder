@@ -2,13 +2,13 @@ use crate::embedder;
 use log::error;
 use std::{ffi::{CString, OsStr}, ptr};
 
-const DUMMY_ARGS: &[&str] = &[
-    "dummy_app_name",
-    "--verbose-system-logs",
-    "--enable-vm-service=56960", 
-    "--disable-service-auth-codes", 
-    "--disable-dds", 
+const ARGS: &[&str] = &[
+  "--verbose-system-logs",
+  "--enable-vm-service=56960",
+  "--disable-service-auth-codes",
+  "--disable-dds",
 ];
+
 
 /// Build the FlutterProjectArgs *and* return the CStrings you must hold onto.
 pub fn build_project_args_and_strings(
@@ -27,7 +27,7 @@ pub fn build_project_args_and_strings(
         .expect("Failed to convert icu data path to CString");
 
     // 2) Build dummy argv CStrings
-    let argv_cs: Vec<CString> = DUMMY_ARGS
+    let argv_cs: Vec<CString> = ARGS
         .iter()
         .map(|&s| CString::new(s).unwrap())
         .collect();

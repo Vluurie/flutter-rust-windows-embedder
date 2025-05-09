@@ -1,71 +1,98 @@
 use crate::embedder::FlutterEngineRunTask;
-use crate::software_renderer::overlay::FLUTTER_OVERLAY_RAW_PTR;
+use crate::software_renderer::overlay::{FLUTTER_OVERLAY_RAW_PTR, FlutterOverlay};
 use log::error;
-use std::{mem, ptr};
+use std::{mem, ptr, sync::Once, thread, time::Duration};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, ID3D11DeviceContext,
 };
 
-/// Exactly your old signature
+static SPAWN_TASK_RUNNER: Once = Once::new();
+
+unsafe fn spawn_flutter_task_runner() {
+    let overlay_addr = FLUTTER_OVERLAY_RAW_PTR as usize;
+    thread::spawn(move || {
+        loop {
+            let overlay_ptr = overlay_addr as *mut FlutterOverlay;
+            if overlay_ptr.is_null() {
+                break;
+            }
+
+            let engine = unsafe { (*overlay_ptr).engine };
+            if engine.is_null() {
+                thread::sleep(Duration::from_millis(16));
+                continue;
+            }
+
+            unsafe { FlutterEngineRunTask(engine, ptr::null_mut()) };
+
+            thread::sleep(Duration::from_millis(16));
+        }
+    });
+}
+
 pub unsafe fn tick_global(context: &ID3D11DeviceContext) {
-    unsafe {
-        let overlay_ptr = FLUTTER_OVERLAY_RAW_PTR;
-        if overlay_ptr.is_null() || ((*overlay_ptr).clone()).engine.is_null() {
-            return;
-        }
-        let overlay = &mut *overlay_ptr;
+    SPAWN_TASK_RUNNER.call_once(|| unsafe {
+        spawn_flutter_task_runner();
+    });
 
-        FlutterEngineRunTask(overlay.engine, ptr::null());
+    let overlay_ptr = FLUTTER_OVERLAY_RAW_PTR;
+    if overlay_ptr.is_null() {
+        return;
+    }
+    let overlay = &mut *overlay_ptr;
 
-        if overlay.width == 0 || overlay.height == 0 {
-            return;
-        }
+    if !overlay.engine.is_null() {
+        FlutterEngineRunTask(overlay.engine, ptr::null_mut());
+    }
 
-        let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
-        match context.Map(
-            &overlay.texture,
-            0,
-            D3D11_MAP_WRITE_DISCARD,
-            0,
-            Some(&mut mapped),
-        ) {
-            Ok(_) => {
-                let data = mapped.pData;
-                if data.is_null() {
-                    error!("tick_global: mapped pData is null");
-                    context.Unmap(&overlay.texture, 0);
-                    return;
-                }
+    if overlay.width == 0 || overlay.height == 0 {
+        return;
+    }
 
-                let rp_tex = mapped.RowPitch as usize;
-                let rp_buf = (overlay.width as usize) * 4;
-
-                if rp_tex < rp_buf {
-                    error!("tick_global: tex_pitch {} < buf_pitch {}", rp_tex, rp_buf);
-                    context.Unmap(&overlay.texture, 0);
-                    return;
-                }
-                if overlay.pixel_buffer.len() < rp_buf * (overlay.height as usize) {
-                    error!(
-                        "tick_global: buffer too small ({} req, {} have)",
-                        rp_buf * (overlay.height as usize),
-                        overlay.pixel_buffer.len()
-                    );
-                    context.Unmap(&overlay.texture, 0);
-                    return;
-                }
-
-                let src = overlay.pixel_buffer.as_ptr();
-                for y in 0..overlay.height as usize {
-                    let dst = (data as *mut u8).add(y * rp_tex);
-                    let row = src.add(y * rp_buf);
-                    ptr::copy_nonoverlapping(row, dst, rp_buf);
-                }
+    let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
+    match context.Map(
+        &overlay.texture,
+        0,
+        D3D11_MAP_WRITE_DISCARD,
+        0,
+        Some(&mut mapped),
+    ) {
+        Ok(_) => {
+            let data = mapped.pData;
+            if data.is_null() {
+                error!("tick_global: mapped pData is null");
                 context.Unmap(&overlay.texture, 0);
+                return;
             }
-            Err(e) => {
-                error!("tick_global: failed to map texture: {:?}", e);
+
+            let rp_tex = mapped.RowPitch as usize;
+            let rp_buf = (overlay.width as usize) * 4;
+
+            if rp_tex < rp_buf {
+                error!("tick_global: tex_pitch {} < buf_pitch {}", rp_tex, rp_buf);
+                context.Unmap(&overlay.texture, 0);
+                return;
             }
+            if overlay.pixel_buffer.len() < rp_buf * (overlay.height as usize) {
+                error!(
+                    "tick_global: buffer too small ({} req, {} have)",
+                    rp_buf * (overlay.height as usize),
+                    overlay.pixel_buffer.len()
+                );
+                context.Unmap(&overlay.texture, 0);
+                return;
+            }
+
+            let src = overlay.pixel_buffer.as_ptr();
+            for y in 0..overlay.height as usize {
+                let dst = (data as *mut u8).add(y * rp_tex);
+                let row = src.add(y * rp_buf);
+                ptr::copy_nonoverlapping(row, dst, rp_buf);
+            }
+            context.Unmap(&overlay.texture, 0);
+        }
+        Err(e) => {
+            error!("tick_global: failed to map texture: {:?}", e);
         }
     }
 }

@@ -23,6 +23,7 @@ pub fn init_overlay(
     width: u32,
     height: u32,
 ) -> FlutterOverlay {
+    crate::init_logging();
     info!("Initializing FlutterOverlay ({}×{})", width, height);
     assert!(width > 0 && height > 0, "Width and height must be non-zero");
 

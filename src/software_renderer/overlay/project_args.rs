@@ -3,10 +3,10 @@ use log::error;
 use std::{ffi::{CString, OsStr}, ptr};
 
 const ARGS: &[&str] = &[
-  "--verbose-system-logs",
-  "--enable-vm-service=56960",
-  "--disable-service-auth-codes",
-  "--disable-dds",
+    "--verbose-system-logs",
+    "--observe=56960/127.0.0.1",
+    "--disable-service-auth-codes",
+    "--disable-dds",
 ];
 
 

@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_char, c_void, CStr},
+    ffi::{c_char, c_void, CStr, CString},
     ptr,
 };
 use log::info;
@@ -30,6 +30,10 @@ pub struct FlutterOverlay {
     pub height: u32,
     pub texture: ID3D11Texture2D,
     pub srv: ID3D11ShaderResourceView,
+    _assets_c: CString,
+    _icu_c:    CString,
+    _argv_cs:  Vec<CString>,
+    _aot_c:    Option<CString>,
 }
 
 impl FlutterOverlay {

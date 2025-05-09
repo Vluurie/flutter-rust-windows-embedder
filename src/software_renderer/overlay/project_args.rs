@@ -5,8 +5,9 @@ use std::{ffi::{CString, OsStr}, ptr};
 const DUMMY_ARGS: &[&str] = &[
     "dummy_app_name",
     "--verbose-system-logs",
-    "--enable-vm-service=12345", 
+    "--enable-vm-service=56960", 
     "--disable-service-auth-codes", 
+    "--disable-dds", 
 ];
 
 /// Build the FlutterProjectArgs *and* return the CStrings you must hold onto.

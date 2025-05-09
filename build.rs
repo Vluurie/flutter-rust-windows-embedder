@@ -12,7 +12,6 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Existing Windows bindings (DO NOT MODIFY ALLOWLIST)
     let bindings_windows = bindgen::Builder::default()
         .header(header_windows.to_str().unwrap())
         .clang_arg(format!("-I{}", include_dir.display()))
@@ -43,7 +42,6 @@ fn main() {
         .write_to_file(out_dir.join("flutter_windows_bindings.rs"))
         .expect("Couldn't write flutter_windows bindings");
 
-    // New embedder bindings (EXACT allowlist needed)
     let bindings_embedder = bindgen::Builder::default()
         .header(header_embedder.to_str().unwrap())
         .clang_arg(format!("-I{}", include_dir.display()))

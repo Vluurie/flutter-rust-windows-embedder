@@ -14,7 +14,7 @@ use std::sync::Once;
 
 mod app_state;
 mod constants;
-pub mod ingame_render;
+pub mod software_renderer;
 mod dynamic_flutter_windows_dll_loader;
 pub mod flutter_utils;
 pub mod path_utils;

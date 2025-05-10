@@ -7,9 +7,8 @@ use super::platform_message_callback::simple_platform_message_callback;
 
 const ARGS: &[&str] = &[
     "--verbose-system-logs",
-    "--observe=56960/127.0.0.1",
+    "--observe=0/127.0.0.1",
     "--disable-service-auth-codes",
-    "--disable-dds",
 ];
 
 /// Build the FlutterProjectArgs *and* return the CStrings you must hold onto.

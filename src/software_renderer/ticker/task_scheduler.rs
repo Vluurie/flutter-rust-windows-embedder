@@ -106,11 +106,6 @@ pub unsafe extern "C" fn post_task_callback( // `unsafe extern "C"` ist gute Pra
     target_time_nanos: u64,
     _user_data: *mut c_void,
 ) {
-    debug!(
-        "[TaskScheduler] post_task_callback: TaskId={}, TargetTime={}",
-        task.task, // Accessing the opaque u64 task identifier
-        target_time_nanos
-    );
 
     let scheduled_task = ScheduledTask {
         task: SafeFlutterTask(task), // Wrap the FlutterTask

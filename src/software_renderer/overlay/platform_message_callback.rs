@@ -14,6 +14,7 @@ pub unsafe extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
     user_data: *mut c_void,
 ) {
+    info!("[PLATFORM_MSG_CALLBACK] Received message: {:?}", user_data);
     unsafe {
         if platform_message.is_null() {
             error!("[PLATFORM_MSG_CALLBACK] Received null message pointer.");

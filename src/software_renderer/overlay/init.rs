@@ -1,3 +1,4 @@
+use crate::software_renderer::overlay::platform_message_callback::set_global_engine_for_platform_messages;
 use crate::software_renderer::overlay::{
     FlutterOverlay, FLUTTER_OVERLAY_RAW_PTR,
 };
@@ -82,6 +83,8 @@ pub fn init_overlay(
 
     // 7) send initial window metrics
     send_initial_metrics(engine_handle, width as usize, height as usize);
+
+    unsafe { set_global_engine_for_platform_messages(engine_handle) };
 
     spawn_task_runner();
 

@@ -2,13 +2,15 @@ use crate::embedder;
 use log::error;
 use std::{ffi::{CString, OsStr}, ptr};
 
+use super::platform_message_callback::simple_platform_message_callback;
+
+
 const ARGS: &[&str] = &[
     "--verbose-system-logs",
     "--observe=56960/127.0.0.1",
     "--disable-service-auth-codes",
     "--disable-dds",
 ];
-
 
 /// Build the FlutterProjectArgs *and* return the CStrings you must hold onto.
 pub fn build_project_args_and_strings(
@@ -40,7 +42,7 @@ pub fn build_project_args_and_strings(
     args.icu_data_path      = icu_c.as_ptr();
     args.command_line_argc  = argv_ptrs.len() as i32;
     args.command_line_argv  = argv_ptrs.as_ptr();
-    args.platform_message_callback = None;
+    args.platform_message_callback =  Some(simple_platform_message_callback);
     args.log_message_callback      = Some(super::flutter_log_callback);
     args.log_tag                    = super::FLUTTER_LOG_TAG.as_ptr();
 

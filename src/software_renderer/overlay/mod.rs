@@ -34,6 +34,9 @@ pub struct FlutterOverlay {
     _icu_c:    CString,
     _argv_cs:  Vec<CString>,
     _aot_c:    Option<CString>,
+    pub(crate) _platform_runner_context: Option<Box<super::ticker::task_scheduler::TaskRunnerContext>>,
+    pub(crate) _platform_runner_description: Option<Box<embedder::FlutterTaskRunnerDescription>>,
+    pub(crate) _custom_task_runners_struct: Option<Box<embedder::FlutterCustomTaskRunners>>,
 }
 
 impl FlutterOverlay {

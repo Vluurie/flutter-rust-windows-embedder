@@ -9,6 +9,7 @@ use crate::software_renderer::overlay::project_args::{
 };
 use crate::software_renderer::overlay::renderer::build_software_renderer_config;
 use crate::software_renderer::overlay::engine::{run_engine, send_initial_metrics};
+use crate::software_renderer::ticker::spawn::spawn_task_runner;
 use std::ffi::CString;
 use std::{ffi::c_void, path::PathBuf, ptr};
 use log::info;
@@ -81,6 +82,8 @@ pub fn init_overlay(
 
     // 7) send initial window metrics
     send_initial_metrics(engine_handle, width as usize, height as usize);
+
+    spawn_task_runner();
 
     // 8) finally, stash the CString owners into the overlay before returning
     unsafe {

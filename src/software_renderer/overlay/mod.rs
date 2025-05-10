@@ -71,3 +71,4 @@ pub mod d3d;
 pub mod project_args;
 pub mod renderer;
 pub mod engine;
+pub mod platform_message_callback;

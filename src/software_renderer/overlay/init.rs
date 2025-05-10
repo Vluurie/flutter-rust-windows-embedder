@@ -35,7 +35,7 @@ pub fn init_overlay(
     width: u32,
     height: u32,
 ) -> FlutterOverlay { // Returning FlutterOverlay directly as per your original function signature
-    // crate::init_logging(); // User's original code had this, ensure it's handled
+    crate::init_logging();
     info!("[InitOverlay] Initializing FlutterOverlay ({}x{})", width, height);
     assert!(width > 0 && height > 0, "Width and height must be non-zero");
 

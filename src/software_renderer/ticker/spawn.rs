@@ -34,7 +34,6 @@ pub fn spawn_task_runner() {
             .name("flutter_task_runner".to_string())
             .spawn(move || {
                 let current_thread_id = thread::current().id();
-                info!("[TaskRunner] Thread started. TID: {:?}", current_thread_id);
 
                 // --- Set ThreadId in TaskRunnerContext ---
                 // This is crucial for `runs_task_on_current_thread_callback`.
@@ -57,7 +56,6 @@ pub fn spawn_task_runner() {
                                 // user_data in FlutterTaskRunnerDescription should point to our TaskRunnerContext.
                                 let context = &mut *((*desc_ptr).user_data as *mut TaskRunnerContext);
                                 context.task_runner_thread_id = Some(current_thread_id);
-                                info!("[TaskRunner] Successfully set current ThreadId ({:?}) in TaskRunnerContext.", current_thread_id);
                             } else {
                                 error!("[TaskRunner] user_data in platform_task_runner description is null. Cannot set ThreadId. Exiting.");
                                 return;
@@ -154,11 +152,6 @@ pub fn spawn_task_runner() {
 
                     // Execute the task if one was retrieved. This is done outside the mutex lock.
                     if let Some(scheduled_task) = task_to_run_opt {
-                        debug!(
-                            "[TaskRunner] Executing TaskId={}, TargetTime={}",
-                            scheduled_task.task.0.task, // Access inner FlutterTask's u64 id
-                            scheduled_task.target_time
-                        );
                         // Pass the original FlutterTask (task.0) from SafeFlutterTask to the engine.
                         let result = unsafe { FlutterEngineRunTask(engine, &scheduled_task.task.0) };
                         if result != FlutterEngineResult_kSuccess {

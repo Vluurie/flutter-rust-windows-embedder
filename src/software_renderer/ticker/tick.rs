@@ -1,4 +1,3 @@
-use crate::embedder::FlutterEngineRunTask;
 use crate::software_renderer::overlay::FLUTTER_OVERLAY_RAW_PTR;
 use log::error;
 use std::{mem, ptr};
@@ -9,13 +8,12 @@ use windows::Win32::Graphics::Direct3D11::{
 pub unsafe fn tick_global(context: &ID3D11DeviceContext) {
     unsafe {
         let overlay_ptr = FLUTTER_OVERLAY_RAW_PTR;
-        if overlay_ptr.is_null() || ((*overlay_ptr).clone()).engine.is_null() {
+        if overlay_ptr.is_null() {
             return;
         }
         let overlay = &mut *overlay_ptr;
 
-        FlutterEngineRunTask(overlay.engine, ptr::null());
-
+        // Only do the texture memory copy—no VM work here:
         if overlay.width == 0 || overlay.height == 0 {
             return;
         }
@@ -35,7 +33,6 @@ pub unsafe fn tick_global(context: &ID3D11DeviceContext) {
                     context.Unmap(&overlay.texture, 0);
                     return;
                 }
-
                 let rp_tex = mapped.RowPitch as usize;
                 let rp_buf = (overlay.width as usize) * 4;
 

@@ -45,7 +45,7 @@ impl FlutterOverlay {
         device: &ID3D11Device,
         width: u32,
         height: u32,
-    ) -> Self {
+    ) -> Box<Self> {
         init::init_overlay(data_dir, device, width, height)
     }
 

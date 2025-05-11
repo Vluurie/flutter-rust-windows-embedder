@@ -21,8 +21,14 @@ use log::{error, info};
 
 const ARGS: &[&str] = &[
     "flutter_rust_embedder_app",
+    "--enable-software-rendering",
+    "--skia-deterministic-rendering",
     "--verbose-system-logs",
+    "--show-performance-overlay",
+    "--disable-service-auth-codes",
+    "--observatory-port=8801",                 
 ];
+
 
 static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 

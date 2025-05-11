@@ -1,29 +1,26 @@
-// In your platform_message_callback.rs (or equivalent file)
-
-use crate::embedder; // For FlutterPlatformMessage, FlutterEngineSendPlatformMessageResponse, FlutterEngineResult_kSuccess
-use log::{error, info}; // Assuming 'warn' is not used in this version
+use crate::embedder;
+use log::{error, info};
 use std::ffi::{CStr, c_void};
 use std::ptr;
+use std::str;
 
-// Definition for GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES as per your snippet
-// This should be defined in the same module or be accessible.
 static mut GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES: Option<embedder::FlutterEngine> = None;
 
-// Function to set the global engine handle, as per your snippet
-// This function would be called from your main initialization logic (e.g., in init_overlay)
-#[allow(dead_code)] // To prevent warnings if not called from elsewhere in this snippet
+#[allow(dead_code)]
 pub unsafe fn set_global_engine_for_platform_messages(engine: embedder::FlutterEngine) {
     GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES = Some(engine);
 }
 
-#[unsafe(no_mangle)] // Using your specified attribute
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
-    user_data: *mut c_void, // user_data is present but not used in this version to get the engine
+    user_data: *mut c_void,
 ) {
-    // Logging user_data if it's not null, as in your version
     if !user_data.is_null() {
-        info!("[PLATFORM_MSG_CALLBACK] Received message with user_data: {:?}", user_data);
+        info!(
+            "[PLATFORM_MSG_CALLBACK] Received message with user_data: {:?}",
+            user_data
+        );
     } else {
         info!("[PLATFORM_MSG_CALLBACK] Received message with null user_data.");
     }
@@ -33,13 +30,14 @@ pub unsafe extern "C" fn simple_platform_message_callback(
         return;
     }
 
-    let message = &*platform_message; // Dereference the message pointer
+    let message = &*platform_message;
 
-    // Handle channel name
     let channel_name = if message.channel.is_null() {
-        "<unknown_channel>".to_string() // Handle null channel name gracefully
+        "<unknown_channel>".to_string()
     } else {
-        CStr::from_ptr(message.channel).to_string_lossy().into_owned()
+        CStr::from_ptr(message.channel)
+            .to_string_lossy()
+            .into_owned()
     };
 
     info!(
@@ -47,22 +45,39 @@ pub unsafe extern "C" fn simple_platform_message_callback(
         channel_name, message.message_size
     );
 
-    // Handle message content (example, your original code didn't show specific processing)
-    // if message.message_size > 0 && !message.message.is_null() {
-    //     let message_content_slice = std::slice::from_raw_parts(message.message, message.message_size);
-    //     if let Ok(message_str) = std::str::from_utf8(message_content_slice) {
-    //         info!("[PLATFORM_MSG_CALLBACK] Message content: {}", message_str);
-    //     } else {
-    //         info!("[PLATFORM_MSG_CALLBACK] Message content (raw bytes): {:?}", message_content_slice);
-    //     }
-    // }
+    if message.message_size > 0 && !message.message.is_null() {
+        let message_content_slice =
+            std::slice::from_raw_parts(message.message, message.message_size);
 
-    // Respond if a response_handle is present
+        match str::from_utf8(message_content_slice) {
+            Ok(message_str) => {
+                info!(
+                    "[PLATFORM_MSG_CALLBACK] Message content (UTF-8): {}",
+                    message_str
+                );
+            }
+            Err(_) => {
+                let max_bytes_to_log = 64;
+                let end_index = std::cmp::min(message_content_slice.len(), max_bytes_to_log);
+                let bytes_to_log = &message_content_slice[..end_index];
+
+                info!(
+                    "[PLATFORM_MSG_CALLBACK] Message content (raw bytes, first {} of {}): {:?}",
+                    bytes_to_log.len(),
+                    message_content_slice.len(),
+                    bytes_to_log
+                );
+            }
+        }
+    } else if message.message_size == 0 {
+        info!("[PLATFORM_MSG_CALLBACK] Message content is empty.");
+    }
+
     if !message.response_handle.is_null() {
-        let engine_opt = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES; // Access the global static
+        let engine_opt = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES;
 
         if let Some(engine) = engine_opt {
-            if !engine.is_null() { // Ensure the engine handle itself isn't null
+            if !engine.is_null() {
                 info!(
                     "[PLATFORM_MSG_CALLBACK] Sending empty response for channel: '{}'",
                     channel_name
@@ -70,8 +85,8 @@ pub unsafe extern "C" fn simple_platform_message_callback(
                 let result = embedder::FlutterEngineSendPlatformMessageResponse(
                     engine,
                     message.response_handle,
-                    ptr::null(), // No data in the response
-                    0,           // Data length 0
+                    ptr::null(),
+                    0,
                 );
                 if result != embedder::FlutterEngineResult_kSuccess {
                     error!(
@@ -84,16 +99,12 @@ pub unsafe extern "C" fn simple_platform_message_callback(
                     "[PLATFORM_MSG_CALLBACK] Global engine handle is null. Cannot send response for channel: '{}'",
                     channel_name
                 );
-                // Not sending a response here will leak the response_handle.
             }
         } else {
             error!(
                 "[PLATFORM_MSG_CALLBACK] GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES is None. Cannot send response for channel: '{}'",
                 channel_name
             );
-            // Not sending a response here will leak the response_handle.
         }
     }
-    // Any original logic for specific channels would go here, but for debugging deadlocks,
-    // keeping it minimal and non-blocking is key.
 }

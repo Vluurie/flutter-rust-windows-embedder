@@ -1,9 +1,10 @@
-use crate::software_renderer::overlay::FLUTTER_OVERLAY_RAW_PTR;
 use log::error;
 use std::{mem, ptr};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, ID3D11DeviceContext,
 };
+
+use crate::software_renderer::overlay::overlay_impl::FLUTTER_OVERLAY_RAW_PTR;
 
 pub unsafe fn tick_global(context: &ID3D11DeviceContext) {
     unsafe {

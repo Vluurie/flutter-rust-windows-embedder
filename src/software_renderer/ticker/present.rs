@@ -1,8 +1,9 @@
 use log::error;
-use std::ptr;
-use crate::software_renderer::overlay::FlutterOverlay;
+use std::{ptr};
 
-/// Exactly your old signature
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+
+
 pub extern "C" fn on_present(
     user_data: *mut std::ffi::c_void,
     allocation: *const std::ffi::c_void,

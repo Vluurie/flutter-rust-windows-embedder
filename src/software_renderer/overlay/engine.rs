@@ -2,13 +2,13 @@ use crate::embedder::{
     self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig, FlutterWindowMetricsEvent,
 };
 
-use crate::software_renderer::overlay::FlutterOverlay;
-
 use crate::software_renderer::ticker::spawn::spawn_task_runner;
 
 use log::{error, info};
 use std::ffi::c_void;
 use std::ptr;
+
+use super::overlay_impl::FlutterOverlay;
 
 pub fn run_engine(
     version: usize,
@@ -17,69 +17,54 @@ pub fn run_engine(
     user_data: *mut c_void,
     overlay_raw_ptr: *mut FlutterOverlay,
 ) -> Result<FlutterEngine, String> {
-    let mut engine_handle: FlutterEngine = ptr::null_mut();
-
-    if overlay_raw_ptr.is_null() {
-        let err_msg =
-            "[Engine] overlay_raw_ptr is null. Cannot proceed with engine initialization."
-                .to_string();
-        error!("{}", err_msg);
-        return Err(err_msg);
-    }
-
-    assert_eq!(
-        user_data as *mut FlutterOverlay, overlay_raw_ptr,
-        "user_data and overlay_raw_ptr should match if user_data is the overlay pointer"
-    );
-
-    info!(
-        "[Engine] Calling FlutterEngineInitialize with API version {}...",
-        version
-    );
-    let init_result = unsafe {
-        embedder::FlutterEngineInitialize(version, config, args, user_data, &mut engine_handle)
-    };
-
-    if init_result != embedder::FlutterEngineResult_kSuccess || engine_handle.is_null() {
-        let err_msg = format!(
-            "[Engine] FlutterEngineInitialize failed with result: {:?} or engine handle is null.",
-            init_result
-        );
-        error!("{}", err_msg);
-        return Err(err_msg);
-    }
-    info!(
-        "[Engine] FlutterEngineInitialize successful. Engine handle: {:?}",
-        engine_handle
-    );
-
     unsafe {
-        (*overlay_raw_ptr).engine = engine_handle;
-    }
-    info!("[Engine] Engine handle set in FlutterOverlay instance via overlay_raw_ptr.");
+        let mut engine_handle: FlutterEngine = ptr::null_mut();
 
-    info!("[Engine] Spawning task runner thread...");
-    spawn_task_runner();
+        if overlay_raw_ptr.is_null() {
+            let err_msg =
+                "[Engine] overlay_raw_ptr is null. Cannot proceed with engine initialization."
+                    .to_string();
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
 
-    info!("[Engine] Calling FlutterEngineRunInitialized...");
-    let run_result = unsafe { embedder::FlutterEngineRunInitialized(engine_handle) };
-
-    if run_result != embedder::FlutterEngineResult_kSuccess {
-        let err_msg = format!(
-            "[Engine] FlutterEngineRunInitialized failed with result: {:?}",
-            run_result
+        assert_eq!(
+            user_data as *mut FlutterOverlay, overlay_raw_ptr,
+            "user_data and overlay_raw_ptr should match if user_data is the overlay pointer"
         );
-        error!("{}", err_msg);
 
-        unsafe {
+        let init_result =
+            embedder::FlutterEngineInitialize(version, config, args, user_data, &mut engine_handle);
+
+        if init_result != embedder::FlutterEngineResult_kSuccess || engine_handle.is_null() {
+            let err_msg = format!(
+                "[Engine] FlutterEngineInitialize failed with result: {:?} or engine handle is null.",
+                init_result
+            );
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
+
+        (*overlay_raw_ptr).engine = engine_handle;
+
+        spawn_task_runner();
+
+        let run_result = embedder::FlutterEngineRunInitialized(engine_handle);
+
+        if run_result != embedder::FlutterEngineResult_kSuccess {
+            let err_msg = format!(
+                "[Engine] FlutterEngineRunInitialized failed with result: {:?}",
+                run_result
+            );
+            error!("{}", err_msg);
+
             embedder::FlutterEngineDeinitialize(engine_handle);
 
             (*overlay_raw_ptr).engine = ptr::null_mut();
+            return Err(err_msg);
         }
-        return Err(err_msg);
+        Ok(engine_handle)
     }
-    info!("[Engine] FlutterEngineRunInitialized successful.");
-    Ok(engine_handle)
 }
 
 pub fn send_initial_metrics(engine: FlutterEngine, width: usize, height: usize) {

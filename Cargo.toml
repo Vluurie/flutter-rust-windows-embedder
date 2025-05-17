@@ -20,6 +20,7 @@ libloading = "0.7"
 log         = "0.4"  
 env_logger  = "0.10"
 gag = "1.0.0"
+byteorder = "1.5.0"
 windows = { version = "0.51.1", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",

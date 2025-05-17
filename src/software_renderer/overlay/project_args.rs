@@ -70,9 +70,6 @@ fn create_task_runner_description_with_context(
     (description, unsafe { Box::from_raw(context_ptr) })
 }
 
-/// Builds FlutterProjectArgs and owned data.
-/// NOTE: `args.custom_task_runners` is NOT set here. It must be set by the caller
-/// later, just before calling FlutterEngineInitialize.
 pub fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
@@ -81,7 +78,6 @@ pub fn build_project_args_and_strings(
     CString,                           // assets_c
     CString,                           // icu_c
     Vec<CString>,                      // argv_cs
-    // Owned task runner data to be stored by caller and used to set args.custom_task_runners later
     Box<TaskRunnerContext>,            
     Box<FlutterTaskRunnerDescription>, 
     Box<FlutterCustomTaskRunners>,     
@@ -110,8 +106,7 @@ pub fn build_project_args_and_strings(
         platform_message_callback: Some(simple_platform_message_callback),
         log_message_callback: Some(flutter_log_callback),
         log_tag: FLUTTER_LOG_TAG.as_ptr(),        
-        custom_task_runners: ptr::null(), // IMPORTANT: Set to null initially
-        // Initialize other fields to sensible defaults
+        custom_task_runners: ptr::null(),
         vm_snapshot_data: ptr::null(),
         vm_snapshot_data_size: 0,
         vm_snapshot_instructions: ptr::null(),

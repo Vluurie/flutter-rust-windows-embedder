@@ -6,3 +6,4 @@ pub mod renderer;
 pub mod engine;
 pub mod platform_message_callback;
 pub mod overlay_impl;
+pub mod input;

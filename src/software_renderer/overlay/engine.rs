@@ -59,6 +59,7 @@ pub fn run_engine(
             error!("{}", err_msg);
 
             embedder::FlutterEngineDeinitialize(engine_handle);
+            embedder::FlutterEngineUpdateSemanticsEnabled(engine_handle, false);
 
             (*overlay_raw_ptr).engine = ptr::null_mut();
             return Err(err_msg);

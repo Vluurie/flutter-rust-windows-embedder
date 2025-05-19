@@ -57,6 +57,7 @@ pub fn run_engine(
                 run_result
             );
             error!("{}", err_msg);
+            
 
             embedder::FlutterEngineDeinitialize(engine_handle);
             embedder::FlutterEngineUpdateSemanticsEnabled(engine_handle, false);

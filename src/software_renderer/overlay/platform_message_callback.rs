@@ -1,19 +1,22 @@
-use crate::embedder;
+use crate::embedder::{
+    self, FlutterEngineSendPlatformMessageResponse,
+};
+use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
 use once_cell::sync::Lazy;
 
 use std::ffi::{CStr, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
+use std::sync::Mutex;
 use std::{ptr, str};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use std::sync::Mutex;
 
 pub static DESIRED_FLUTTER_CURSOR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 static mut GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES: Option<embedder::FlutterEngine> = None;
 
 #[allow(dead_code)]
-pub unsafe fn set_global_engine_for_platform_messages(engine: embedder::FlutterEngine) {
+pub fn set_global_engine_for_platform_messages(engine: embedder::FlutterEngine) {
     unsafe { GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES = Some(engine) };
 }
 
@@ -21,22 +24,20 @@ const K_SMC_NULL: u8 = 0;
 const K_SMC_TRUE: u8 = 1;
 const K_SMC_FALSE: u8 = 2;
 const K_SMC_INT32: u8 = 3;
-
 const K_SMC_STRING: u8 = 7;
-
 const K_SMC_LIST: u8 = 12;
 const K_SMC_MAP: u8 = 13;
 
 fn read_exact_checked(
     cursor: &mut Cursor<&[u8]>,
     buf: &mut [u8],
-    type_name: &str,
+    _type_name: &str,
 ) -> Result<(), IoError> {
     match cursor.read_exact(buf) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == IoErrorKind::UnexpectedEof => Err(IoError::new(
             IoErrorKind::UnexpectedEof,
-            format!("Unexpected EOF while reading {}", type_name),
+            format!("Unexpected EOF"), 
         )),
         Err(e) => Err(e),
     }
@@ -54,7 +55,7 @@ fn mc_read_size(cursor: &mut Cursor<&[u8]>) -> Result<usize, IoError> {
 fn mc_read_string(cursor: &mut Cursor<&[u8]>) -> Result<String, IoError> {
     let len = mc_read_size(cursor)?;
     let mut buffer = vec![0; len];
-    read_exact_checked(cursor, &mut buffer, "mouse cursor string")?;
+    read_exact_checked(cursor, &mut buffer, "string data")?;
     String::from_utf8(buffer).map_err(|e| IoError::new(IoErrorKind::InvalidData, e))
 }
 
@@ -69,10 +70,7 @@ fn mc_read_cursor_kind_value(cursor: &mut Cursor<&[u8]>) -> Result<Option<String
         }
         _ => Err(IoError::new(
             IoErrorKind::InvalidData,
-            format!(
-                "Unsupported type tag 0x{:02X} for mousecursor 'kind'",
-                type_tag
-            ),
+            format!("Unsupported type tag"),
         )),
     }
 }
@@ -86,7 +84,6 @@ fn mc_parse_args_map(cursor: &mut Cursor<&[u8]>) -> Result<Option<String>, IoErr
     }
     let map_size = mc_read_size(cursor)?;
     let mut kind_value: Option<String> = None;
-    let mut kind_found = false;
     for _ in 0..map_size {
         if cursor.read_u8()? != K_SMC_STRING {
             return Err(IoError::new(
@@ -97,14 +94,10 @@ fn mc_parse_args_map(cursor: &mut Cursor<&[u8]>) -> Result<Option<String>, IoErr
         let key = mc_read_string(cursor)?;
         if key == "kind" {
             kind_value = mc_read_cursor_kind_value(cursor)?;
-            kind_found = true;
-        } else if key == "device" {
-            let _ = mc_read_cursor_kind_value(cursor)?;
         } else {
-            let _ = mc_read_cursor_kind_value(cursor)?;
+            let _ = mc_read_cursor_kind_value(cursor);
         }
     }
-    if !kind_found {}
     Ok(kind_value)
 }
 
@@ -115,12 +108,8 @@ fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<St
             "Expected K_LIST for mc call",
         ));
     }
-    if mc_read_size(cursor)? != 2 {
-        return Err(IoError::new(
-            IoErrorKind::InvalidData,
-            "mc call list needs 2 elements",
-        ));
-    }
+    let list_size = mc_read_size(cursor)?;
+
     if cursor.read_u8()? != K_SMC_STRING {
         return Err(IoError::new(
             IoErrorKind::InvalidData,
@@ -128,67 +117,62 @@ fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<St
         ));
     }
     let method_name = mc_read_string(cursor)?;
+
     let args_kind_value: Option<String>;
-    let args_tag = cursor.read_u8()?;
-    match args_tag {
-        K_SMC_NULL => args_kind_value = None,
-        K_SMC_MAP => {
-            cursor.set_position(cursor.position() - 1);
-            args_kind_value = mc_parse_args_map(cursor)?;
+    if list_size > 1 && cursor.position() < cursor.get_ref().len() as u64 {
+        let args_tag = cursor.read_u8()?;
+        match args_tag {
+            K_SMC_NULL => args_kind_value = None,
+            K_SMC_MAP => {
+                cursor.set_position(cursor.position() - 1);
+                args_kind_value = mc_parse_args_map(cursor)?;
+            }
+            _ => {
+                args_kind_value = None;
+            }
         }
-        _ => {
-            return Err(IoError::new(
-                IoErrorKind::InvalidData,
-                format!(
-                    "Expected K_MAP or K_NULL for mc args, got 0x{:02X}",
-                    args_tag
-                ),
-            ));
-        }
+    } else {
+        args_kind_value = None;
     }
     Ok((method_name, args_kind_value))
 }
 
 fn set_desired_cursor(new_kind: Option<String>) {
-    match DESIRED_FLUTTER_CURSOR.lock() {
-        Ok(mut guard) => *guard = new_kind,
-        Err(_e) => {}
+    if let Ok(mut guard) = DESIRED_FLUTTER_CURSOR.lock() {
+        *guard = new_kind;
     }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn simple_platform_message_callback(
+pub extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
     unsafe {
     if platform_message.is_null() {
         return;
     }
     let message = &*platform_message;
-    let channel_name_ptr = message.channel;
 
-    if channel_name_ptr.is_null() {
+    if message.channel.is_null() {
         if !message.response_handle.is_null() {
             if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
                 if !engine.is_null() {
-                    embedder::FlutterEngineSendPlatformMessageResponse(
-                        engine,
-                        message.response_handle,
-                        ptr::null(),
-                        0,
-                    );
+                    FlutterEngineSendPlatformMessageResponse(
+                        engine, message.response_handle, ptr::null(), 0);
                 }
             }
         }
-
         return;
     }
 
-    let channel_name_c_str = CStr::from_ptr(channel_name_ptr);
+    let channel_name_c_str = CStr::from_ptr(message.channel);
     let channel_name_str = channel_name_c_str.to_string_lossy();
     let channel_name = channel_name_str.as_ref();
-    let mut response_sent = false;
+    
+    let mut response_sent_by_handler = false; 
+
+    let engine_opt = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES;
 
     if channel_name == "flutter/mousecursor" {
         if message.message_size > 0 && !message.message.is_null() {
@@ -196,112 +180,56 @@ pub unsafe extern "C" fn simple_platform_message_callback(
             let mut msg_cursor = Cursor::new(slice);
             if !slice.is_empty() {
                 match slice[0] {
-                    K_SMC_LIST => match mc_parse_method_call(&mut msg_cursor) {
-                        Ok((method, kind_opt)) => {
+                    K_SMC_LIST => {
+                        if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
                             if method == "activateSystemCursor" {
-                                if let Some(ref k_str) = kind_opt {
-                                    if k_str == "activateSystemCursor" {
-                                    } else {
-                                        set_desired_cursor(kind_opt);
-                                    }
-                                } else {
-                                    set_desired_cursor(None);
-                                }
-                            } else {
+                                set_desired_cursor(kind_opt);
                             }
                         }
-                        Err(_e) => {}
                     },
                     K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
-                        match mc_read_cursor_kind_value(&mut msg_cursor) {
-                            Ok(kind_opt) => {
-                                if let Some(ref k_str) = kind_opt {
-                                    if k_str == "activateSystemCursor" {
-                                    } else {
-                                        set_desired_cursor(kind_opt);
-                                    }
-                                } else {
-                                    set_desired_cursor(None);
-                                }
-                            }
-                            Err(_e) => {}
+                        if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
+                            set_desired_cursor(kind_opt);
                         }
                     }
-                    _tag => {}
+                    _ => {}
                 }
-            } else {
             }
-        } else {
         }
-
+    } else if channel_name == "flutter/textinput" {
+        custom_text_input_platform_message_handler(platform_message, user_data);
         if !message.response_handle.is_null() {
-            if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
-                if !engine.is_null() {
-                    if embedder::FlutterEngineSendPlatformMessageResponse(
-                        engine,
-                        message.response_handle,
-                        ptr::null(),
-                        0,
-                    ) != embedder::FlutterEngineResult_kSuccess
-                    {}
-                    response_sent = true;
-                }
-            }
+            response_sent_by_handler = true;
         }
     } else if channel_name == "flutter/accessibility" {
-        if message.message_size > 0 && !message.message.is_null() {
-        } else {
-        }
-
         if !message.response_handle.is_null() {
-            if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
+            if let Some(engine) = engine_opt {
                 if !engine.is_null() {
-                    embedder::FlutterEngineSendPlatformMessageResponse(
-                        engine,
-                        message.response_handle,
-                        ptr::null(),
-                        0,
-                    );
-                    response_sent = true;
+                    FlutterEngineSendPlatformMessageResponse(engine, message.response_handle, ptr::null(), 0);
+                    response_sent_by_handler = true;
                 }
             }
         }
     } else if channel_name == "flutter/platform" {
         if message.message_size > 0 && !message.message.is_null() {
-            let slice = std::slice::from_raw_parts(message.message, message.message_size);
-            match str::from_utf8(slice) {
-                Ok(_json_str) => {}
-                Err(_e) => {}
-            }
-        } else {
+            let _slice = std::slice::from_raw_parts(message.message, message.message_size);
+            // Hier war Logik zum Parsen als JSON, die jetzt entfernt ist.
         }
-
         if !message.response_handle.is_null() {
-            if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
+            if let Some(engine) = engine_opt {
                 if !engine.is_null() {
-                    embedder::FlutterEngineSendPlatformMessageResponse(
-                        engine,
-                        message.response_handle,
-                        ptr::null(),
-                        0,
-                    );
-                    response_sent = true;
+                    FlutterEngineSendPlatformMessageResponse(engine, message.response_handle, ptr::null(), 0);
+                    response_sent_by_handler = true;
                 }
             }
         }
-    } else {
     }
 
-    if !response_sent && !message.response_handle.is_null() {
-        if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
+    if !response_sent_by_handler && !message.response_handle.is_null() {
+        if let Some(engine) = engine_opt {
             if !engine.is_null() {
-                if embedder::FlutterEngineSendPlatformMessageResponse(
-                    engine,
-                    message.response_handle,
-                    ptr::null(),
-                    0,
-                ) != embedder::FlutterEngineResult_kSuccess
-                {}
+                let _result = FlutterEngineSendPlatformMessageResponse(
+                    engine, message.response_handle, ptr::null(), 0);
             }
         }
     }

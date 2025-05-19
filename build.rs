@@ -1,11 +1,38 @@
 use std::{env, path::PathBuf};
 
+use keyboard_map::gen_keyboard_map::generate_keyboard_map;
+
+mod keyboard_map;
+
 fn main() {
+    if let Err(e) = generate_keyboard_map("windows") {
+        eprintln!("Error generating keyboard map: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("cargo:rerun-if-changed=build.rs");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let keyboard_map_source_dir = manifest_dir.join("keyboard_map");
+    println!(
+        "cargo:rerun-if-changed={}",
+        keyboard_map_source_dir
+            .join("physical_key_data.g.json")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        keyboard_map_source_dir
+            .join("logical_key_data.g.json")
+            .display()
+    );
+    let gen_script_path = manifest_dir.join("build_utils").join("gen_keyboard_map.rs");
+    println!("cargo:rerun-if-changed={}", gen_script_path.display());
     let artifacts_dir = manifest_dir.join("flutter_artifacts");
     let include_dir = artifacts_dir.join("include");
     let header_windows = include_dir.join("flutter_windows.h");
     let header_embedder = include_dir.join("flutter_embedder.h");
+
+    generate_keyboard_map("windows").unwrap();
 
     assert!(header_windows.is_file(), "flutter_windows.h not found");
     assert!(header_embedder.is_file(), "flutter_embedder.h not found");

@@ -7,3 +7,5 @@ pub mod engine;
 pub mod platform_message_callback;
 pub mod overlay_impl;
 pub mod input;
+pub mod keyevents;
+pub mod textinput;

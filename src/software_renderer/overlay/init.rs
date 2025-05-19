@@ -12,6 +12,7 @@ use crate::software_renderer::overlay::engine::{send_initial_metrics};
 use crate::embedder::
     FlutterCustomTaskRunners
 ;
+use crate::software_renderer::overlay::textinput::text_input_set_global_engine;
 
 use log::{error, info};
 use std::{ffi::c_void, path::PathBuf, ptr};
@@ -120,6 +121,8 @@ pub fn init_overlay(
         send_initial_metrics(engine_handle, width as usize, height as usize);
 
         set_global_engine_for_platform_messages(engine_handle);
+
+        text_input_set_global_engine(engine_handle);
 
         overlay_box
     }

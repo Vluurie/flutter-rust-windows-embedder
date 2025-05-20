@@ -2,20 +2,23 @@ use crate::embedder::{
     self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig, FlutterWindowMetricsEvent,
 };
 
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::ticker::spawn::spawn_task_runner;
 
 use log::{error, info};
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::Arc;
 
 use super::overlay_impl::FlutterOverlay;
 
-pub fn run_engine(
+pub(crate) fn run_engine(
     version: usize,
     config: &FlutterRendererConfig,
     args: &FlutterProjectArgs,
     user_data: *mut c_void,
     overlay_raw_ptr: *mut FlutterOverlay,
+    engine_dll_arc: Arc<FlutterEngineDll>,
 ) -> Result<FlutterEngine, String> {
     unsafe {
         let mut engine_handle: FlutterEngine = ptr::null_mut();
@@ -34,7 +37,7 @@ pub fn run_engine(
         );
 
         let init_result =
-            embedder::FlutterEngineInitialize(version, config, args, user_data, &mut engine_handle);
+            (engine_dll_arc.FlutterEngineInitialize)(version, config, args, user_data, &mut engine_handle);
 
         if init_result != embedder::FlutterEngineResult_kSuccess || engine_handle.is_null() {
             let err_msg = format!(
@@ -47,9 +50,10 @@ pub fn run_engine(
 
         (*overlay_raw_ptr).engine = engine_handle;
 
-        spawn_task_runner();
 
-        let run_result = embedder::FlutterEngineRunInitialized(engine_handle);
+        spawn_task_runner(engine_dll_arc.clone());
+
+        let run_result =  (engine_dll_arc.FlutterEngineRunInitialized)(engine_handle);
 
         if run_result != embedder::FlutterEngineResult_kSuccess {
             let err_msg = format!(
@@ -59,8 +63,8 @@ pub fn run_engine(
             error!("{}", err_msg);
             
 
-            embedder::FlutterEngineDeinitialize(engine_handle);
-            embedder::FlutterEngineUpdateSemanticsEnabled(engine_handle, false);
+            (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
+            (engine_dll_arc.FlutterEngineUpdateSemanticsEnabled)(engine_handle, false);
 
             (*overlay_raw_ptr).engine = ptr::null_mut();
             return Err(err_msg);
@@ -69,7 +73,7 @@ pub fn run_engine(
     }
 }
 
-pub fn send_initial_metrics(engine: FlutterEngine, width: usize, height: usize) {
+pub(crate) fn send_initial_metrics(engine: FlutterEngine, width: usize, height: usize,  engine_dll: &FlutterEngineDll) {
     if engine.is_null() {
         error!("[Metrics] Attempted to send metrics with a null engine handle.");
         return;
@@ -83,7 +87,7 @@ pub fn send_initial_metrics(engine: FlutterEngine, width: usize, height: usize) 
         "[Metrics] Sending window metrics: {}x{} (PixelRatio: {}) for engine {:?}",
         width, height, wm.pixel_ratio, engine
     );
-    let r = unsafe { embedder::FlutterEngineSendWindowMetricsEvent(engine, &wm) };
+    let r = unsafe { (engine_dll.FlutterEngineSendWindowMetricsEvent)(engine, &wm) };
     if r != embedder::FlutterEngineResult_kSuccess {
         error!(
             "[Metrics] FlutterEngineSendWindowMetricsEvent failed with result: {:?}",

@@ -2,7 +2,7 @@ use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 use crate::path_utils::{get_flutter_paths, get_flutter_paths_from};
 
 /// Returns `(assets, icu, aot_opt)`. Panics if assets/icu missing; returns `None` for AOT if absent.
-pub fn load_flutter_paths(
+pub(crate) fn load_flutter_paths(
     data_dir: Option<PathBuf>,
 ) -> (OsString, OsString, Option<OsString>) {
     let (assets_w, icu_w, aot_w) = match &data_dir {

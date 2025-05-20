@@ -1,22 +1,22 @@
-use crate::embedder::{
-    FlutterEngineGetCurrentTime,
-    FlutterEngineResult_kSuccess, FlutterEngineRunTask,
-};
+use crate::embedder::FlutterEngineResult_kSuccess;
 
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::overlay_impl::FLUTTER_OVERLAY_RAW_PTR;
 use crate::software_renderer::ticker::task_scheduler::{
     ScheduledTask, TASK_QUEUE_STATE, TaskRunnerContext,
 };
 
 use log::{error, info};
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::{thread, time::Duration};
 
 static START_TASK_RUNNER_THREAD: Once = Once::new();
 
-pub fn spawn_task_runner() {
+pub fn spawn_task_runner(engine_dll_arc: Arc<FlutterEngineDll>) {
     START_TASK_RUNNER_THREAD.call_once(|| {
         info!("[TaskRunner] Initializing and spawning the task runner thread...");
+
+         let engine_dll_for_thread = engine_dll_arc.clone();
 
         thread::Builder::new()
             .name("flutter_task_runner".to_string())
@@ -84,7 +84,7 @@ pub fn spawn_task_runner() {
                             }
                         };
 
-                        let now = unsafe { FlutterEngineGetCurrentTime() };
+                        let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
 
                         if let Some(task) = queue_guard.peek() {
                             if task.target_time <= now {
@@ -113,19 +113,19 @@ pub fn spawn_task_runner() {
                     }
 
                     if let Some(scheduled_task) = task_to_run {
-                        let now = unsafe { FlutterEngineGetCurrentTime() };
+                        let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
 
                         let slack_ns = 500_000;
                         if scheduled_task.target_time > now
                             && (scheduled_task.target_time - now) < slack_ns
                         {
-                            while unsafe { FlutterEngineGetCurrentTime() }
+                            while unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() }
                                 < scheduled_task.target_time
                             {}
                         }
 
                         let result =
-                            unsafe { FlutterEngineRunTask(engine, &scheduled_task.task.0) };
+                            unsafe { (engine_dll_for_thread.FlutterEngineRunTask)(engine, &scheduled_task.task.0) };
                         if result != FlutterEngineResult_kSuccess {
                             error!(
                                 "[TaskRunner] FlutterEngineRunTask for TaskId {} failed: {:?}",

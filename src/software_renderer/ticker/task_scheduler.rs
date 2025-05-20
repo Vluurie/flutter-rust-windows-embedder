@@ -114,8 +114,8 @@ pub unsafe extern "C" fn runs_task_on_current_thread_callback(user_data: *mut c_
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn destroy_task_runner_context_callback(user_data: *mut c_void) {
     if !user_data.is_null() {
-        drop(unsafe { Box::from_raw(user_data as *mut TaskRunnerContext) });
-        info!("[TaskScheduler] TaskRunnerContext destroyed and memory freed.");
+        //drop(unsafe { Box::from_raw(user_data as *mut TaskRunnerContext) });
+       // info!("[TaskScheduler] TaskRunnerContext destroyed and memory freed.");
     } else {
         info!("[TaskScheduler] destroy_task_runner_context_callback called with null user_data.");
     }

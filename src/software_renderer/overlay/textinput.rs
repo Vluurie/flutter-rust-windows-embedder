@@ -1,5 +1,5 @@
 use std::ffi::{c_void, CStr, CString};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::ptr;
 
 use once_cell::sync::Lazy;
@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::embedder::FlutterEngine;
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 
+use super::overlay_impl::UnsafeSendSyncFlutterEngine;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FlutterTextEditingState {
+pub(crate) struct FlutterTextEditingState {
     text: String,
     #[serde(rename = "selectionBase")]
     selection_base: i32,
@@ -23,14 +25,14 @@ pub struct FlutterTextEditingState {
 }
 
 #[derive(Debug, Clone)]
-pub struct TextInputModel {
+pub(crate) struct TextInputModel {
     pub text: String,
     pub selection_base_utf8: usize,
     pub selection_extent_utf8: usize,
 }
 
 impl TextInputModel {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         TextInputModel {
             text: String::new(),
             selection_base_utf8: 0,
@@ -38,7 +40,7 @@ impl TextInputModel {
         }
     }
 
-    pub fn to_flutter_editing_state(&self) -> FlutterTextEditingState {
+    pub(crate) fn to_flutter_editing_state(&self) -> FlutterTextEditingState {
         let selection_base_utf16 = utf8_byte_offset_to_utf16_code_unit_offset(
             &self.text, self.selection_base_utf8
         );
@@ -55,7 +57,7 @@ impl TextInputModel {
         }
     }
     
-    pub fn sanitize_offsets(&mut self) {
+    pub(crate) fn sanitize_offsets(&mut self) {
         let byte_len = self.text.len();
         self.selection_base_utf8 = self.selection_base_utf8.min(byte_len);
         self.selection_extent_utf8 = self.selection_extent_utf8.min(byte_len);
@@ -69,7 +71,7 @@ impl TextInputModel {
         }
     }
 
-    pub fn insert_char(&mut self, ch: char) {
+    pub(crate) fn insert_char(&mut self, ch: char) {
         let (sel_start, sel_end) = self.get_ordered_selection_utf8();
         self.text.replace_range(sel_start..sel_end, &ch.to_string());
         let new_cursor_pos = sel_start + ch.len_utf8();
@@ -78,7 +80,7 @@ impl TextInputModel {
         self.sanitize_offsets();
     }
 
-    pub fn backspace(&mut self) {
+    pub(crate) fn backspace(&mut self) {
         let (sel_start, sel_end) = self.get_ordered_selection_utf8();
         if sel_start == sel_end {
             if sel_start > 0 {
@@ -99,17 +101,24 @@ impl TextInputModel {
 }
 
 #[derive(Debug, Clone)]
-pub struct ActiveTextInputState {
+pub(crate) struct ActiveTextInputState {
     pub client_id: i32,
     pub input_action: String,
     pub model: TextInputModel,
 }
 
-pub static ACTIVE_TEXT_INPUT_STATE: Lazy<Mutex<Option<ActiveTextInputState>>> = Lazy::new(|| Mutex::new(None));
+pub(crate) static ACTIVE_TEXT_INPUT_STATE: Lazy<Mutex<Option<ActiveTextInputState>>> = Lazy::new(|| Mutex::new(None));
 
-static mut TEXT_INPUT_GLOBAL_ENGINE: Option<FlutterEngine> = None;
-pub unsafe fn text_input_set_global_engine(engine: FlutterEngine) {
-    unsafe { TEXT_INPUT_GLOBAL_ENGINE = Some(engine) };
+static TEXT_INPUT_GLOBAL_ENGINE_STATE: Lazy<
+    Mutex<Option<(UnsafeSendSyncFlutterEngine, Arc<FlutterEngineDll>)>>,
+> = Lazy::new(|| Mutex::new(None));
+
+pub(crate) unsafe fn text_input_set_global_engine(
+    engine: FlutterEngine,
+    engine_dll_arc: Arc<FlutterEngineDll>,
+) {
+    let mut guard = TEXT_INPUT_GLOBAL_ENGINE_STATE.lock().unwrap();
+    *guard = Some((UnsafeSendSyncFlutterEngine(engine), engine_dll_arc));
 }
 
 fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i32 {
@@ -125,6 +134,7 @@ fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i3
 
  fn send_to_flutter_text_input_method_call(
     engine: FlutterEngine,
+    engine_dll: &FlutterEngineDll,
     method_name: &str,
     args: serde_json::Value,
 ) {
@@ -146,33 +156,42 @@ fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i3
         response_handle: ptr::null(),
     };
     
-    let _ = unsafe { crate::embedder::FlutterEngineSendPlatformMessage(engine, &platform_message) };
+    let _ = unsafe { (engine_dll.FlutterEngineSendPlatformMessage)(engine, &platform_message) };
 }
 
-pub fn send_update_editing_state_to_flutter(engine: FlutterEngine, client_id: i32, model: &TextInputModel) {
+pub(crate) fn send_update_editing_state_to_flutter(engine: FlutterEngine,  engine_dll: &FlutterEngineDll, client_id: i32, model: &TextInputModel) {
     let flutter_state = model.to_flutter_editing_state();
     let args = json!([client_id, flutter_state]);
-    send_to_flutter_text_input_method_call(engine, "TextInputClient.updateEditingState", args);
+    send_to_flutter_text_input_method_call(engine, engine_dll, "TextInputClient.updateEditingState", args);
 }
 
-pub fn send_perform_action_to_flutter(engine: FlutterEngine, client_id: i32, action: &str) {
+pub(crate) fn send_perform_action_to_flutter(engine: FlutterEngine,  engine_dll: &FlutterEngineDll, client_id: i32, action: &str) {
     let args = json!([client_id, action]);
-    send_to_flutter_text_input_method_call(engine, "TextInputClient.performAction", args);
+    send_to_flutter_text_input_method_call(engine, engine_dll, "TextInputClient.performAction", args);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn custom_text_input_platform_message_handler(
+pub(crate) extern "C" fn custom_text_input_platform_message_handler(
     platform_message: *const crate::embedder::FlutterPlatformMessage,
     _user_data: *mut c_void,
 ) {
     unsafe {
-    if platform_message.is_null() { return; }
-    let message = &*platform_message;
+     if platform_message.is_null() {
+            return;
+        }
+        let message = &*platform_message;
 
-    let engine = match TEXT_INPUT_GLOBAL_ENGINE {
-        Some(eng) if !eng.is_null() => eng,
-        _ => { return; }
-    };
+        let engine_state_guard = TEXT_INPUT_GLOBAL_ENGINE_STATE.lock().unwrap();
+        let (unsafe_engine_wrapper, engine_dll_arc) = match *engine_state_guard {
+            Some((wrapped_engine, ref dll_arc)) if !wrapped_engine.0.is_null() => {
+                (wrapped_engine, dll_arc.clone()) // Clone Arc for use
+            }
+            _ => {
+                log::warn!("[TextInputCB] Global engine or DLL not set. Cannot process message.");
+                return;
+            }
+        };
+        let engine_handle = unsafe_engine_wrapper.0;
 
     let channel_name_c_str = CStr::from_ptr(message.channel);
     if channel_name_c_str.to_string_lossy() != "flutter/textinput" { return; }
@@ -208,6 +227,7 @@ pub extern "C" fn custom_text_input_platform_message_handler(
                         if let Some(current_state) = active_state_guard.as_mut() {
                             if let Some(state_map_val) = args.and_then(|a| a.as_object()) {
                                     if let Ok(flutter_state) = serde_json::from_value::<FlutterTextEditingState>(serde_json::Value::Object(state_map_val.clone())) {
+                                         /* TODO: This is just a placeholder  */
                                         current_state.model.text = flutter_state.text;
                                         current_state.model.selection_base_utf8 = flutter_state.selection_base.max(0) as usize; 
                                         current_state.model.selection_extent_utf8 = flutter_state.selection_extent.max(0) as usize; 
@@ -225,9 +245,13 @@ pub extern "C" fn custom_text_input_platform_message_handler(
         }
     }
 
-    if !message.response_handle.is_null() {
-        let null_response_data: [u8; 1] = [0]; 
-        let _ = crate::embedder::FlutterEngineSendPlatformMessageResponse(engine, message.response_handle, null_response_data.as_ptr(), null_response_data.len());
-    }
+     if !message.response_handle.is_null() {
+            let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+                engine_handle,
+                message.response_handle,
+                ptr::null(),
+                0,
+            );
+        }
 }
 }

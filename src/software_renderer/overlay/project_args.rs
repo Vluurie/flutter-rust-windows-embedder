@@ -7,6 +7,7 @@ use crate::embedder::{
     FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
     FlutterEngineResult_kSuccess,
 };
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
 use crate::software_renderer::ticker::task_scheduler::{
     post_task_callback,
@@ -20,6 +21,7 @@ use std::ptr;
 use log::{error, info};
 
 const ARGS: &[&str] = &[
+    
     "flutter_rust_embedder_app",
     "--enable-software-rendering",
     "--skia-deterministic-rendering",
@@ -70,7 +72,7 @@ fn create_task_runner_description_with_context(
     (description, unsafe { Box::from_raw(context_ptr) })
 }
 
-pub fn build_project_args_and_strings(
+pub(crate) fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
 ) -> (
@@ -148,9 +150,10 @@ pub fn build_project_args_and_strings(
     )
 }
 
-pub fn maybe_load_aot(
+pub(crate) fn maybe_load_aot(
     args: &mut FlutterProjectArgs,
     aot_opt: Option<&OsStr>,
+    engine_dll: &FlutterEngineDll,
 ) -> Option<CString> {
     if let Some(os) = aot_opt {
         let path = os.to_string_lossy();
@@ -162,7 +165,7 @@ pub fn maybe_load_aot(
             },
         };
         let res = unsafe {
-            embedder::FlutterEngineCreateAOTData(&source, &mut args.aot_data)
+            (engine_dll.FlutterEngineCreateAOTData)(&source, &mut args.aot_data)
         };
         if res != FlutterEngineResult_kSuccess {
             error!("[ProjectArgs] FlutterEngineCreateAOTData failed: {:?}, path: {}", res, path);

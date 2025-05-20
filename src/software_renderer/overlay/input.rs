@@ -15,7 +15,7 @@ use winapi::um::winuser::{
 };
 
 use crate::embedder::{
-    FlutterEngine, FlutterEngineGetCurrentTime, FlutterEngineResult, FlutterEngineSendPointerEvent,
+    FlutterEngine, FlutterEngineResult,
     FlutterPointerDeviceKind_kFlutterPointerDeviceKindMouse, FlutterPointerEvent,
     FlutterPointerPhase, FlutterPointerPhase_kAdd, FlutterPointerPhase_kDown,
     FlutterPointerPhase_kHover, FlutterPointerPhase_kMove, FlutterPointerPhase_kRemove,
@@ -23,13 +23,15 @@ use crate::embedder::{
     FlutterPointerSignalKind_kFlutterPointerSignalKindScroll,
 };
 
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::platform_message_callback::DESIRED_FLUTTER_CURSOR;
 
 static MOUSE_BUTTONS_STATE: AtomicI32 = AtomicI32::new(0);
 static IS_MOUSE_ADDED: AtomicBool = AtomicBool::new(false);
 
-pub unsafe fn process_flutter_pointer_event(
-    engine: FlutterEngine,
+pub(crate) fn process_flutter_pointer_event_internal(
+    engine: FlutterEngine,       
+    engine_dll: &FlutterEngineDll,
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
@@ -37,6 +39,7 @@ pub unsafe fn process_flutter_pointer_event(
     flutter_is_active_and_can_process: bool,
 ) -> bool {
     unsafe {
+
         if engine.is_null() {
             return false;
         }
@@ -80,6 +83,7 @@ pub unsafe fn process_flutter_pointer_event(
                 MOUSE_BUTTONS_STATE.store(current_buttons_state, Ordering::Relaxed);
                 send_pointer_event_to_flutter(
                     engine,
+                    engine_dll,
                     phase,
                     x,
                     y,
@@ -107,6 +111,7 @@ pub unsafe fn process_flutter_pointer_event(
 
                     send_pointer_event_to_flutter(
                         engine,
+                        engine_dll,
                         FlutterPointerPhase_kAdd,
                         x,
                         y,
@@ -118,6 +123,7 @@ pub unsafe fn process_flutter_pointer_event(
 
                 send_pointer_event_to_flutter(
                     engine,
+                    engine_dll,
                     FlutterPointerPhase_kDown,
                     x,
                     y,
@@ -143,6 +149,7 @@ pub unsafe fn process_flutter_pointer_event(
 
                 send_pointer_event_to_flutter(
                     engine,
+                    engine_dll,
                     FlutterPointerPhase_kUp,
                     x,
                     y,
@@ -158,6 +165,7 @@ pub unsafe fn process_flutter_pointer_event(
 
                     send_pointer_event_to_flutter(
                         engine,
+                        engine_dll,
                         FlutterPointerPhase_kRemove,
                         0.0,
                         0.0,
@@ -187,6 +195,7 @@ pub unsafe fn process_flutter_pointer_event(
 
                 send_pointer_event_to_flutter(
                     engine,
+                    engine_dll,
                     FlutterPointerPhase_kHover,
                     x_client,
                     y_client,
@@ -201,7 +210,7 @@ pub unsafe fn process_flutter_pointer_event(
     }
 }
 
-pub unsafe fn handle_flutter_set_cursor(
+pub(crate) fn handle_flutter_set_cursor(
     hwnd_from_wparam: HWND,
     lparam_from_message: LPARAM,
     main_app_hwnd: HWND,
@@ -288,6 +297,7 @@ pub unsafe fn handle_flutter_set_cursor(
 
 fn send_pointer_event_to_flutter(
     engine: FlutterEngine,
+    engine_dll: &FlutterEngineDll,
     phase: FlutterPointerPhase,
     x: f64,
     y: f64,
@@ -303,7 +313,7 @@ fn send_pointer_event_to_flutter(
         let event = FlutterPointerEvent {
             struct_size: std::mem::size_of::<FlutterPointerEvent>(),
             phase,
-            timestamp: FlutterEngineGetCurrentTime() as usize,
+            timestamp: (engine_dll.FlutterEngineGetCurrentTime)() as usize,
             x,
             y,
             device: 0,
@@ -324,6 +334,6 @@ fn send_pointer_event_to_flutter(
         };
 
         let _res: FlutterEngineResult =
-            FlutterEngineSendPointerEvent(engine, &event as *const _, 1);
+            (engine_dll.FlutterEngineSendPointerEvent)(engine, &event as *const _, 1);
     }
 }

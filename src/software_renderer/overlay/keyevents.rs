@@ -17,12 +17,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::embedder::{
-    FlutterEngine, FlutterEngineGetCurrentTime, FlutterEngineResult, FlutterEngineSendKeyEvent,
-    FlutterEngineSendPlatformMessage, FlutterKeyEvent, FlutterKeyEventCallback,
+    FlutterEngine, FlutterEngineResult, FlutterKeyEvent,
     FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard, FlutterKeyEventType,
     FlutterKeyEventType_kFlutterKeyEventTypeDown, FlutterKeyEventType_kFlutterKeyEventTypeRepeat,
     FlutterKeyEventType_kFlutterKeyEventTypeUp, FlutterPlatformMessage,
 };
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::textinput::{
     ACTIVE_TEXT_INPUT_STATE, TextInputModel, send_perform_action_to_flutter,
     send_update_editing_state_to_flutter,
@@ -33,18 +33,7 @@ include!(concat!(env!("OUT_DIR"), "/generated_keyboard_map.rs"));
 const LOGICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
 const PHYSICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn my_flutter_key_event_handler_callback(
-    handled: bool,
-    user_data: *mut ::std::os::raw::c_void,
-) {
-    println!(
-        "[MyFlutterKeyEventCallback] Flutter worked with my event great: {} (user_data: {:?})",
-        handled, user_data
-    );
-}
-
-unsafe fn resolve_modifier_virtual_key(
+ fn resolve_modifier_virtual_key(
     virtual_key: u16,
     is_extended_key: bool,
     scan_code: u32,
@@ -80,6 +69,7 @@ unsafe fn resolve_modifier_virtual_key(
 
 fn send_legacy_key_event_platform_message(
     engine: FlutterEngine,
+    engine_dll: &FlutterEngineDll,
     msg_type: &str,
     original_virtual_key: u16,
     scan_code_raw: u32,
@@ -137,12 +127,13 @@ fn send_legacy_key_event_platform_message(
             message_size: payload_bytes.len(),
             response_handle: ptr::null(),
         };
-        let _send_result = FlutterEngineSendPlatformMessage(engine, &platform_message);
+        let _send_result = (engine_dll.FlutterEngineSendPlatformMessage)(engine, &platform_message);
     }
 }
 
-pub fn process_flutter_key_event(
-    engine: FlutterEngine,
+pub(crate) fn process_flutter_key_event_internal(
+    engine: FlutterEngine,       
+    engine_dll: &FlutterEngineDll,
     _hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
@@ -150,6 +141,7 @@ pub fn process_flutter_key_event(
     flutter_is_active_and_can_process: bool,
 ) -> bool {
     unsafe {
+
         if engine.is_null() {
             return false;
         }
@@ -196,10 +188,10 @@ pub fn process_flutter_key_event(
                 }
 
                 if let Some((client_id, cloned_model)) = send_update_args {
-                    send_update_editing_state_to_flutter(engine, client_id, &cloned_model);
+                    send_update_editing_state_to_flutter(engine,engine_dll, client_id, &cloned_model);
                 }
                 if let Some((client_id, action_string)) = send_action_args {
-                    send_perform_action_to_flutter(engine, client_id, &action_string);
+                    send_perform_action_to_flutter(engine,engine_dll, client_id, &action_string);
                 }
 
                 if event_handled_by_text_input {
@@ -233,6 +225,7 @@ pub fn process_flutter_key_event(
 
                 send_key_event_to_flutter(
                     engine,
+                    engine_dll,
                     flutter_event_type,
                     physical_key,
                     logical_key,
@@ -242,6 +235,7 @@ pub fn process_flutter_key_event(
 
                 send_legacy_key_event_platform_message(
                     engine,
+                    engine_dll,
                     "keydown",
                     original_virtual_key,
                     scan_code_raw,
@@ -262,6 +256,7 @@ pub fn process_flutter_key_event(
                 );
                 send_key_event_to_flutter(
                     engine,
+                    engine_dll,
                     FlutterKeyEventType_kFlutterKeyEventTypeUp,
                     physical_key,
                     logical_key,
@@ -270,6 +265,7 @@ pub fn process_flutter_key_event(
                 );
                 send_legacy_key_event_platform_message(
                     engine,
+                    engine_dll,
                     "keyup",
                     original_virtual_key,
                     scan_code_raw,
@@ -298,7 +294,7 @@ pub fn process_flutter_key_event(
                         }
                     }
                     if let Some((client_id, cloned_model)) = send_update_args_char {
-                        send_update_editing_state_to_flutter(engine, client_id, &cloned_model);
+                        send_update_editing_state_to_flutter(engine,engine_dll, client_id, &cloned_model);
                     }
                     if event_handled_by_text_input {
                         return true;
@@ -315,6 +311,7 @@ pub fn process_flutter_key_event(
 
 fn send_key_event_to_flutter(
     engine: FlutterEngine,
+    engine_dll: &FlutterEngineDll,
     type_: FlutterKeyEventType,
     physical: u64,
     logical: u64,
@@ -335,7 +332,7 @@ fn send_key_event_to_flutter(
         let characters_ptr = characters_cstring.as_ptr();
         let event_data = FlutterKeyEvent {
             struct_size: std::mem::size_of::<FlutterKeyEvent>(),
-            timestamp: FlutterEngineGetCurrentTime() as f64,
+            timestamp: (engine_dll.FlutterEngineGetCurrentTime)() as f64,
             type_,
             physical,
             logical,
@@ -343,14 +340,12 @@ fn send_key_event_to_flutter(
             synthesized,
             device_type: FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard,
         };
-        let key_event_flutter_callback: FlutterKeyEventCallback =
-            Some(my_flutter_key_event_handler_callback);
-        let context_for_my_callback: *mut ::std::os::raw::c_void = ptr::null_mut();
-        let _result: FlutterEngineResult = FlutterEngineSendKeyEvent(
+
+        let _result: FlutterEngineResult = (engine_dll.FlutterEngineSendKeyEvent)(
             engine,
             &event_data as *const _,
-            key_event_flutter_callback,
-            context_for_my_callback,
+            None,
+            ptr::null_mut(),
         );
     }
 }

@@ -1,23 +1,32 @@
 use crate::embedder::{
-    self, FlutterEngineSendPlatformMessageResponse,
+    self, FlutterEngine
 };
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
+use log::error;
 use once_cell::sync::Lazy;
 
 use std::ffi::{CStr, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::{ptr, str};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-pub static DESIRED_FLUTTER_CURSOR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
-static mut GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES: Option<embedder::FlutterEngine> = None;
+use super::overlay_impl::UnsafeSendSyncFlutterEngine;
 
-#[allow(dead_code)]
-pub fn set_global_engine_for_platform_messages(engine: embedder::FlutterEngine) {
-    unsafe { GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES = Some(engine) };
+pub(crate) static DESIRED_FLUTTER_CURSOR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static GLOBAL_PLATFORM_MESSAGE_STATE: Lazy<
+    Mutex<Option<(UnsafeSendSyncFlutterEngine, Arc<FlutterEngineDll>)>>,
+> = Lazy::new(|| Mutex::new(None));
+
+pub(crate) fn set_global_engine_for_platform_messages(
+    engine: FlutterEngine,
+    engine_dll_arc: Arc<FlutterEngineDll>,
+) {
+    let mut guard = GLOBAL_PLATFORM_MESSAGE_STATE.lock().unwrap();
+    *guard = Some((UnsafeSendSyncFlutterEngine(engine), engine_dll_arc));
 }
 
 const K_SMC_NULL: u8 = 0;
@@ -144,9 +153,9 @@ fn set_desired_cursor(new_kind: Option<String>) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn simple_platform_message_callback(
+pub(crate) extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
-    user_data: *mut c_void,
+    user_data: *mut c_void, //TODO:  THIS IS THE PREFERRED WAY TO GET CONTEXT but we use globale static for mvp now
 ) {
     unsafe {
     if platform_message.is_null() {
@@ -154,25 +163,36 @@ pub extern "C" fn simple_platform_message_callback(
     }
     let message = &*platform_message;
 
-    if message.channel.is_null() {
-        if !message.response_handle.is_null() {
-            if let Some(engine) = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES {
-                if !engine.is_null() {
-                    FlutterEngineSendPlatformMessageResponse(
-                        engine, message.response_handle, ptr::null(), 0);
-                }
+       let global_state_guard = GLOBAL_PLATFORM_MESSAGE_STATE.lock().unwrap();
+        let (engine_wrapper, engine_dll_arc) = match *global_state_guard {
+            Some((wrapped_engine, ref dll_arc)) if !wrapped_engine.0.is_null() => {
+                (wrapped_engine, dll_arc.clone())
             }
+            _ => {
+                error!("[PlatformMsgCB] Global engine or DLL not set. Cannot process message or send response.");
+                return;
+            }
+        };
+        let engine_handle = engine_wrapper.0;
+
+   if message.channel.is_null() {
+            if !message.response_handle.is_null() {
+
+                let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+                    engine_handle,
+                    message.response_handle,
+                    ptr::null(),
+                    0,
+                );
+            }
+            return;
         }
-        return;
-    }
 
     let channel_name_c_str = CStr::from_ptr(message.channel);
     let channel_name_str = channel_name_c_str.to_string_lossy();
     let channel_name = channel_name_str.as_ref();
     
     let mut response_sent_by_handler = false; 
-
-    let engine_opt = GLOBAL_ENGINE_FOR_PLATFORM_MESSAGES;
 
     if channel_name == "flutter/mousecursor" {
         if message.message_size > 0 && !message.message.is_null() {
@@ -201,37 +221,25 @@ pub extern "C" fn simple_platform_message_callback(
         if !message.response_handle.is_null() {
             response_sent_by_handler = true;
         }
-    } else if channel_name == "flutter/accessibility" {
-        if !message.response_handle.is_null() {
-            if let Some(engine) = engine_opt {
-                if !engine.is_null() {
-                    FlutterEngineSendPlatformMessageResponse(engine, message.response_handle, ptr::null(), 0);
-                    response_sent_by_handler = true;
-                }
+    } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
+            if !message.response_handle.is_null() {
+                let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+                    engine_handle,
+                    message.response_handle,
+                    ptr::null(),
+                    0,
+                );
+                response_sent_by_handler = true;
             }
         }
-    } else if channel_name == "flutter/platform" {
-        if message.message_size > 0 && !message.message.is_null() {
-            let _slice = std::slice::from_raw_parts(message.message, message.message_size);
-            // Hier war Logik zum Parsen als JSON, die jetzt entfernt ist.
-        }
-        if !message.response_handle.is_null() {
-            if let Some(engine) = engine_opt {
-                if !engine.is_null() {
-                    FlutterEngineSendPlatformMessageResponse(engine, message.response_handle, ptr::null(), 0);
-                    response_sent_by_handler = true;
-                }
-            }
-        }
-    }
 
-    if !response_sent_by_handler && !message.response_handle.is_null() {
-        if let Some(engine) = engine_opt {
-            if !engine.is_null() {
-                let _result = FlutterEngineSendPlatformMessageResponse(
-                    engine, message.response_handle, ptr::null(), 0);
-            }
+     if !response_sent_by_handler && !message.response_handle.is_null() {
+            let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+                engine_handle,
+                message.response_handle,
+                ptr::null(),
+                0,
+            );
         }
-    }
 }
 }

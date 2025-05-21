@@ -42,7 +42,7 @@
 use log::{debug, error, info};
 use std::{
     ffi::{c_void, OsString},
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
 };
 use windows::{
@@ -210,4 +210,29 @@ pub fn dll_directory() -> PathBuf {
         info!("[Path Utils] DLL directory = `{}`", dir.display());
         dir
     }
+}
+
+
+/// Returns (assets, icu, aot) as Vec<u16> with trailing NULs stripped on conversion.
+/// Panics if assets or icu missing; returns empty Vec for aot if missing.
+pub fn load_flutter_paths(data_dir: Option<PathBuf>) -> (OsString, OsString, Option<OsString>) {
+    let (assets_w, icu_w, aot_w) = match data_dir.as_ref() {
+        Some(dir) => crate::path_utils::get_flutter_paths_from(dir),
+        None      => crate::path_utils::get_flutter_paths(),
+    };
+
+    let strip = |mut v: Vec<u16>| { if v.last()==Some(&0) { v.pop(); } v };
+    let os_from = |v: Vec<u16>| OsString::from_wide(&strip(v));
+
+    let assets_os = os_from(assets_w);
+    let icu_os    = os_from(icu_w);
+    let aot_vec   = strip(aot_w);
+
+    let aot_os = if aot_vec.is_empty() {
+        None
+    } else {
+        Some(OsString::from_wide(&aot_vec))
+    };
+
+    (assets_os, icu_os, aot_os)
 }

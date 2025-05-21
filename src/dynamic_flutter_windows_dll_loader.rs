@@ -1,4 +1,4 @@
-use crate::flutter_bindings as b;
+use crate::windows as b;
 use anyhow::{Context, Result};
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;

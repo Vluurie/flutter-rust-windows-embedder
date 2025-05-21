@@ -1,19 +1,19 @@
 use crate::{
-    constants, dynamic_flutter_windows_dll_loader::FlutterDll, flutter_bindings, path_utils, win32_utils
+    constants, dynamic_flutter_windows_dll_loader::FlutterDll, windows, path_utils, win32_utils
 };
 use log::{error, info};
 use std::{ffi::c_char, mem, ptr, sync::Arc};
-use windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
+use ::windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
 
 /// Alias for the raw Flutter engine handles
-pub type FlutterDesktopEngineRef = flutter_bindings::FlutterDesktopEngineRef;
-pub type FlutterDesktopViewControllerRef = flutter_bindings::FlutterDesktopViewControllerRef;
-pub type FlutterDesktopViewRef = flutter_bindings::FlutterDesktopViewRef;
-pub type FlutterHWND = flutter_bindings::HWND;
-pub type FlutterWPARAM = flutter_bindings::WPARAM;
-pub type FlutterLPARAM = flutter_bindings::LPARAM;
-pub type FlutterLRESULT = flutter_bindings::LRESULT;
-pub type FlutterUINT = flutter_bindings::UINT;
+pub type FlutterDesktopEngineRef = windows::FlutterDesktopEngineRef;
+pub type FlutterDesktopViewControllerRef = windows::FlutterDesktopViewControllerRef;
+pub type FlutterDesktopViewRef = windows::FlutterDesktopViewRef;
+pub type FlutterHWND = windows::HWND;
+pub type FlutterWPARAM = windows::WPARAM;
+pub type FlutterLPARAM = windows::LPARAM;
+pub type FlutterLRESULT = windows::LRESULT;
+pub type FlutterUINT = windows::UINT;
 
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
@@ -32,7 +32,7 @@ pub fn create_flutter_engine( dll: &Arc<FlutterDll>,) -> FlutterDesktopEngineRef
         aot_w.as_ptr()
     };
 
-    let mut props: flutter_bindings::FlutterDesktopEngineProperties = unsafe { mem::zeroed() };
+    let mut props: windows::FlutterDesktopEngineProperties = unsafe { mem::zeroed() };
     props.assets_path = assets_path.as_ptr();
     props.icu_data_path = icu_data_path.as_ptr();
     props.aot_library_path = aot_ptr;
@@ -74,7 +74,7 @@ pub fn create_flutter_engine_with_paths(
         aot_library_path.as_ptr()
     };
 
-    let props = flutter_bindings::FlutterDesktopEngineProperties {
+    let props = windows::FlutterDesktopEngineProperties {
         assets_path: assets_path.as_ptr(),
         icu_data_path: icu_data_path.as_ptr(),
         aot_library_path: aot_ptr,
@@ -91,7 +91,7 @@ pub fn create_flutter_engine_with_paths(
     let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         // cleanup & abort
-        unsafe { windows::Win32::System::Com::CoUninitialize() };
+        unsafe { ::windows::Win32::System::Com::CoUninitialize() };
         crate::win32_utils::panic_with_error("FlutterDesktopEngineCreate failed");
     }
     engine

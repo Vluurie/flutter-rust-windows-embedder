@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{dynamic_flutter_windows_dll_loader::FlutterDll, flutter_bindings::FlutterDesktopViewControllerRef};
+use crate::{dynamic_flutter_windows_dll_loader::FlutterDll, windows::FlutterDesktopViewControllerRef};
 use windows::Win32::Foundation::HWND;
 
 /// Holds the long‐lived handles needed to manage the Flutter view.

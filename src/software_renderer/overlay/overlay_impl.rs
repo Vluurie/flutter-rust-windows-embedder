@@ -1,11 +1,11 @@
 use std::{ffi::{c_char, c_void, CStr, CString}, ptr, sync::Arc};
 
-use log::info;
+use log::{error, info};
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D};
 
 use crate::{embedder::{self, FlutterEngine}, software_renderer::{dynamic_flutter_engine_dll_loader::FlutterEngineDll, ticker}};
 
-use super::{engine::update_flutter_window_metrics, init};
+use super::{d3d::{create_srv, create_texture}, engine::update_flutter_window_metrics, init};
 
 
 pub static mut FLUTTER_OVERLAY_RAW_PTR: *mut FlutterOverlay = ptr::null_mut();
@@ -64,9 +64,17 @@ impl FlutterOverlay {
         self.engine
     }
 
-    pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32) {
+    pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32, device: &ID3D11Device) {
+        if self.width == new_width && self.height == new_height {
+            info!("[FlutterOverlay] Resiye called but the dimensions are the same: Width: {:?} Height: {:?}", new_width, new_height);
+        }
+
         self.width = new_width;
         self.height = new_height;
+
+        // TODO: Improve return type with Result Error handling
+        self.texture = create_texture(device, self.width, self.height);
+        self.srv = create_srv(device, &self.texture);
 
         if !self.engine.is_null() {
             update_flutter_window_metrics(self.engine, self.width, self.height, self.engine_dll.clone());

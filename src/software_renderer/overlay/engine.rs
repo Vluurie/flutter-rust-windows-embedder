@@ -73,15 +73,16 @@ pub(crate) fn run_engine(
     }
 }
 
-pub(crate) fn send_initial_metrics(engine: FlutterEngine, width: usize, height: usize,  engine_dll: &FlutterEngineDll) {
+
+pub(crate) fn update_flutter_window_metrics(engine: FlutterEngine, width: u32, height: u32,  engine_dll: Arc<FlutterEngineDll>) {
     if engine.is_null() {
         error!("[Metrics] Attempted to send metrics with a null engine handle.");
         return;
     }
     let mut wm: FlutterWindowMetricsEvent = unsafe { std::mem::zeroed() };
     wm.struct_size = std::mem::size_of::<FlutterWindowMetricsEvent>();
-    wm.width = width;
-    wm.height = height;
+    wm.width = width.try_into().unwrap();
+    wm.height = height.try_into().unwrap();
     wm.pixel_ratio = 1.0;
     info!(
         "[Metrics] Sending window metrics: {}x{} (PixelRatio: {}) for engine {:?}",
@@ -97,3 +98,5 @@ pub(crate) fn send_initial_metrics(engine: FlutterEngine, width: usize, height: 
         info!("[Metrics] FlutterEngineSendWindowMetricsEvent successful.");
     }
 }
+
+

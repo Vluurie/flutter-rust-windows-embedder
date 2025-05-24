@@ -1,5 +1,6 @@
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
+use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
 use crate::software_renderer::overlay::overlay_impl::FLUTTER_OVERLAY_RAW_PTR;
 use crate::software_renderer::overlay::paths::load_flutter_paths;
 use crate::software_renderer::overlay::platform_message_callback::set_global_engine_for_platform_messages;
@@ -7,8 +8,6 @@ use crate::software_renderer::overlay::project_args::{
     build_project_args_and_strings, maybe_load_aot,
 };
 use crate::software_renderer::overlay::renderer::build_software_renderer_config;
-
-use crate::software_renderer::overlay::engine::{run_engine, send_initial_metrics};
 
 use crate::embedder::FlutterCustomTaskRunners;
 use crate::software_renderer::overlay::textinput::text_input_set_global_engine;
@@ -139,7 +138,7 @@ pub(crate) fn init_overlay(
             "Engine handle in overlay_box mismatch after run_engine"
         );
 
-        send_initial_metrics(engine_handle, width as usize, height as usize, &engine_dll_arc);
+        update_flutter_window_metrics(engine_handle, width, height, engine_dll_arc.clone());
 
         set_global_engine_for_platform_messages(engine_handle, engine_dll_arc.clone());
 

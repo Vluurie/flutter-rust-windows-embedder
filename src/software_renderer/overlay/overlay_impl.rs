@@ -5,7 +5,7 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID
 
 use crate::{embedder::{self, FlutterEngine}, software_renderer::{dynamic_flutter_engine_dll_loader::FlutterEngineDll, ticker}};
 
-use super::init;
+use super::{engine::update_flutter_window_metrics, init};
 
 
 pub static mut FLUTTER_OVERLAY_RAW_PTR: *mut FlutterOverlay = ptr::null_mut();
@@ -62,6 +62,15 @@ impl FlutterOverlay {
 
     pub fn get_engine_ptr(&self) -> FlutterEngine {
         self.engine
+    }
+
+    pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32) {
+        self.width = new_width;
+        self.height = new_height;
+
+        if !self.engine.is_null() {
+            update_flutter_window_metrics(self.engine, self.width, self.height, self.engine_dll.clone());
+        }
     }
 }
 

@@ -31,7 +31,7 @@ pub mod embedder {
 
 static LOGGER_INIT: Once = Once::new();
 
-fn init_logging() {
+pub fn init_logging() {
     LOGGER_INIT.call_once(|| {
         Builder::from_env(Env::default().default_filter_or("debug"))
             .filter(None, LevelFilter::Debug)

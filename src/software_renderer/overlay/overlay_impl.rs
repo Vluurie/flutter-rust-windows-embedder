@@ -76,6 +76,9 @@ impl FlutterOverlay {
         self.texture = create_texture(device, self.width, self.height);
         self.srv = create_srv(device, &self.texture);
 
+        let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
+        self.pixel_buffer.resize(new_buffer_size, 0);
+
         if !self.engine.is_null() {
             update_flutter_window_metrics(self.engine, self.width, self.height, self.engine_dll.clone());
         }

@@ -16,7 +16,7 @@ use crate::software_renderer::ticker::task_scheduler::{
     TaskRunnerContext,
 };
 
-use std::ffi::{CString, OsStr, c_void, CStr};
+use std::ffi::{c_char, c_void, CStr, CString, OsStr};
 use std::ptr;
 use log::{error, info};
 
@@ -75,19 +75,35 @@ fn create_task_runner_description_with_context(
 pub(crate) fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
+    dart_args_opt: Option<&[String]>,
 ) -> (
     FlutterProjectArgs,                // args.custom_task_runners will be null initially
-    CString,                           // assets_c
-    CString,                           // icu_c
-    Vec<CString>,                      // argv_cs
+    CString,                                 // assets_c
+    CString,                                 // icu_c
+    Vec<CString>,                            // engine_argv_cs (renamed for clarity)
+    Vec<CString>,                            // dart_argv_cs (new)
     Box<TaskRunnerContext>,            
     Box<FlutterTaskRunnerDescription>, 
     Box<FlutterCustomTaskRunners>,     
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
-    let argv_cs: Vec<CString> = ARGS.iter().map(|&s| CString::new(s).unwrap()).collect();
-    let argv_ptrs: Vec<*const std::os::raw::c_char> = argv_cs.iter().map(|c| c.as_ptr()).collect();
+    let engine_argv_cs: Vec<CString> = ARGS.iter().map(|&s| CString::new(s).unwrap()).collect();
+    let engine_argv_ptrs: Vec<*const c_char> = engine_argv_cs.iter().map(|c| c.as_ptr()).collect();
+
+      let mut dart_argv_cs: Vec<CString> = Vec::new();
+    let mut dart_argv_ptrs: Vec<*const c_char> = Vec::new();
+
+     if let Some(dart_args_slice) = dart_args_opt {
+        for arg_str in dart_args_slice {
+            let c_string_arg = CString::new(arg_str.as_str())
+                .unwrap_or_else(|_| panic!("Failed to convert Dart argument to CString: {}", arg_str));
+            dart_argv_cs.push(c_string_arg);
+        }
+        for c_string in &dart_argv_cs {
+            dart_argv_ptrs.push(c_string.as_ptr());
+        }
+    }
 
     let (platform_desc_st, platform_context_owner) =
         create_task_runner_description_with_context(1);
@@ -103,8 +119,8 @@ pub(crate) fn build_project_args_and_strings(
         struct_size: std::mem::size_of::<FlutterProjectArgs>(),
         assets_path: assets_c.as_ptr(),
         icu_data_path: icu_c.as_ptr(),
-        command_line_argc: argv_ptrs.len() as i32,
-        command_line_argv: argv_ptrs.as_ptr(),
+        command_line_argc: engine_argv_ptrs.len() as i32,
+        command_line_argv: engine_argv_ptrs.as_ptr(),
         platform_message_callback: Some(simple_platform_message_callback),
         log_message_callback: Some(flutter_log_callback),
         log_tag: FLUTTER_LOG_TAG.as_ptr(),        
@@ -129,8 +145,8 @@ pub(crate) fn build_project_args_and_strings(
         compositor: ptr::null(),
         dart_old_gen_heap_size: -1,
         compute_platform_resolved_locale_callback: None,
-        dart_entrypoint_argc: 0,
-        dart_entrypoint_argv: ptr::null(),
+        dart_entrypoint_argc: dart_argv_ptrs.len() as i32,
+        dart_entrypoint_argv: if dart_argv_ptrs.is_empty() { ptr::null() } else { dart_argv_ptrs.as_ptr() },
         on_pre_engine_restart_callback: None,
         update_semantics_callback: None,
         update_semantics_callback2: None,
@@ -143,7 +159,8 @@ pub(crate) fn build_project_args_and_strings(
         args,
         assets_c,
         icu_c,
-        argv_cs,
+        engine_argv_cs,
+        dart_argv_cs,   
         platform_context_owner,
         platform_runner_description_owner,
         custom_task_runners_owner,

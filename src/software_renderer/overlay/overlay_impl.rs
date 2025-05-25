@@ -1,6 +1,6 @@
 use std::{ffi::{c_char, c_void, CStr, CString}, ptr, sync::Arc};
 
-use log::{error, info};
+use log::info;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D};
 
 use crate::{embedder::{self, FlutterEngine}, software_renderer::{dynamic_flutter_engine_dll_loader::FlutterEngineDll, ticker}};
@@ -37,7 +37,8 @@ pub struct FlutterOverlay {
     pub srv: ID3D11ShaderResourceView,
     pub(crate) _assets_c: CString,
     pub(crate) _icu_c:    CString,
-    pub(crate) _argv_cs:  Vec<CString>,
+    pub(crate) _engine_argv_cs: Vec<CString>,
+    pub(crate) _dart_argv_cs: Vec<CString>,   
     pub(crate) _aot_c:    Option<CString>,
     pub(crate) _platform_runner_context: Option<Box<ticker::task_scheduler::TaskRunnerContext>>,
     pub(crate) _platform_runner_description: Option<Box<embedder::FlutterTaskRunnerDescription>>,
@@ -52,8 +53,9 @@ impl FlutterOverlay {
         device: &ID3D11Device,
         width: u32,
         height: u32,
+        dart_args: Option<&[String]>
     ) -> Box<Self> {
-        init::init_overlay(data_dir, device, width, height)
+        init::init_overlay(data_dir, device, width, height, dart_args)
     }
 
     pub  fn tick_global(context: &ID3D11DeviceContext) {

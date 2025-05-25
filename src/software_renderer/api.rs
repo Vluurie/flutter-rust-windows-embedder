@@ -56,6 +56,7 @@ impl std::error::Error for FlutterEmbedderError {}
 /// * `initial_height`: The initial height, in pixels, for the Flutter view, matching the host's render target dimensions.
 /// * `flutter_data_dir`: The file system path to the directory containing the Flutter application's assets
 ///   (e.g., `flutter_assets` directory and `icudtl.dat`).
+/// * `dart_entrypoint_args`: Arguments that get passed to the `List<String>` arguments inside entry of Dart VM.
 ///
 /// # Returns
 /// A `Result` containing a `Box<FlutterOverlay>` on successful initialization,
@@ -65,7 +66,7 @@ pub fn initialize_overlay(
     initial_width: u32,
     initial_height: u32,
     flutter_data_dir: PathBuf,
-    dart_args_opt: Option<&[String]>,
+    dart_entrypoint_args: Option<Vec<String>>,
 ) -> Result<Box<FlutterOverlay>, FlutterEmbedderError> {
     info!(
         "[EmbedderAPI] Initializing Flutter Overlay. Data dir: {:?}",
@@ -77,7 +78,7 @@ pub fn initialize_overlay(
         d3d11_device,
         initial_width,
         initial_height,
-        dart_args_opt
+        dart_entrypoint_args.as_deref(),
     );
 
     if overlay_box.engine.is_null() {

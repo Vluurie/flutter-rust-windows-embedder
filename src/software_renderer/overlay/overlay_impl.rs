@@ -9,7 +9,7 @@ use super::{d3d::{create_srv, create_texture}, engine::update_flutter_window_met
 
 
 pub static mut FLUTTER_OVERLAY_RAW_PTR: *mut FlutterOverlay = ptr::null_mut();
-static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
+pub static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
 #[derive(Debug, Copy, Clone)]
 pub struct UnsafeSendSyncFlutterEngine(pub FlutterEngine);

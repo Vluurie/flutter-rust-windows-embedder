@@ -1,14 +1,7 @@
 use crate::embedder::{
-    self,
-    FlutterProjectArgs,
     FlutterTaskRunnerDescription,
     FlutterCustomTaskRunners,
-    FlutterEngineAOTDataSource,
-    FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-    FlutterEngineResult_kSuccess,
 };
-use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
-use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
 use crate::software_renderer::ticker::task_scheduler::{
     post_task_callback,
     runs_task_on_current_thread_callback,
@@ -16,12 +9,11 @@ use crate::software_renderer::ticker::task_scheduler::{
     TaskRunnerContext,
 };
 
-use std::ffi::{c_char, c_void, CStr, CString, OsStr};
-use std::ptr;
-use log::{error, info};
+use std::ffi::{c_void, CStr, CString, OsStr};
+use log::{info};
 
-const ARGS: &[&str] = &[
-    
+
+ const ARGS: &[&str] = &[
     "flutter_rust_embedder_app",
     "--enable-software-rendering",
     "--skia-deterministic-rendering",
@@ -32,10 +24,10 @@ const ARGS: &[&str] = &[
 ];
 
 
-static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
+pub static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn flutter_log_callback(
+pub unsafe extern "C" fn flutter_log_callback(
     tag: *const std::os::raw::c_char,
     message: *const std::os::raw::c_char,
     _user_data: *mut c_void,
@@ -77,31 +69,24 @@ pub(crate) fn build_project_args_and_strings(
     icu: &str,
     dart_args_opt: Option<&[String]>,
 ) -> (
-    FlutterProjectArgs,                // args.custom_task_runners will be null initially
-    CString,                                 // assets_c
-    CString,                                 // icu_c
-    Vec<CString>,                            // engine_argv_cs (renamed for clarity)
-    Vec<CString>,                            // dart_argv_cs (new)
-    Box<TaskRunnerContext>,            
-    Box<FlutterTaskRunnerDescription>, 
-    Box<FlutterCustomTaskRunners>,     
+    CString,                     // assets_c
+    CString,                     // icu_c
+    Vec<CString>,                // engine_argv_cs
+    Vec<CString>,                // dart_argv_cs
+    Box<TaskRunnerContext>,
+    Box<FlutterTaskRunnerDescription>,
+    Box<FlutterCustomTaskRunners>,
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
     let engine_argv_cs: Vec<CString> = ARGS.iter().map(|&s| CString::new(s).unwrap()).collect();
-    let engine_argv_ptrs: Vec<*const c_char> = engine_argv_cs.iter().map(|c| c.as_ptr()).collect();
 
-      let mut dart_argv_cs: Vec<CString> = Vec::new();
-    let mut dart_argv_ptrs: Vec<*const c_char> = Vec::new();
-
-     if let Some(dart_args_slice) = dart_args_opt {
+    let mut dart_argv_cs: Vec<CString> = Vec::new();
+    if let Some(dart_args_slice) = dart_args_opt {
         for arg_str in dart_args_slice {
             let c_string_arg = CString::new(arg_str.as_str())
                 .unwrap_or_else(|_| panic!("Failed to convert Dart argument to CString: {}", arg_str));
             dart_argv_cs.push(c_string_arg);
-        }
-        for c_string in &dart_argv_cs {
-            dart_argv_ptrs.push(c_string.as_ptr());
         }
     }
 
@@ -115,85 +100,24 @@ pub(crate) fn build_project_args_and_strings(
         thread_priority_setter: None,
     });
 
-    let args = FlutterProjectArgs {
-        struct_size: std::mem::size_of::<FlutterProjectArgs>(),
-        assets_path: assets_c.as_ptr(),
-        icu_data_path: icu_c.as_ptr(),
-        command_line_argc: engine_argv_ptrs.len() as i32,
-        command_line_argv: engine_argv_ptrs.as_ptr(),
-        platform_message_callback: Some(simple_platform_message_callback),
-        log_message_callback: Some(flutter_log_callback),
-        log_tag: FLUTTER_LOG_TAG.as_ptr(),        
-        custom_task_runners: ptr::null(),
-        vm_snapshot_data: ptr::null(),
-        vm_snapshot_data_size: 0,
-        vm_snapshot_instructions: ptr::null(),
-        vm_snapshot_instructions_size: 0,
-        isolate_snapshot_data: ptr::null(),
-        isolate_snapshot_data_size: 0,
-        isolate_snapshot_instructions: ptr::null(),
-        isolate_snapshot_instructions_size: 0,
-        aot_data: ptr::null_mut(),
-        root_isolate_create_callback: None,
-        update_semantics_node_callback: None,
-        update_semantics_custom_action_callback: None,
-        persistent_cache_path: ptr::null(),
-        is_persistent_cache_read_only: false,
-        vsync_callback: None,
-        custom_dart_entrypoint: ptr::null(),
-        shutdown_dart_vm_when_done: true,
-        compositor: ptr::null(),
-        dart_old_gen_heap_size: -1,
-        compute_platform_resolved_locale_callback: None,
-        dart_entrypoint_argc: dart_argv_ptrs.len() as i32,
-        dart_entrypoint_argv: if dart_argv_ptrs.is_empty() { ptr::null() } else { dart_argv_ptrs.as_ptr() },
-        on_pre_engine_restart_callback: None,
-        update_semantics_callback: None,
-        update_semantics_callback2: None,
-        channel_update_callback: None,
-        main_path__unused__:  ptr::null(),
-        packages_path__unused__:  ptr::null()
-    };
-
     (
-        args,
         assets_c,
         icu_c,
         engine_argv_cs,
-        dart_argv_cs,   
+        dart_argv_cs,
         platform_context_owner,
         platform_runner_description_owner,
         custom_task_runners_owner,
     )
 }
-
-pub(crate) fn maybe_load_aot(
-    args: &mut FlutterProjectArgs,
+pub(crate) fn maybe_load_aot_path_to_cstring(
     aot_opt: Option<&OsStr>,
-    engine_dll: &FlutterEngineDll,
 ) -> Option<CString> {
     if let Some(os) = aot_opt {
         let path = os.to_string_lossy();
         let aot_c = CString::new(path.as_ref()).expect("Failed to create CString for AOT path");
-        let source = FlutterEngineAOTDataSource {
-            type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
-            __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
-                elf_path: aot_c.as_ptr(),
-            },
-        };
-        let res = unsafe {
-            (engine_dll.FlutterEngineCreateAOTData)(&source, &mut args.aot_data)
-        };
-        if res != FlutterEngineResult_kSuccess {
-            error!("[ProjectArgs] FlutterEngineCreateAOTData failed: {:?}, path: {}", res, path);
-            args.aot_data = ptr::null_mut();
-            None 
-        } else {
-            info!("[ProjectArgs] FlutterEngineCreateAOTData successful for path: {}", path);
-            Some(aot_c) 
-        }
+        Some(aot_c)
     } else {
-        args.aot_data = ptr::null_mut();
         None
     }
 }

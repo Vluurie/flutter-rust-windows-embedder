@@ -65,6 +65,7 @@ pub fn initialize_overlay(
     initial_width: u32,
     initial_height: u32,
     flutter_data_dir: PathBuf,
+    dart_args_opt: Option<&[String]>,
 ) -> Result<Box<FlutterOverlay>, FlutterEmbedderError> {
     info!(
         "[EmbedderAPI] Initializing Flutter Overlay. Data dir: {:?}",
@@ -76,6 +77,7 @@ pub fn initialize_overlay(
         d3d11_device,
         initial_width,
         initial_height,
+        dart_args_opt
     );
 
     if overlay_box.engine.is_null() {

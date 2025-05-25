@@ -27,6 +27,7 @@ pub(crate) fn init_overlay(
     device: &ID3D11Device,
     width: u32,
     height: u32,
+    dart_args_opt: Option<&[String]>,
 ) -> Box<FlutterOverlay> {
     unsafe {
         let engine_dll_load_dir = data_dir.as_deref();
@@ -54,11 +55,12 @@ pub(crate) fn init_overlay(
             mut proj_args,
             assets_c,
             icu_c,
-            argv_cs,
+            engine_argv_cs, 
+            dart_argv_cs,  
             platform_context_owner,
             platform_description_owner,
             custom_runners_struct_owner,
-        ) = build_project_args_and_strings(&assets.to_string_lossy(), &icu.to_string_lossy());
+        ) = build_project_args_and_strings(&assets.to_string_lossy(), &icu.to_string_lossy(), dart_args_opt);
 
         let aot_c = maybe_load_aot(&mut proj_args, aot_opt.as_deref(), &engine_dll_arc);
 
@@ -75,7 +77,8 @@ pub(crate) fn init_overlay(
             srv,
             _assets_c: assets_c,
             _icu_c: icu_c,
-            _argv_cs: argv_cs,
+            _engine_argv_cs: engine_argv_cs, 
+            _dart_argv_cs: dart_argv_cs,    
             _aot_c: aot_c,
             _platform_runner_context: Some(platform_context_owner),
             _platform_runner_description: Some(platform_description_owner),

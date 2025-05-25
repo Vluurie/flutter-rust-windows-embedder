@@ -32,6 +32,7 @@ pub(crate) fn init_overlay(
 ) -> Box<FlutterOverlay> {
     unsafe {
         let engine_dll_load_dir = data_dir.as_deref();
+        info!("[InitOverlay] Attempting to load flutter_engine.dll from `{:?}`...", engine_dll_load_dir);
         let engine_dll_arc = FlutterEngineDll::get_for(engine_dll_load_dir).unwrap_or_else(|e| {
             error!(
                 "Failed to load flutter_engine.dll from `{:?}`: {:?}",

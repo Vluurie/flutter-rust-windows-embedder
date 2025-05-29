@@ -65,6 +65,7 @@ pub(crate) fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
     dart_args_opt: Option<&[String]>,
+     is_debug: bool,
 ) -> (
     CString,      // assets_c
     CString,      // icu_c
@@ -76,15 +77,13 @@ pub(crate) fn build_project_args_and_strings(
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
-    let engine_argv_cs: Vec<CString>;
-    if FLUTTER_ASSETS_IS_DEBUG.load(Ordering::Relaxed) {
-        engine_argv_cs = ARGS
-            .iter()
+      let engine_argv_cs: Vec<CString> = if is_debug {
+        ARGS.iter()
             .map(|&s| CString::new(s).expect("Failed to create CString from ARGS"))
-            .collect();
+            .collect()
     } else {
-        engine_argv_cs = Vec::new();
-    }
+        Vec::new()
+    };
 
     let mut dart_argv_cs: Vec<CString> = Vec::new();
     if let Some(dart_args_slice) = dart_args_opt {

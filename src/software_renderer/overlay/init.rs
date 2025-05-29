@@ -49,6 +49,8 @@ pub(crate) fn init_overlay(
         assert!(width > 0 && height > 0, "Width and height must be non-zero");
 
         let (assets, icu, aot_opt) = load_flutter_paths(data_dir.clone());
+        let is_debug_build = aot_opt.is_none();
+        FLUTTER_ASSETS_IS_DEBUG.store(is_debug_build, Ordering::Relaxed);
         let texture = create_texture(device, width, height);
         let srv = create_srv(device, &texture);
 
@@ -64,6 +66,7 @@ pub(crate) fn init_overlay(
             &assets.to_string_lossy(),
             &icu.to_string_lossy(),
             dart_args_opt,
+            is_debug_build
         );
 
         let aot_c_temp = maybe_load_aot_path_to_cstring(aot_opt.as_deref());

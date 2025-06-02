@@ -9,3 +9,4 @@ pub mod overlay_impl;
 pub mod input;
 pub mod keyevents;
 pub mod textinput;
+pub mod semantics_handler;

@@ -16,6 +16,7 @@ use crate::embedder::{
     FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
     FlutterEngineResult_kSuccess, FlutterProjectArgs,
 };
+use crate::software_renderer::overlay::semantics_handler::semantics_update_callback;
 use crate::software_renderer::overlay::textinput::text_input_set_global_engine;
 
 use log::{error, info};
@@ -143,7 +144,7 @@ pub(crate) fn init_overlay(
             compute_platform_resolved_locale_callback: None,
             on_pre_engine_restart_callback: None,
             update_semantics_callback: None,
-            update_semantics_callback2: None,
+            update_semantics_callback2: Some(semantics_update_callback),
             channel_update_callback: None,
             main_path__unused__: ptr::null(),
             packages_path__unused__: ptr::null(),
@@ -216,6 +217,8 @@ pub(crate) fn init_overlay(
                 panic!("Engine initialization failed during run_engine: {}", e);
             }
         };
+
+          (engine_dll_arc.FlutterEngineUpdateSemanticsEnabled)(engine_handle, true);
 
         overlay_box.engine = engine_handle;
 

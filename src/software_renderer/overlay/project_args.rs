@@ -6,9 +6,6 @@ use crate::software_renderer::ticker::task_scheduler::{
 
 use log::info;
 use std::ffi::{CStr, CString, OsStr, c_void};
-use std::sync::atomic::Ordering;
-
-use super::init::FLUTTER_ASSETS_IS_DEBUG;
 
 const ARGS: &[&str] = &[
     "flutter_rust_embedder_app",

@@ -64,7 +64,6 @@ pub(crate) fn run_engine(
             
 
             (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
-            (engine_dll_arc.FlutterEngineUpdateSemanticsEnabled)(engine_handle, false);
 
             (*overlay_raw_ptr).engine = ptr::null_mut();
             return Err(err_msg);

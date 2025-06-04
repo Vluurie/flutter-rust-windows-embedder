@@ -1,144 +1,82 @@
-use crate::embedder::FlutterEngineResult_kSuccess;
+use crate::embedder::{FlutterEngine, FlutterEngineResult_kSuccess};
 
-use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
-use crate::software_renderer::overlay::overlay_impl::FLUTTER_OVERLAY_RAW_PTR;
-use crate::software_renderer::ticker::task_scheduler::{
-    ScheduledTask, TASK_QUEUE_STATE, TaskRunnerContext,
-};
+use crate::software_renderer::overlay::overlay_impl::
+    FlutterOverlay
+;
+use crate::software_renderer::ticker::task_scheduler::
+    ScheduledTask
+;
 
 use log::{error, info};
-use std::sync::{Arc, Once};
 use std::{thread, time::Duration};
 
-static START_TASK_RUNNER_THREAD: Once = Once::new();
+pub fn start_task_runner(overlay: &mut FlutterOverlay) {
+    if overlay.task_runner_thread.is_some() {
+        info!(
+            "[TaskRunner] Task runner for '{}' runs already.",
+            overlay.name
+        );
+        return;
+    }
 
-pub fn spawn_task_runner(engine_dll_arc: Arc<FlutterEngineDll>) {
-    START_TASK_RUNNER_THREAD.call_once(|| {
-        info!("[TaskRunner] Initializing and spawning the task runner thread...");
+    info!(
+        "[TaskRunner] Spawning task runner for overlay '{}'...",
+        overlay.name
+    );
 
-         let engine_dll_for_thread = engine_dll_arc.clone();
+    let engine_dll_for_thread = overlay.engine_dll.clone();
+    let task_queue_for_thread = overlay.task_queue_state.clone();
+    let name_for_thread = overlay.name.clone();
 
-        thread::Builder::new()
-            .name("flutter_task_runner".to_string())
-            .spawn(move || {
-                let current_thread_id = thread::current().id();
+    let engine_addr = overlay.engine as usize; // HACK: We say to the compiler ... all is fine by making it before adding it to the thread an usize.
 
-                unsafe {
-                    if FLUTTER_OVERLAY_RAW_PTR.is_null() {
-                        error!("[TaskRunner] FLUTTER_OVERLAY_RAW_PTR is null. Exiting.");
-                        return;
-                    }
-                    let overlay = &mut *FLUTTER_OVERLAY_RAW_PTR;
+    let handle = thread::Builder::new()
+        .name(format!("task_runner_{}", name_for_thread))
+        .spawn(move || {
+            loop {
+                let engine = engine_addr as FlutterEngine;
 
-                    if let Some(custom_runners_box) = overlay._custom_task_runners_struct.as_ref() {
-                        let custom_runners_ptr = &**custom_runners_box;
-                        if !custom_runners_ptr.platform_task_runner.is_null() {
-                            let desc_ptr = custom_runners_ptr.platform_task_runner;
-                            if !(*desc_ptr).user_data.is_null() {
-                                let context =
-                                    &mut *((*desc_ptr).user_data as *mut TaskRunnerContext);
-                                context.task_runner_thread_id = Some(current_thread_id);
-                            } else {
-                                error!("[TaskRunner] user_data is null. Exiting.");
-                                return;
-                            }
+                if engine.is_null() {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+
+                let mut task_to_run: Option<ScheduledTask> = None;
+                let mut wait_duration = Duration::from_millis(2);
+
+                {
+                    let mut queue_guard = task_queue_for_thread.queue.lock().unwrap();
+                    let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
+
+                    if let Some(task) = queue_guard.peek() {
+                        if task.target_time <= now {
+                            task_to_run = queue_guard.pop();
                         } else {
-                            error!("[TaskRunner] platform_task_runner is null. Exiting.");
-                            return;
+                            let nanos_until_due = task.target_time - now;
+                            wait_duration = Duration::from_nanos(nanos_until_due);
                         }
-                    } else {
-                        error!("[TaskRunner] _custom_task_runners_struct is None. Exiting.");
-                        return;
+                    }
+
+                    if task_to_run.is_none() {
+                        let wait_cap = Duration::from_millis(8);
+                        let final_wait = std::cmp::min(wait_duration, wait_cap);
+                        let _ = task_queue_for_thread
+                            .condvar
+                            .wait_timeout(queue_guard, final_wait);
                     }
                 }
 
-                let task_queue_arc = &*TASK_QUEUE_STATE;
-                let retry_engine_delay = Duration::from_millis(10);
-
-                loop {
-                    let engine = unsafe {
-                        if FLUTTER_OVERLAY_RAW_PTR.is_null() {
-                            info!("[TaskRunner] Overlay ptr is null. Exiting.");
-                            break;
-                        }
-                        let overlay = &*FLUTTER_OVERLAY_RAW_PTR;
-                        if overlay.engine.is_null() {
-                            thread::sleep(retry_engine_delay);
-                            continue;
-                        }
-                        overlay.engine
+                if let Some(scheduled_task) = task_to_run {
+                    let result = unsafe {
+                        (engine_dll_for_thread.FlutterEngineRunTask)(engine, &scheduled_task.task.0)
                     };
-
-                    let mut task_to_run: Option<ScheduledTask> = None;
-                    let mut wait_duration = Duration::from_millis(2);
-
-                    {
-                        let mut queue_guard = match task_queue_arc.queue.lock() {
-                            Ok(guard) => guard,
-                            Err(poisoned) => {
-                                error!(
-                                    "[TaskRunner] Queue mutex poisoned: {:?}. Exiting.",
-                                    poisoned
-                                );
-                                break;
-                            }
-                        };
-
-                        let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
-
-                        if let Some(task) = queue_guard.peek() {
-                            if task.target_time <= now {
-                                task_to_run = queue_guard.pop();
-                            } else {
-                                let nanos_until_due = task.target_time - now;
-                                wait_duration = Duration::from_nanos(nanos_until_due);
-                            }
-                        }
-
-                        if task_to_run.is_none() {
-                            let wait_cap = Duration::from_millis(8);
-                            let final_wait = std::cmp::min(wait_duration, wait_cap);
-
-                            match task_queue_arc.condvar.wait_timeout(queue_guard, final_wait) {
-                                Ok((_guard, _)) => {}
-                                Err(poisoned) => {
-                                    error!(
-                                        "[TaskRunner] Condvar wait poisoned: {:?}. Exiting.",
-                                        poisoned
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(scheduled_task) = task_to_run {
-                        let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
-
-                        let slack_ns = 500_000;
-                        if scheduled_task.target_time > now
-                            && (scheduled_task.target_time - now) < slack_ns
-                        {
-                            while unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() }
-                                < scheduled_task.target_time
-                            {}
-                        }
-
-                        let result =
-                            unsafe { (engine_dll_for_thread.FlutterEngineRunTask)(engine, &scheduled_task.task.0) };
-                        if result != FlutterEngineResult_kSuccess {
-                            error!(
-                                "[TaskRunner] FlutterEngineRunTask for TaskId {} failed: {:?}",
-                                scheduled_task.task.0.task, result
-                            );
-                        }
+                    if result != FlutterEngineResult_kSuccess {
+                        error!("[TaskRunner] FlutterEngineRunTask failed: {:?}", result);
                     }
                 }
+            }
+        })
+        .expect("Failed to spawn task runner thread");
 
-                info!("[TaskRunner] Exiting thread: {:?}", current_thread_id);
-            })
-            .expect("Failed to spawn task runner thread");
-
-        info!("[TaskRunner] Task runner thread spawned successfully.");
-    });
+    overlay.task_runner_thread = Some(std::sync::Arc::new(handle));
 }

@@ -11,7 +11,7 @@ use winapi::um::winuser::{
     VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
@@ -23,8 +23,9 @@ use crate::embedder::{
     FlutterKeyEventType_kFlutterKeyEventTypeUp, FlutterPlatformMessage,
 };
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::{
-    ACTIVE_TEXT_INPUT_STATE, TextInputModel, send_perform_action_to_flutter,
+     TextInputModel, send_perform_action_to_flutter,
     send_update_editing_state_to_flutter,
 };
 
@@ -131,24 +132,17 @@ fn send_legacy_key_event_platform_message(
     }
 }
 
-pub(crate) fn process_flutter_key_event_internal(
-    engine: FlutterEngine,       
-    engine_dll: &FlutterEngineDll,
-    _hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    flutter_is_active_and_can_process: bool,
-) -> bool {
+
+
+pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    let engine = overlay.engine;
+    let engine_dll = &overlay.engine_dll;
+
+    if engine.is_null() {
+        return false;
+    }
+
     unsafe {
-
-        if engine.is_null() {
-            return false;
-        }
-        if !flutter_is_active_and_can_process {
-            return false;
-        }
-
         let hkl: HKL = GetKeyboardLayout(0);
 
         match msg {
@@ -160,9 +154,8 @@ pub(crate) fn process_flutter_key_event_internal(
                 let mut event_handled_by_text_input = false;
 
                 {
-                    let mut active_state_guard = ACTIVE_TEXT_INPUT_STATE
-                        .lock()
-                        .expect("Mutex panic: ACTIVE_TEXT_INPUT_STATE");
+                    let mut active_state_guard = overlay.text_input_state.lock().unwrap();
+                    
                     if let Some(active_state) = active_state_guard.as_mut() {
                         match original_virtual_key as i32 {
                             VK_RETURN => {
@@ -170,16 +163,14 @@ pub(crate) fn process_flutter_key_event_internal(
                                 let input_action = active_state.input_action.clone();
                                 if active_state.input_action.contains("newline") {
                                     active_state.model.insert_char('\n');
-                                    send_update_args =
-                                        Some((client_id, active_state.model.clone()));
+                                    send_update_args = Some((client_id, active_state.model.clone()));
                                 }
                                 send_action_args = Some((client_id, input_action));
                                 event_handled_by_text_input = true;
                             }
                             VK_BACK => {
                                 active_state.model.backspace();
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
+                                send_update_args = Some((active_state.client_id, active_state.model.clone()));
                                 event_handled_by_text_input = true;
                             }
                             _ => {}
@@ -188,10 +179,10 @@ pub(crate) fn process_flutter_key_event_internal(
                 }
 
                 if let Some((client_id, cloned_model)) = send_update_args {
-                    send_update_editing_state_to_flutter(engine,engine_dll, client_id, &cloned_model);
+                    send_update_editing_state_to_flutter(engine, engine_dll, client_id, &cloned_model);
                 }
                 if let Some((client_id, action_string)) = send_action_args {
-                    send_perform_action_to_flutter(engine,engine_dll, client_id, &action_string);
+                    send_perform_action_to_flutter(engine, engine_dll, client_id, &action_string);
                 }
 
                 if event_handled_by_text_input {
@@ -214,14 +205,8 @@ pub(crate) fn process_flutter_key_event_internal(
                     hkl,
                 );
 
-                let characters_bytes_for_flutter_key_event = if flutter_event_type
-                    == FlutterKeyEventType_kFlutterKeyEventTypeDown
-                    || flutter_event_type == FlutterKeyEventType_kFlutterKeyEventTypeRepeat
-                {
-                    get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl)
-                } else {
-                    [0u8; 8]
-                };
+                let characters_bytes_for_flutter_key_event =
+                    get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl);
 
                 send_key_event_to_flutter(
                     engine,
@@ -248,12 +233,14 @@ pub(crate) fn process_flutter_key_event_internal(
                 let original_virtual_key = wparam.0 as u16;
                 let scan_code_raw = ((lparam.0 >> 16) & 0xFF) as u32;
                 let is_extended_key = ((lparam.0 >> 24) & 0x01) != 0;
+                
                 let (physical_key, logical_key) = windows_to_flutter_key_codes(
                     original_virtual_key,
                     scan_code_raw,
                     is_extended_key,
                     hkl,
                 );
+                
                 send_key_event_to_flutter(
                     engine,
                     engine_dll,
@@ -263,6 +250,7 @@ pub(crate) fn process_flutter_key_event_internal(
                     &[0u8; 8],
                     false,
                 );
+                
                 send_legacy_key_event_platform_message(
                     engine,
                     engine_dll,
@@ -281,9 +269,8 @@ pub(crate) fn process_flutter_key_event_internal(
 
                 if let Some(char_val) = std::char::from_u32(char_code) {
                     {
-                        let mut active_state_guard = ACTIVE_TEXT_INPUT_STATE
-                            .lock()
-                            .expect("Mutex panic: ACTIVE_TEXT_INPUT_STATE");
+                        let mut active_state_guard = overlay.text_input_state.lock().unwrap();
+                        
                         if let Some(active_state) = active_state_guard.as_mut() {
                             if char_val != '\x08' && char_val != '\r' && !char_val.is_control() {
                                 active_state.model.insert_char(char_val);
@@ -294,7 +281,7 @@ pub(crate) fn process_flutter_key_event_internal(
                         }
                     }
                     if let Some((client_id, cloned_model)) = send_update_args_char {
-                        send_update_editing_state_to_flutter(engine,engine_dll, client_id, &cloned_model);
+                        send_update_editing_state_to_flutter(engine, engine_dll, client_id, &cloned_model);
                     }
                     if event_handled_by_text_input {
                         return true;
@@ -308,6 +295,7 @@ pub(crate) fn process_flutter_key_event_internal(
         }
     }
 }
+
 
 fn send_key_event_to_flutter(
     engine: FlutterEngine,

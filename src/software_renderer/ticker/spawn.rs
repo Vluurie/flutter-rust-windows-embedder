@@ -1,4 +1,4 @@
-use crate::embedder::{FlutterEngine, FlutterEngineResult_kSuccess};
+use crate::embedder::{FlutterEngineResult_kSuccess};
 
 use crate::software_renderer::overlay::overlay_impl::
     FlutterOverlay
@@ -8,12 +8,15 @@ use crate::software_renderer::ticker::task_scheduler::
 ;
 
 use log::{error, info};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::{thread, time::Duration};
 
+// This is the stable, one-argument version
 pub fn start_task_runner(overlay: &mut FlutterOverlay) {
     if overlay.task_runner_thread.is_some() {
         info!(
-            "[TaskRunner] Task runner for '{}' runs already.",
+            "[TaskRunner] Task runner for '{}' is already running.",
             overlay.name
         );
         return;
@@ -25,16 +28,16 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
     );
 
     let engine_dll_for_thread = overlay.engine_dll.clone();
-    let task_queue_for_thread = overlay.task_queue_state.clone();
+    let task_queue_for_thread = overlay.task_queue_state.clone(); // From FlutterOverlay
     let name_for_thread = overlay.name.clone();
-
-    let engine_addr = overlay.engine as usize; // HACK: We say to the compiler ... all is fine by making it before adding it to the thread an usize.
+    let engine_atomic_ptr = overlay.engine_atomic_ptr.clone();
 
     let handle = thread::Builder::new()
         .name(format!("task_runner_{}", name_for_thread))
         .spawn(move || {
+            // This is your exact task running loop logic
             loop {
-                let engine = engine_addr as FlutterEngine;
+                let engine = engine_atomic_ptr.load(Ordering::SeqCst);
 
                 if engine.is_null() {
                     thread::sleep(Duration::from_millis(10));
@@ -42,7 +45,7 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
                 }
 
                 let mut task_to_run: Option<ScheduledTask> = None;
-                let mut wait_duration = Duration::from_millis(2);
+                let mut wait_duration = Duration::from_millis(100);
 
                 {
                     let mut queue_guard = task_queue_for_thread.queue.lock().unwrap();
@@ -56,13 +59,11 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
                             wait_duration = Duration::from_nanos(nanos_until_due);
                         }
                     }
-
+                    
                     if task_to_run.is_none() {
-                        let wait_cap = Duration::from_millis(8);
-                        let final_wait = std::cmp::min(wait_duration, wait_cap);
                         let _ = task_queue_for_thread
                             .condvar
-                            .wait_timeout(queue_guard, final_wait);
+                            .wait_timeout(queue_guard, wait_duration);
                     }
                 }
 
@@ -78,5 +79,17 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
         })
         .expect("Failed to spawn task runner thread");
 
-    overlay.task_runner_thread = Some(std::sync::Arc::new(handle));
+    let thread_id = handle.thread().id();
+
+    // This modifies the context owned by FlutterOverlay.
+    // This is the key part for the one-argument version.
+    if let Some(context_ref_mut) = &mut overlay._platform_runner_context {
+        context_ref_mut.task_runner_thread_id = Some(thread_id);
+        info!("[TaskRunner] Context for '{}' updated with thread ID: {:?}", overlay.name, thread_id);
+    } else {
+        // This case should ideally not happen if init_overlay correctly initializes _platform_runner_context
+        error!("[TaskRunner] CRITICAL: _platform_runner_context is None in FlutterOverlay. Cannot set thread ID.");
+    }
+
+    overlay.task_runner_thread = Some(Arc::new(handle));
 }

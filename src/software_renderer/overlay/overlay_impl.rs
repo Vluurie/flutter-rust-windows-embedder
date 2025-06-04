@@ -1,32 +1,26 @@
 use std::{
-    collections::HashMap, ffi::{c_char, c_void, CStr, CString}, sync::{
-        atomic::{AtomicBool, AtomicI32}, Arc, Mutex
-    }, thread
+    collections::HashMap,
+    ffi::{c_char, c_void, CStr, CString},
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicPtr}, Arc, Mutex
+    },
+    thread,
 };
 
 use log::info;
 use windows::Win32::{
     Foundation::HWND,
-    Graphics::
-        Direct3D11::{
-            ID3D11ShaderResourceView, ID3D11Texture2D,
-        }
-    ,
+    Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
 use crate::{
-    embedder::{FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
+    embedder::{self, FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
     software_renderer::{
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
-        overlay::{
-            semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState
-        },
-        ticker::
-            task_scheduler::{TaskQueueState, TaskRunnerContext}
-        ,
+        overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
+        ticker::task_scheduler::{TaskQueueState, TaskRunnerContext},
     },
 };
-
 
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
@@ -82,8 +76,11 @@ pub struct FlutterOverlay {
     pub is_debug_build: bool,
 
     /// Pointer to the native Flutter engine instance. Managed internally.
-    /// **CRITICAL INTERNAL: Must be valid post-`init_overlay` for all operations.**
-    pub(crate) engine: FlutterEngine,
+    /// Can be used to check for operations if the engine !is_null()
+    /// **CRITICAL: Must be valid post-`init_overlay` for all operations.**
+    pub engine: FlutterEngine,
+
+    pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
     /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
     pub(crate) pixel_buffer: Vec<u8>,
@@ -133,6 +130,7 @@ impl Clone for FlutterOverlay {
     fn clone(&self) -> Self {
         Self {
             engine: self.engine,
+            engine_atomic_ptr: self.engine_atomic_ptr.clone(),
             pixel_buffer: self.pixel_buffer.clone(),
             width: self.width,
             height: self.height,

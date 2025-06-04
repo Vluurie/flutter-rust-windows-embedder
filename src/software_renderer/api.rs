@@ -143,7 +143,6 @@ impl FlutterOverlay {
 
     /// Performs per-frame updates, primarily uploading the pixel buffer to the GPU texture.
     pub fn tick(&self, context: &ID3D11DeviceContext) {
-        // Geändert zu &self basierend auf vorheriger Logik
         tick(self, context);
     }
 
@@ -151,7 +150,6 @@ impl FlutterOverlay {
     /// # Returns
     /// `true` if Flutter handled the event, `false` otherwise.
     pub fn handle_keyboard_event(&self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
-        // Der interne Handler gibt bool zurück, also geben wir es hier auch zurück.
         handle_keyboard_event(self, msg, wparam, lparam)
     }
 

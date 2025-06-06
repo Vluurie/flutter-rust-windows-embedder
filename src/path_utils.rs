@@ -70,7 +70,6 @@ use windows::{
 /// - `data/app.so`
 pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let dll_dir = dll_directory();
-    info!("[Path Utils] Using DLL directory as root: {}", dll_dir.display());
     get_flutter_paths_from(&dll_dir)
 }
 /// Like `get_flutter_paths()`, but rooted at the provided `root_dir`.
@@ -78,7 +77,6 @@ pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 /// Panics if `flutter_assets` or `icudtl.dat` are not found under `root_dir/data/`;
 /// but if `app.so` is missing, falls back to JIT mode (returns an empty AOT path).
 pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    info!("[Path Utils] Resolving Flutter paths under `{}`", root_dir.display());
 
     let data_dir   = root_dir.join("data");
     let assets_dir = data_dir.join("flutter_assets");
@@ -122,7 +120,6 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        debug!("[Path Utils] UTF-16 path: {:?}", wide);
         wide
     }
 
@@ -140,7 +137,6 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
 /// they cancel.
 pub fn select_data_directory() -> Option<PathBuf> {
     unsafe {
-        info!("[Path Utils] Showing folder-picker dialog");
         // Make sure COM is initialized (STA).
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
@@ -151,11 +147,9 @@ pub fn select_data_directory() -> Option<PathBuf> {
             CLSCTX_INPROC_SERVER,
         ).ok()?;
         dialog.SetOptions(FOS_PICKFOLDERS).ok()?;
-        debug!("[Path Utils] Folder-picker configured for folders only");
 
         // Show it (no owner window).
         dialog.Show(HWND(0)).ok()?;
-        debug!("[Path Utils] Folder-picker accepted");
 
         // Get the selected item.
         let item = dialog.GetResult().ok()?;

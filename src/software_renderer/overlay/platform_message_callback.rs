@@ -1,33 +1,14 @@
-use crate::embedder::{
-    self, FlutterEngine
-};
-use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
+use crate::embedder::{self};
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
 use log::error;
-use once_cell::sync::Lazy;
 
 use std::ffi::{CStr, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
-use std::sync::{Arc, Mutex};
 use std::{ptr, str};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-
-use super::overlay_impl::UnsafeSendSyncFlutterEngine;
-
-pub(crate) static DESIRED_FLUTTER_CURSOR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
-static GLOBAL_PLATFORM_MESSAGE_STATE: Lazy<
-    Mutex<Option<(UnsafeSendSyncFlutterEngine, Arc<FlutterEngineDll>)>>,
-> = Lazy::new(|| Mutex::new(None));
-
-pub(crate) fn set_global_engine_for_platform_messages(
-    engine: FlutterEngine,
-    engine_dll_arc: Arc<FlutterEngineDll>,
-) {
-    let mut guard = GLOBAL_PLATFORM_MESSAGE_STATE.lock().unwrap();
-    *guard = Some((UnsafeSendSyncFlutterEngine(engine), engine_dll_arc));
-}
 
 const K_SMC_NULL: u8 = 0;
 const K_SMC_TRUE: u8 = 1;
@@ -46,7 +27,7 @@ fn read_exact_checked(
         Ok(()) => Ok(()),
         Err(e) if e.kind() == IoErrorKind::UnexpectedEof => Err(IoError::new(
             IoErrorKind::UnexpectedEof,
-            format!("Unexpected EOF"), 
+            format!("Unexpected EOF"),
         )),
         Err(e) => Err(e),
     }
@@ -146,38 +127,29 @@ fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<St
     Ok((method_name, args_kind_value))
 }
 
-fn set_desired_cursor(new_kind: Option<String>) {
-    if let Ok(mut guard) = DESIRED_FLUTTER_CURSOR.lock() {
-        *guard = new_kind;
-    }
-}
-
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
-    user_data: *mut c_void, //TODO:  THIS IS THE PREFERRED WAY TO GET CONTEXT but we use globale static for mvp now
+    user_data: *mut c_void,
 ) {
     unsafe {
-    if platform_message.is_null() {
-        return;
-    }
-    let message = &*platform_message;
+        if platform_message.is_null() {
+            return;
+        }
 
-       let global_state_guard = GLOBAL_PLATFORM_MESSAGE_STATE.lock().unwrap();
-        let (engine_wrapper, engine_dll_arc) = match *global_state_guard {
-            Some((wrapped_engine, ref dll_arc)) if !wrapped_engine.0.is_null() => {
-                (wrapped_engine, dll_arc.clone())
-            }
-            _ => {
-                error!("[PlatformMsgCB] Global engine or DLL not set. Cannot process message or send response.");
-                return;
-            }
-        };
-        let engine_handle = engine_wrapper.0;
+        if user_data.is_null() {
+            error!("[PlatformMsgCB] user_data is null. Cannot process message.");
+            return;
+        }
 
-   if message.channel.is_null() {
+        let overlay: &mut FlutterOverlay = &mut *(user_data as *mut FlutterOverlay);
+        let engine_handle = overlay.engine;
+        let engine_dll_arc = overlay.engine_dll.clone();
+
+        let message = &*platform_message;
+
+        if message.channel.is_null() {
             if !message.response_handle.is_null() {
-
                 let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
                     engine_handle,
                     message.response_handle,
@@ -188,40 +160,46 @@ pub(crate) extern "C" fn simple_platform_message_callback(
             return;
         }
 
-    let channel_name_c_str = CStr::from_ptr(message.channel);
-    let channel_name_str = channel_name_c_str.to_string_lossy();
-    let channel_name = channel_name_str.as_ref();
-    
-    let mut response_sent_by_handler = false; 
+        let channel_name_c_str = CStr::from_ptr(message.channel);
+        let channel_name_str = channel_name_c_str.to_string_lossy();
+        let channel_name = channel_name_str.as_ref();
 
-    if channel_name == "flutter/mousecursor" {
-        if message.message_size > 0 && !message.message.is_null() {
-            let slice = std::slice::from_raw_parts(message.message, message.message_size);
-            let mut msg_cursor = Cursor::new(slice);
-            if !slice.is_empty() {
-                match slice[0] {
-                    K_SMC_LIST => {
-                        if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
-                            if method == "activateSystemCursor" {
-                                set_desired_cursor(kind_opt);
+        let mut response_sent_by_handler = false;
+
+        if channel_name == "flutter/mousecursor" {
+            if message.message_size > 0 && !message.message.is_null() {
+                let slice = std::slice::from_raw_parts(message.message, message.message_size);
+                let mut msg_cursor = Cursor::new(slice);
+                if !slice.is_empty() {
+                    match slice[0] {
+                        K_SMC_LIST => {
+                            if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
+                                if method == "activateSystemCursor" {
+                                    // set_desired_cursor(kind_opt);
+                                    if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                                        *guard = kind_opt;
+                                    }
+                                }
                             }
                         }
-                    },
-                    K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
-                        if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
-                            set_desired_cursor(kind_opt);
+                        K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
+                            if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
+                                // set_desired_cursor(kind_opt);
+                                if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                                    *guard = kind_opt;
+                                }
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
-    } else if channel_name == "flutter/textinput" {
-        custom_text_input_platform_message_handler(platform_message, user_data);
-        if !message.response_handle.is_null() {
-            response_sent_by_handler = true;
-        }
-    } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
+        } else if channel_name == "flutter/textinput" {
+            custom_text_input_platform_message_handler(platform_message, user_data);
+            if !message.response_handle.is_null() {
+                response_sent_by_handler = true;
+            }
+        } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
             if !message.response_handle.is_null() {
                 let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
                     engine_handle,
@@ -233,7 +211,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
             }
         }
 
-     if !response_sent_by_handler && !message.response_handle.is_null() {
+        if !response_sent_by_handler && !message.response_handle.is_null() {
             let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
                 engine_handle,
                 message.response_handle,
@@ -241,5 +219,5 @@ pub(crate) extern "C" fn simple_platform_message_callback(
                 0,
             );
         }
-}
+    }
 }

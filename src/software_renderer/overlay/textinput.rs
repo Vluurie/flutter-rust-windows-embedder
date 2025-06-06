@@ -1,15 +1,13 @@
 use std::ffi::{c_void, CStr, CString};
-use std::sync::{Arc, Mutex};
 use std::ptr;
 
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::embedder::FlutterEngine;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
-use super::overlay_impl::UnsafeSendSyncFlutterEngine;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FlutterTextEditingState {
@@ -25,7 +23,7 @@ pub(crate) struct FlutterTextEditingState {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TextInputModel {
+pub struct TextInputModel {
     pub text: String,
     pub selection_base_utf8: usize,
     pub selection_extent_utf8: usize,
@@ -101,24 +99,10 @@ impl TextInputModel {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveTextInputState {
+pub struct ActiveTextInputState {
     pub client_id: i32,
     pub input_action: String,
     pub model: TextInputModel,
-}
-
-pub(crate) static ACTIVE_TEXT_INPUT_STATE: Lazy<Mutex<Option<ActiveTextInputState>>> = Lazy::new(|| Mutex::new(None));
-
-static TEXT_INPUT_GLOBAL_ENGINE_STATE: Lazy<
-    Mutex<Option<(UnsafeSendSyncFlutterEngine, Arc<FlutterEngineDll>)>>,
-> = Lazy::new(|| Mutex::new(None));
-
-pub(crate) unsafe fn text_input_set_global_engine(
-    engine: FlutterEngine,
-    engine_dll_arc: Arc<FlutterEngineDll>,
-) {
-    let mut guard = TEXT_INPUT_GLOBAL_ENGINE_STATE.lock().unwrap();
-    *guard = Some((UnsafeSendSyncFlutterEngine(engine), engine_dll_arc));
 }
 
 fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i32 {
@@ -171,30 +155,27 @@ pub(crate) fn send_perform_action_to_flutter(engine: FlutterEngine,  engine_dll:
 }
 
 #[unsafe(no_mangle)]
-pub(crate) extern "C" fn custom_text_input_platform_message_handler(
+pub(crate) unsafe extern "C" fn custom_text_input_platform_message_handler(
     platform_message: *const crate::embedder::FlutterPlatformMessage,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) {
     unsafe {
-     if platform_message.is_null() {
-            return;
-        }
-        let message = &*platform_message;
+    if platform_message.is_null() || user_data.is_null() {
+        return;
+    }
 
-        let engine_state_guard = TEXT_INPUT_GLOBAL_ENGINE_STATE.lock().unwrap();
-        let (unsafe_engine_wrapper, engine_dll_arc) = match *engine_state_guard {
-            Some((wrapped_engine, ref dll_arc)) if !wrapped_engine.0.is_null() => {
-                (wrapped_engine, dll_arc.clone()) // Clone Arc for use
-            }
-            _ => {
-                log::warn!("[TextInputCB] Global engine or DLL not set. Cannot process message.");
-                return;
-            }
-        };
-        let engine_handle = unsafe_engine_wrapper.0;
+    let message = &*platform_message;
+
+
+    let overlay: &mut FlutterOverlay = &mut *(user_data as *mut FlutterOverlay);
+    let engine_handle = overlay.engine;
+    let engine_dll_arc = overlay.engine_dll.clone();
+
 
     let channel_name_c_str = CStr::from_ptr(message.channel);
-    if channel_name_c_str.to_string_lossy() != "flutter/textinput" { return; }
+    if channel_name_c_str.to_string_lossy() != "flutter/textinput" {
+        return;
+    }
 
     let slice = std::slice::from_raw_parts(message.message, message.message_size);
 
@@ -202,16 +183,27 @@ pub(crate) extern "C" fn custom_text_input_platform_message_handler(
         if let Some(method_call) = parsed_json.as_object() {
             if let Some(method_name) = method_call.get("method").and_then(|m| m.as_str()) {
                 let args = method_call.get("args");
-                
-                let mut active_state_guard = ACTIVE_TEXT_INPUT_STATE.lock().expect("Mutex panic: ACTIVE_TEXT_INPUT_STATE");
+
+                // --- NEU: Auf den Zustand der Instanz zugreifen ---
+                let mut active_state_guard = overlay
+                    .text_input_state
+                    .lock()
+                    .expect("Mutex panic: text_input_state");
 
                 match method_name {
                     "TextInput.setClient" => {
-                        if let Some(arr) = args.and_then(|a|a.as_array()) {
-                            if let (Some(id_val), Some(cfg_map)) = (arr.get(0).and_then(|v|v.as_i64()), arr.get(1).and_then(|v|v.as_object())) {
+                        if let Some(arr) = args.and_then(|a| a.as_array()) {
+                            if let (Some(id_val), Some(cfg_map)) = (
+                                arr.get(0).and_then(|v| v.as_i64()),
+                                arr.get(1).and_then(|v| v.as_object()),
+                            ) {
                                 let client_id = id_val as i32;
-                                let action = cfg_map.get("inputAction").and_then(|v|v.as_str()).unwrap_or("TextInputAction.done").to_string();
-                                
+                                let action = cfg_map
+                                    .get("inputAction")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("TextInputAction.done")
+                                    .to_string();
+
                                 *active_state_guard = Some(ActiveTextInputState {
                                     client_id,
                                     input_action: action.clone(),
@@ -226,32 +218,38 @@ pub(crate) extern "C" fn custom_text_input_platform_message_handler(
                     "TextInput.setEditingState" => {
                         if let Some(current_state) = active_state_guard.as_mut() {
                             if let Some(state_map_val) = args.and_then(|a| a.as_object()) {
-                                    if let Ok(flutter_state) = serde_json::from_value::<FlutterTextEditingState>(serde_json::Value::Object(state_map_val.clone())) {
-                                         /* TODO: This is just a placeholder  */
-                                        current_state.model.text = flutter_state.text;
-                                        current_state.model.selection_base_utf8 = flutter_state.selection_base.max(0) as usize; 
-                                        current_state.model.selection_extent_utf8 = flutter_state.selection_extent.max(0) as usize; 
-                                        current_state.model.sanitize_offsets();
-                                    }
+                                if let Ok(flutter_state) = serde_json::from_value::<
+                                    FlutterTextEditingState,
+                                >(serde_json::Value::Object(
+                                    state_map_val.clone(),
+                                )) {
+
+                                    current_state.model.text = flutter_state.text;
+                                    current_state.model.selection_base_utf8 =
+                                        flutter_state.selection_base.max(0) as usize;
+                                    current_state.model.selection_extent_utf8 =
+                                        flutter_state.selection_extent.max(0) as usize;
+                                    current_state.model.sanitize_offsets();
+                                }
                             }
                         }
                     }
                     "TextInput.show" | "TextInput.hide" | "TextInput.setEditableSizeAndTransform" => {
                         // No-op in this version
                     }
-                    _ => { /* TODO: Unhandled methods  */ }
+                    _ => { /* TODO: Unhandled methods */ }
                 }
             }
         }
     }
 
-     if !message.response_handle.is_null() {
-            let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                engine_handle,
-                message.response_handle,
-                ptr::null(),
-                0,
-            );
-        }
+    if !message.response_handle.is_null() {
+        let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+            engine_handle,
+            message.response_handle,
+            ptr::null(),
+            0,
+        );
+    }
 }
 }

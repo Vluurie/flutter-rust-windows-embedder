@@ -1,20 +1,21 @@
-use crate::embedder::{FlutterCustomTaskRunners, FlutterTaskRunnerDescription};
+use crate::embedder::FlutterTaskRunnerDescription;
 use crate::software_renderer::ticker::task_scheduler::{
-    TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
-    runs_task_on_current_thread_callback,
+    destroy_task_runner_context_callback, post_task_callback, runs_task_on_current_thread_callback, TaskQueueState, TaskRunnerContext
 };
 
 use log::info;
 use std::ffi::{CStr, CString, OsStr, c_void};
+use std::sync::Arc;
 
 const ARGS: &[&str] = &[
-    "flutter_rust_embedder_app",
+    "flutter_rust_embedder_instance",
     "--enable-software-rendering",
     "--skia-deterministic-rendering",
     "--verbose-system-logs",
     "--show-performance-overlay",
-    "--disable-service-auth-codes",
-    "--observatory-port=8801",
+    // "--disable-service-auth-codes",
+    //TODO: Since we have now multi instances we dont know port upfront, if only one instance exist maybe we can add a new configure option to set the port from outside
+    // "--observatory-port=8801",
 ];
 
 pub static FLUTTER_LOG_TAG: &CStr =
@@ -41,15 +42,17 @@ pub unsafe extern "C" fn flutter_log_callback(
 
 fn create_task_runner_description_with_context(
     identifier: usize,
+    task_queue: Arc<TaskQueueState>,
 ) -> (FlutterTaskRunnerDescription, Box<TaskRunnerContext>) {
     let context = Box::new(TaskRunnerContext {
         task_runner_thread_id: None,
+        task_queue,
     });
     let context_ptr = Box::into_raw(context);
 
     let description = FlutterTaskRunnerDescription {
         struct_size: std::mem::size_of::<FlutterTaskRunnerDescription>(),
-        user_data: context_ptr as *mut c_void,
+        user_data: context_ptr as *mut c_void, // looks at TaskRunnerContext
         runs_task_on_current_thread_callback: Some(runs_task_on_current_thread_callback),
         post_task_callback: Some(post_task_callback),
         identifier,
@@ -62,19 +65,16 @@ pub(crate) fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
     dart_args_opt: Option<&[String]>,
-     is_debug: bool,
+    is_debug: bool,
 ) -> (
-    CString,      // assets_c
-    CString,      // icu_c
-    Vec<CString>, // engine_argv_cs
-    Vec<CString>, // dart_argv_cs
-    Box<TaskRunnerContext>,
-    Box<FlutterTaskRunnerDescription>,
-    Box<FlutterCustomTaskRunners>,
+    CString,          // assets_c
+    CString,          // icu_c
+    Vec<CString>,     // engine_argv_cs
+    Vec<CString>,     // dart_argv_cs
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
-      let engine_argv_cs: Vec<CString> = if is_debug {
+    let engine_argv_cs: Vec<CString> = if is_debug {
         ARGS.iter()
             .map(|&s| CString::new(s).expect("Failed to create CString from ARGS"))
             .collect()
@@ -82,35 +82,16 @@ pub(crate) fn build_project_args_and_strings(
         Vec::new()
     };
 
-    let mut dart_argv_cs: Vec<CString> = Vec::new();
-    if let Some(dart_args_slice) = dart_args_opt {
-        for arg_str in dart_args_slice {
-            let c_string_arg = CString::new(arg_str.as_str()).unwrap_or_else(|_| {
-                panic!("Failed to convert Dart argument to CString: {}", arg_str)
-            });
-            dart_argv_cs.push(c_string_arg);
-        }
-    }
-
-    let (platform_desc_st, platform_context_owner) = create_task_runner_description_with_context(1);
-    let platform_runner_description_owner = Box::new(platform_desc_st);
-    let custom_task_runners_owner = Box::new(FlutterCustomTaskRunners {
-        struct_size: std::mem::size_of::<FlutterCustomTaskRunners>(),
-        platform_task_runner: &*platform_runner_description_owner
-            as *const FlutterTaskRunnerDescription,
-        render_task_runner: &*platform_runner_description_owner
-            as *const FlutterTaskRunnerDescription,
-        thread_priority_setter: None,
-    });
+    let dart_argv_cs: Vec<CString> = dart_args_opt.unwrap_or(&[])
+        .iter()
+        .map(|s| CString::new(s.as_str()).unwrap())
+        .collect();
 
     (
         assets_c,
         icu_c,
         engine_argv_cs,
         dart_argv_cs,
-        platform_context_owner,
-        platform_runner_description_owner,
-        custom_task_runners_owner,
     )
 }
 pub(crate) fn maybe_load_aot_path_to_cstring(aot_opt: Option<&OsStr>) -> Option<CString> {

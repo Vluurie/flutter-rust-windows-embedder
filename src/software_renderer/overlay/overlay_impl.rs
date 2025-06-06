@@ -1,20 +1,29 @@
-use std::{ffi::{c_char, c_void, CStr, CString}, ptr, sync::Arc};
+use std::{
+    collections::HashMap,
+    ffi::{c_char, c_void, CStr, CString},
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicPtr}, Arc, Mutex
+    },
+    thread,
+};
 
 use log::info;
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D};
+use windows::Win32::{
+    Foundation::HWND,
+    Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
+};
 
-use crate::{embedder::{self, FlutterEngine}, software_renderer::{dynamic_flutter_engine_dll_loader::FlutterEngineDll, ticker}};
+use crate::{
+    embedder::{self, FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
+    software_renderer::{
+        dynamic_flutter_engine_dll_loader::FlutterEngineDll,
+        overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
+        ticker::task_scheduler::{TaskQueueState, TaskRunnerContext},
+    },
+};
 
-use super::{d3d::{create_srv, create_texture}, engine::update_flutter_window_metrics, init};
-
-
-pub static mut FLUTTER_OVERLAY_RAW_PTR: *mut FlutterOverlay = ptr::null_mut();
-pub static FLUTTER_LOG_TAG: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
-
-#[derive(Debug, Copy, Clone)]
-pub struct UnsafeSendSyncFlutterEngine(pub FlutterEngine);
-unsafe impl Send for UnsafeSendSyncFlutterEngine {}
-unsafe impl Sync for UnsafeSendSyncFlutterEngine {}
+pub static FLUTTER_LOG_TAG: &CStr =
+    unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
 unsafe extern "C" fn flutter_log_callback(
     tag: *const c_char,
@@ -26,63 +35,127 @@ unsafe extern "C" fn flutter_log_callback(
     info!("[Flutter][{}] {}", tag, msg);
 }
 
-#[derive(Clone)]
+/// Represents a single Flutter overlay instance, managing its engine, rendering,
+/// and various UI-related states.
+/// Initialization is handled by `init_overlay`, which is responsible for correctly
+/// populating all necessary fields.
 #[repr(C)]
 pub struct FlutterOverlay {
-    pub engine: embedder::FlutterEngine,
-    pub pixel_buffer: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+    /// The DirectX 11 texture resource on the GPU where the Flutter content is rendered.
+    /// Other parts of the crate (e.g., the main game renderer) will use this to draw the overlay.
+    /// **IMPORTANT: Must be a valid texture resource, initialized by `init_overlay`.**
     pub texture: ID3D11Texture2D,
-    pub srv: ID3D11ShaderResourceView,
-    pub(crate) _assets_c: CString,
-    pub(crate) _icu_c:    CString,
-    pub(crate) _engine_argv_cs: Vec<CString>,
-    pub(crate) _dart_argv_cs: Vec<CString>,   
-    pub(crate) _aot_c:    Option<CString>,
-    pub(crate) _platform_runner_context: Option<Box<ticker::task_scheduler::TaskRunnerContext>>,
-    pub(crate) _platform_runner_description: Option<Box<embedder::FlutterTaskRunnerDescription>>,
-    pub(crate) _custom_task_runners_struct: Option<Box<embedder::FlutterCustomTaskRunners>>,
 
-    pub engine_dll: Arc<FlutterEngineDll>,
+    /// The DirectX 11 shader resource view for the `texture`.
+    /// Used by shaders to sample from the overlay texture during rendering.
+    /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
+    pub srv: ID3D11ShaderResourceView,
+
+    /// Current width of the overlay in pixels.
+    /// Can be read by other parts of the crate for layout purposes.
+    /// Updated by `handle_window_resize`. Must be > 0 for rendering.
+    pub width: u32,
+
+    /// Current height of the overlay in pixels.
+    /// Can be read by other parts of the crate for layout purposes.
+    /// Updated by `handle_window_resize`. Must be > 0 for rendering.
+    pub height: u32,
+
+    /// A user-defined name for this overlay instance. Useful for identification,
+    /// logging, or debugging purposes by any part of the crate.
+    pub name: String,
+
+    /// Atomic boolean indicating if the mouse cursor is currently hovering over an
+    /// interactive widget (e.g., button, text field) within this overlay's semantics tree.
+    /// Can be read by other parts of the crate (e.g., game input logic) to alter behavior.
+    pub is_interactive_widget_hovered: AtomicBool,
+
+    /// A boolean flag indicating if this specific overlay instance is running with
+    /// debug assets (e.g., in JIT mode due to the absence of an AOT snapshot).
+    /// Determined during `init_overlay` and can be read for diagnostic or conditional logic.
+    pub is_debug_build: bool,
+
+    /// Pointer to the native Flutter engine instance. Managed internally.
+    /// Can be used to check for operations if the engine !is_null()
+    /// **CRITICAL: Must be valid post-`init_overlay` for all operations.**
+    pub engine: FlutterEngine,
+
+    pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
+
+    /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
+    pub(crate) pixel_buffer: Vec<u8>,
+
+    /// The current cursor style requested by Flutter. Managed internally by `handle_set_cursor`
+    /// and platform message callbacks.
+    pub(crate) desired_cursor: Arc<Mutex<Option<String>>>,
+
+    /// The Windows HWND this overlay is associated with. Set by `init_overlay`, used internally.
+    pub(crate) windows_handler: HWND,
+
+    /// Shared reference to the loaded Flutter engine DLL. Managed internally.
+    /// **CRITICAL INTERNAL: Must be valid post-`init_overlay`.**
+    pub(crate) engine_dll: Arc<FlutterEngineDll>,
+
+    /// State of the active text input field. Managed by text input callbacks and methods.
+    pub(crate) text_input_state: Arc<Mutex<Option<ActiveTextInputState>>>,
+
+    /// Instance-specific task queue. Managed by task runner and `post_task_callback`.
+    pub(crate) task_queue_state: Arc<TaskQueueState>,
+
+    /// Join handle for the task runner thread. Managed by `start_task_runner` and potentially `drop`.
+    pub(crate) task_runner_thread: Option<Arc<thread::JoinHandle<()>>>,
+
+    /// Tracks pressed mouse buttons for this overlay. Managed by `handle_pointer_event`.
+    pub(crate) mouse_buttons_state: AtomicI32,
+
+    /// Tracks if the `kAdd` pointer event was sent. Managed by `handle_pointer_event`.
+    pub(crate) is_mouse_added: AtomicBool,
+
+    /// Semantics tree data for this overlay. Managed by semantics callbacks and hover state updates.
+    pub(crate) semantics_tree_data: Arc<Mutex<HashMap<i32, ProcessedSemanticsNode>>>,
+
+    // --- Crate-internal fields for FFI setup, primarily managed by `init_overlay`
+    // and `build_project_args_and_strings`. These are implementation details.
+    pub(crate) _assets_c: CString,
+    pub(crate) _icu_c: CString,
+    pub(crate) _engine_argv_cs: Vec<CString>,
+    pub(crate) _dart_argv_cs: Vec<CString>,
+    pub(crate) _aot_c: Option<CString>,
+    pub(crate) _platform_runner_context: Option<Box<TaskRunnerContext>>,
+    pub(crate) _platform_runner_description: Option<Box<FlutterTaskRunnerDescription>>,
+    pub(crate) _custom_task_runners_struct: Option<Box<FlutterCustomTaskRunners>>,
 }
 
-impl FlutterOverlay {
-    pub fn init(
-        data_dir: Option<std::path::PathBuf>,
-        device: &ID3D11Device,
-        width: u32,
-        height: u32,
-        dart_args: Option<&[String]>
-    ) -> Box<Self> {
-        init::init_overlay(data_dir, device, width, height, dart_args)
-    }
-
-    pub  fn tick_global(context: &ID3D11DeviceContext) {
-        unsafe { crate::software_renderer::ticker::tick_global(context) }
-    }
-
-    pub fn get_engine_ptr(&self) -> FlutterEngine {
-        self.engine
-    }
-
-    pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32, device: &ID3D11Device) {
-        if self.width == new_width && self.height == new_height {
-            info!("[FlutterOverlay] Resiye called but the dimensions are the same: Width: {:?} Height: {:?}", new_width, new_height);
-        }
-
-        self.width = new_width;
-        self.height = new_height;
-
-        // TODO: Improve return type with Result Error handling
-        self.texture = create_texture(device, self.width, self.height);
-        self.srv = create_srv(device, &self.texture);
-
-        let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
-        self.pixel_buffer.resize(new_buffer_size, 0);
-
-        if !self.engine.is_null() {
-            update_flutter_window_metrics(self.engine, self.width, self.height, self.engine_dll.clone());
+impl Clone for FlutterOverlay {
+    fn clone(&self) -> Self {
+        Self {
+            engine: self.engine,
+            engine_atomic_ptr: self.engine_atomic_ptr.clone(),
+            pixel_buffer: self.pixel_buffer.clone(),
+            width: self.width,
+            height: self.height,
+            texture: self.texture.clone(),
+            srv: self.srv.clone(),
+            desired_cursor: self.desired_cursor.clone(),
+            name: self.name.clone(),
+            _assets_c: self._assets_c.clone(),
+            _icu_c: self._icu_c.clone(),
+            _engine_argv_cs: self._engine_argv_cs.clone(),
+            _dart_argv_cs: self._dart_argv_cs.clone(),
+            _aot_c: self._aot_c.clone(),
+            _platform_runner_context: self._platform_runner_context.clone(),
+            _platform_runner_description: self._platform_runner_description.clone(),
+            _custom_task_runners_struct: self._custom_task_runners_struct.clone(),
+            engine_dll: self.engine_dll.clone(),
+            task_queue_state: self.task_queue_state.clone(),
+            task_runner_thread: None,
+            text_input_state: self.text_input_state.clone(),
+            mouse_buttons_state: AtomicI32::new(0),
+            is_mouse_added: AtomicBool::new(false),
+            semantics_tree_data: self.semantics_tree_data.clone(),
+            is_interactive_widget_hovered: AtomicBool::new(false),
+            windows_handler: self.windows_handler,
+            is_debug_build: self.is_debug_build,
         }
     }
 }

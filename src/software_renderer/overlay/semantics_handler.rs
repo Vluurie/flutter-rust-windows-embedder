@@ -1,13 +1,11 @@
-use log::warn;
-use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
-use winapi::shared::windef::{HWND, POINT};
-use winapi::um::winuser::{GetCursorPos, GetForegroundWindow, ScreenToClient};
+use std::sync::
+    atomic::Ordering
+;
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
 use crate::embedder::{
     FlutterRect, FlutterSemanticsFlag, FlutterSemanticsFlag_kFlutterSemanticsFlagHasCheckedState,
@@ -41,6 +39,7 @@ use crate::embedder::{
     FlutterSemanticsFlag_kFlutterSemanticsFlagScopesRoute, FlutterSemanticsNode2,
     FlutterSemanticsUpdate2, FlutterTransformation,
 };
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum RustSemanticsFlag {
@@ -186,24 +185,24 @@ pub struct ProcessedSemanticsNode {
     pub label: String,
 }
 
-pub static SEMANTICS_TREE_DATA: Lazy<Arc<Mutex<HashMap<i32, ProcessedSemanticsNode>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
-
-pub static FLUTTER_INTERACTIVE_WIDGET_HOVERED: AtomicBool = AtomicBool::new(false);
-
 pub extern "C" fn semantics_update_callback(
     update: *const FlutterSemanticsUpdate2,
-    _user_data: *mut ::std::os::raw::c_void,
+    user_data: *mut ::std::os::raw::c_void,
 ) {
     unsafe {
         if update.is_null() {
-            warn!("[SemanticsCallback] Update pointer is null. Aborting.");
             return;
         }
+        if user_data.is_null() {
+            return;
+        }
+
         let update_ref = &*update;
 
+        let overlay: &mut FlutterOverlay = &mut *(user_data as *mut FlutterOverlay);
+
         if update_ref.node_count == 0 {
-            if let Ok(mut tree_guard) = SEMANTICS_TREE_DATA.lock() {
+            if let Ok(mut tree_guard) = overlay.semantics_tree_data.lock() {
                 if !tree_guard.is_empty() {
                     tree_guard.clear();
                 }
@@ -214,13 +213,16 @@ pub extern "C" fn semantics_update_callback(
         let mut new_tree_snapshot = HashMap::new();
 
         for i in 0..update_ref.node_count {
-            let node_ptr_ptr = update_ref.nodes.add(i);
+            let node_ptr_ptr = update_ref.nodes.add(i as usize);
 
             if node_ptr_ptr.is_null() {
                 continue;
             }
 
             let ffi_node_ptr = *node_ptr_ptr;
+            if ffi_node_ptr.is_null() {
+                continue;
+            }
             let ffi_node: &FlutterSemanticsNode2 = &*ffi_node_ptr;
 
             let children =
@@ -229,7 +231,7 @@ pub extern "C" fn semantics_update_callback(
                 } else {
                     std::slice::from_raw_parts(
                         ffi_node.children_in_hit_test_order,
-                        ffi_node.child_count,
+                        ffi_node.child_count as usize,
                     )
                     .to_vec()
                 };
@@ -250,7 +252,7 @@ pub extern "C" fn semantics_update_callback(
             );
         }
 
-        if let Ok(mut tree_guard) = SEMANTICS_TREE_DATA.lock() {
+        if let Ok(mut tree_guard) = overlay.semantics_tree_data.lock() {
             *tree_guard = new_tree_snapshot;
         }
     }
@@ -322,26 +324,32 @@ fn hit_test_node_recursive(
     None
 }
 
-pub fn update_flutter_interactive_widget_hover_state() {
+pub fn update_interactive_widget_hover_state(overlay: &FlutterOverlay) {
     let mut cursor_pos_screen: POINT = POINT { x: 0, y: 0 };
-    let game_hwnd: HWND;
+
+    let overlay_hwnd = overlay.windows_handler;
 
     unsafe {
-        if GetCursorPos(&mut cursor_pos_screen) == 0 {
-            FLUTTER_INTERACTIVE_WIDGET_HOVERED.store(false, Ordering::Relaxed);
+        if GetCursorPos(&mut cursor_pos_screen).is_err() {
+            overlay
+                .is_interactive_widget_hovered
+                .store(false, Ordering::Relaxed);
             return;
         }
 
-        game_hwnd = GetForegroundWindow();
-
-        if game_hwnd.is_null() {
-            FLUTTER_INTERACTIVE_WIDGET_HOVERED.store(false, Ordering::Relaxed);
+        if GetForegroundWindow() != overlay_hwnd {
+            overlay
+                .is_interactive_widget_hovered
+                .store(false, Ordering::Relaxed);
             return;
         }
 
         let mut client_cursor_pos = cursor_pos_screen;
-        if ScreenToClient(game_hwnd, &mut client_cursor_pos) == 0 {
-            FLUTTER_INTERACTIVE_WIDGET_HOVERED.store(false, Ordering::Relaxed);
+
+        if !ScreenToClient(overlay_hwnd, &mut client_cursor_pos).as_bool() {
+            overlay
+                .is_interactive_widget_hovered
+                .store(false, Ordering::Relaxed);
             return;
         }
 
@@ -349,7 +357,7 @@ pub fn update_flutter_interactive_widget_hover_state() {
         let mouse_y_for_flutter = client_cursor_pos.y as f64;
 
         let new_hover_state = {
-            if let Ok(tree_guard) = SEMANTICS_TREE_DATA.lock() {
+            if let Ok(tree_guard) = overlay.semantics_tree_data.lock() {
                 if !tree_guard.is_empty() {
                     hit_test_node_recursive(
                         0,
@@ -365,6 +373,8 @@ pub fn update_flutter_interactive_widget_hover_state() {
                 false
             }
         };
-        FLUTTER_INTERACTIVE_WIDGET_HOVERED.store(new_hover_state, Ordering::Relaxed);
+        overlay
+            .is_interactive_widget_hovered
+            .store(new_hover_state, Ordering::Relaxed);
     }
 }

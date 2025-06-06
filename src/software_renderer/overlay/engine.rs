@@ -3,11 +3,11 @@ use crate::embedder::{
 };
 
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
-use crate::software_renderer::ticker::spawn::spawn_task_runner;
 
 use log::{error, info};
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::overlay_impl::FlutterOverlay;
@@ -49,9 +49,8 @@ pub(crate) fn run_engine(
         }
 
         (*overlay_raw_ptr).engine = engine_handle;
+        (*overlay_raw_ptr).engine_atomic_ptr.store(engine_handle, Ordering::SeqCst);
 
-
-        spawn_task_runner(engine_dll_arc.clone());
 
         let run_result =  (engine_dll_arc.FlutterEngineRunInitialized)(engine_handle);
 
@@ -64,8 +63,9 @@ pub(crate) fn run_engine(
             
 
             (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
-
             (*overlay_raw_ptr).engine = ptr::null_mut();
+            (*overlay_raw_ptr).engine_atomic_ptr.store(ptr::null_mut(), Ordering::SeqCst);
+
             return Err(err_msg);
         }
         Ok(engine_handle)

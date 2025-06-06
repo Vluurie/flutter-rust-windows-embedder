@@ -3,23 +3,21 @@
 #![allow(static_mut_refs)]
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use ::windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+use ::windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNORMAL, SetForegroundWindow, ShowWindow};
 use env_logger::{Builder, Env};
 use log::{LevelFilter, error, info};
-use ::windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-use ::windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_SHOWNORMAL};
 use std::path::PathBuf;
 use std::sync::Once;
 
-
-
 mod app_state;
 mod constants;
-pub mod software_renderer;
 mod dynamic_flutter_windows_dll_loader;
-pub mod flutter_utils;
-pub mod path_utils;
-pub mod plugin_loader;
-pub mod win32_utils;
+mod flutter_utils;
+mod path_utils;
+mod plugin_loader;
+pub mod software_renderer;
+mod win32_utils;
 
 pub mod windows {
     include!(concat!(env!("OUT_DIR"), "/flutter_windows_bindings.rs"));
@@ -31,6 +29,8 @@ pub mod embedder {
 
 static LOGGER_INIT: Once = Once::new();
 
+/// Init logging for the enviroument debug filtered.
+/// Calling this more than once is fine as it is already handled to be a Once call.
 pub fn init_logging() {
     LOGGER_INIT.call_once(|| {
         Builder::from_env(Env::default().default_filter_or("debug"))
@@ -82,13 +82,17 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     };
 
     let dir_ref = data_dir.as_deref();
-    let dll = dynamic_flutter_windows_dll_loader::FlutterDll::get_for(dir_ref)
-        .unwrap_or_else(|e| {
-            error!("Failed to load flutter_windows.dll from `{:?}`: {:?}", dir_ref, e);
+    let dll =
+        dynamic_flutter_windows_dll_loader::FlutterDll::get_for(dir_ref).unwrap_or_else(|e| {
+            error!(
+                "Failed to load flutter_windows.dll from `{:?}`: {:?}",
+                dir_ref, e
+            );
             std::process::exit(1);
         });
-    
-    info!("Loaded flutter_windows.dll from `{}`",
+
+    info!(
+        "Loaded flutter_windows.dll from `{}`",
         dir_ref
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "EXE folder".into())
@@ -103,7 +107,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
         engine,
         constants::DEFAULT_WINDOW_WIDTH,
         constants::DEFAULT_WINDOW_HEIGHT,
-        &dll
+        &dll,
     );
     info!(
         "Flutter view controller created ({}×{})",

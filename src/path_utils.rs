@@ -230,3 +230,4 @@ pub fn load_flutter_paths(data_dir: Option<PathBuf>) -> (OsString, OsString, Opt
 
     (assets_os, icu_os, aot_os)
 }
+

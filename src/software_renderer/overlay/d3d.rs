@@ -13,7 +13,7 @@ pub fn create_texture(
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM, // BGR switches in flutter to RGB.. why xD
         SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
         Usage: D3D11_USAGE_DYNAMIC,
         BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,

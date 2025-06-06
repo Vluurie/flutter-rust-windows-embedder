@@ -1,5 +1,4 @@
 pub mod init;
-pub mod paths;
 pub mod d3d;
 pub mod project_args;
 pub mod renderer;

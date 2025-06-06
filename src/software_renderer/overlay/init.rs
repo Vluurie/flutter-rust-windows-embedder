@@ -1,8 +1,8 @@
+use crate::path_utils::load_flutter_paths;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
 use crate::software_renderer::overlay::overlay_impl::FLUTTER_LOG_TAG;
-use crate::software_renderer::overlay::paths::load_flutter_paths;
 use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
 use crate::software_renderer::overlay::project_args::{
     build_project_args_and_strings, flutter_log_callback, maybe_load_aot_path_to_cstring,
@@ -44,7 +44,7 @@ pub(crate) fn init_overlay(
     dart_args_opt: Option<&[String]>,
 ) -> Box<FlutterOverlay> {
     unsafe {
-        
+
         /************************************************************************\
          * LOAD FLUTTER ENGINE DLL                         *
         \************************************************************************/

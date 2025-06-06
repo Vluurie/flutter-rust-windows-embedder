@@ -21,7 +21,7 @@ use crate::software_renderer::ticker::task_scheduler::{
     runs_task_on_current_thread_callback,
 };
 
-use log::{debug, error, info};
+use log::{error, info};
 use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
@@ -43,37 +43,45 @@ pub(crate) fn init_overlay(
     height: u32,
     dart_args_opt: Option<&[String]>,
 ) -> Box<FlutterOverlay> {
-    info!("[InitOverlay] Starting initialization for overlay: '{}'", name);
     unsafe {
+        
+        /************************************************************************\
+         * LOAD FLUTTER ENGINE DLL                         *
+        \************************************************************************/
         let engine_dll_load_dir = data_dir.as_deref();
-        info!("[InitOverlay] Attempting to load flutter_engine.dll from '{:?}'", engine_dll_load_dir);
         let engine_dll_arc = FlutterEngineDll::get_for(engine_dll_load_dir).unwrap_or_else(|e| {
             error!(
                 "Failed to load flutter_engine.dll from `{:?}`: {:?}",
                 engine_dll_load_dir, e
             );
-            // Ein kritischer Fehler hier rechtfertigt einen Exit, da ohne die Engine nichts funktioniert.
             std::process::exit(1);
         });
-        info!("[InitOverlay] flutter_engine.dll loaded successfully.");
 
         assert!(width > 0 && height > 0, "Width and height must be non-zero");
-        debug!("[InitOverlay] Initial dimensions: width={}, height={}", width, height);
 
-        info!("[InitOverlay] Loading Flutter paths...");
+        /************************************************************************\
+         * PREPARE FLUTTER PATHS                           *
+         *----------------------------------------------------------------------*
+         * Locates the necessary paths for the Flutter application:             *
+         * - `assets`: The `flutter_assets` directory.                         *
+         * - `icu`: The `icudtl.dat` file for internationalization.            *
+         * - `aot_opt`: An optional path to the Ahead-Of-Time compiled data    *
+         * (`app.so`), which is only present in release builds.                 *
+         * The presence of AOT data is used to determine if this is a debug     *
+         * or release build.                                                    *
+        \************************************************************************/
         let (assets, icu, aot_opt) = load_flutter_paths(data_dir.clone());
         let initial_is_debug = aot_opt.is_none();
-        debug!("[InitOverlay] Assets path: {:?}", assets);
-        debug!("[InitOverlay] ICU path: {:?}", icu);
-        debug!("[InitOverlay] AOT path: {:?}", aot_opt);
-        info!("[InitOverlay] Flutter paths loaded.");
 
-        info!("[InitOverlay] Creating D3D11 texture and SRV...");
+        /************************************************************************\
+         * DIRECT3D11 TEXTURE & SRV SETUP                      *
+        \************************************************************************/
         let current_texture = create_texture(device, width, height);
         let current_srv = create_srv(device, &current_texture);
-        info!("[InitOverlay] D3D11 resources created successfully.");
 
-        info!("[InitOverlay] Building project arguments and C-strings...");
+        /************************************************************************\
+         * BUILD C-COMPATIBLE PROJECT STRINGS                  *
+        \************************************************************************/
         let (assets_c_temp, icu_c_temp, engine_argv_cs_temp, dart_argv_cs_temp) =
             build_project_args_and_strings(
                 &assets.to_string_lossy(),
@@ -81,23 +89,23 @@ pub(crate) fn init_overlay(
                 dart_args_opt,
                 initial_is_debug,
             );
-        info!("[InitOverlay] Project arguments and C-strings built.");
 
         let aot_c_temp = maybe_load_aot_path_to_cstring(aot_opt.as_deref());
 
-        info!("[InitOverlay] Initializing shared state (Atomics, Arcs)...");
+        /************************************************************************\
+         * TASK RUNNER STATE SETUP                         *
+        \************************************************************************/
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
-        info!("[InitOverlay] Shared state initialized.");
-        
-        info!("[InitOverlay] Creating platform task runner context...");
+
         let platform_context_owned_by_overlay = Box::new(TaskRunnerContext {
             task_runner_thread_id: None,
             task_queue: task_queue_arc.clone(),
         });
-        info!("[InitOverlay] Platform task runner context created.");
 
-        info!("[InitOverlay] Assembling FlutterOverlay struct...");
+        /************************************************************************\
+         * INITIALIZE OVERLAY STRUCT                      *
+        \************************************************************************/
         let mut overlay_box = Box::new(FlutterOverlay {
             name: name,
             engine: ptr::null_mut(),
@@ -133,20 +141,25 @@ pub(crate) fn init_overlay(
             },
             is_debug_build: initial_is_debug,
         });
-        info!("[InitOverlay] FlutterOverlay struct assembled.");
 
-        info!("[InitOverlay] Starting platform task runner thread...");
+        /************************************************************************\
+         * START THE TASK RUNNER THREAD                    *
+        \************************************************************************/
         start_task_runner(&mut overlay_box);
-        info!("[InitOverlay] Platform task runner thread started.");
 
         let raw_ptr_to_overlay_data: *mut FlutterOverlay = &mut *overlay_box;
         let user_data_for_callbacks = raw_ptr_to_overlay_data as *mut c_void;
-        debug!("[InitOverlay] User data pointer for callbacks: {:p}", user_data_for_callbacks);
 
-        info!("[InitOverlay] Configuring Flutter callback descriptions...");
+        /************************************************************************\
+         * CONFIGURE CUSTOM TASK RUNNERS                     *
+        \************************************************************************/
         let platform_description_box = Box::new(FlutterTaskRunnerDescription {
             struct_size: std::mem::size_of::<FlutterTaskRunnerDescription>(),
-            user_data: overlay_box._platform_runner_context.as_ref().unwrap().as_ref() as *const _ as *mut c_void,
+            user_data: overlay_box
+                ._platform_runner_context
+                .as_ref()
+                .unwrap()
+                .as_ref() as *const _ as *mut c_void,
             runs_task_on_current_thread_callback: Some(runs_task_on_current_thread_callback),
             post_task_callback: Some(post_task_callback),
             identifier: 1,
@@ -156,34 +169,52 @@ pub(crate) fn init_overlay(
         let custom_task_runners_box = Box::new(FlutterCustomTaskRunners {
             struct_size: std::mem::size_of::<FlutterCustomTaskRunners>(),
             platform_task_runner: &*platform_description_box,
-            render_task_runner: &*platform_description_box, 
+            render_task_runner: &*platform_description_box,
             thread_priority_setter: None,
         });
 
         overlay_box._platform_runner_description = Some(platform_description_box);
         overlay_box._custom_task_runners_struct = Some(custom_task_runners_box);
-        info!("[InitOverlay] Flutter callback descriptions configured and stored.");
-        
-        debug!("[InitOverlay] Collecting engine and dart argument pointers...");
-        let engine_argv_ptrs: Vec<*const c_char> =
-            overlay_box._engine_argv_cs.iter().map(|c| c.as_ptr()).collect();
-        let dart_argv_ptrs: Vec<*const c_char> =
-            overlay_box._dart_argv_cs.iter().map(|c| c.as_ptr()).collect();
-        
-        info!("[InitOverlay] Finalizing FlutterProjectArgs for engine startup.");
+
+        let engine_argv_ptrs: Vec<*const c_char> = overlay_box
+            ._engine_argv_cs
+            .iter()
+            .map(|c| c.as_ptr())
+            .collect();
+        let dart_argv_ptrs: Vec<*const c_char> = overlay_box
+            ._dart_argv_cs
+            .iter()
+            .map(|c| c.as_ptr())
+            .collect();
+
+        /************************************************************************\
+         * ASSEMBLE FINAL FLUTTER PROJECT ARGS                 *
+        \************************************************************************/
         let mut proj_args = FlutterProjectArgs {
             struct_size: std::mem::size_of::<FlutterProjectArgs>(),
             assets_path: overlay_box._assets_c.as_ptr(),
             icu_data_path: overlay_box._icu_c.as_ptr(),
             command_line_argc: engine_argv_ptrs.len() as i32,
-            command_line_argv: if engine_argv_ptrs.is_empty() { ptr::null() } else { engine_argv_ptrs.as_ptr() },
+            command_line_argv: if engine_argv_ptrs.is_empty() {
+                ptr::null()
+            } else {
+                engine_argv_ptrs.as_ptr()
+            },
             platform_message_callback: Some(simple_platform_message_callback),
             log_message_callback: Some(flutter_log_callback),
             log_tag: FLUTTER_LOG_TAG.as_ptr(),
-            custom_task_runners: overlay_box._custom_task_runners_struct.as_ref().map_or(ptr::null(), |b| &**b as *const _),
+            custom_task_runners: overlay_box
+                ._custom_task_runners_struct
+                .as_ref()
+                .map_or(ptr::null(), |b| &**b as *const _),
             aot_data: ptr::null_mut(),
             dart_entrypoint_argc: dart_argv_ptrs.len() as i32,
-            dart_entrypoint_argv: if dart_argv_ptrs.is_empty() { ptr::null() } else { dart_argv_ptrs.as_ptr() },
+            dart_entrypoint_argv: if dart_argv_ptrs.is_empty() {
+                ptr::null()
+            } else {
+                dart_argv_ptrs.as_ptr()
+            },
+            update_semantics_callback2: Some(semantics_update_callback),
             shutdown_dart_vm_when_done: true,
             dart_old_gen_heap_size: -1,
             vm_snapshot_data: ptr::null(),
@@ -205,15 +236,15 @@ pub(crate) fn init_overlay(
             compute_platform_resolved_locale_callback: None,
             on_pre_engine_restart_callback: None,
             update_semantics_callback: None,
-            update_semantics_callback2: Some(semantics_update_callback),
             channel_update_callback: None,
             main_path__unused__: ptr::null(),
             packages_path__unused__: ptr::null(),
         };
 
-        info!("[InitOverlay] Checking for AOT data to determine build mode...");
+        /************************************************************************\
+         * HANDLE AOT DATA (RELEASE)                     *
+        \************************************************************************/
         if let Some(aot_c_ref) = &overlay_box._aot_c {
-            info!("[InitOverlay] Found AOT path, creating AOT data (Release mode).");
             let source = FlutterEngineAOTDataSource {
                 type_: FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
                 __bindgen_anon_1: embedder::FlutterEngineAOTDataSource__bindgen_ty_1 {
@@ -239,15 +270,15 @@ pub(crate) fn init_overlay(
                 );
             }
         } else {
-            info!("[InitOverlay] No AOT path provided. Assuming JIT/Debug mode.");
             proj_args.aot_data = ptr::null_mut();
         }
 
         overlay_box.is_debug_build = proj_args.aot_data.is_null();
-        info!("[InitOverlay] Final build mode determined. Is debug: {}", overlay_box.is_debug_build);
-
         let rdr_cfg = build_software_renderer_config();
-        
+
+        /************************************************************************\
+         * RUN THE FLUTTER ENGINE                           *
+        \************************************************************************/
         info!("[InitOverlay] All preparations complete. Calling run_engine...");
         let engine_run_result = run_engine(
             FLUTTER_ENGINE_VERSION,
@@ -259,32 +290,35 @@ pub(crate) fn init_overlay(
         );
 
         let engine_handle = match engine_run_result {
-            Ok(handle) => {
-                info!("[InitOverlay] Flutter engine started successfully. Engine handle: {:p}", handle);
-                handle
-            }
+            Ok(handle) => handle,
             Err(e) => {
-                error!("[InitOverlay] CRITICAL: Engine initialization failed during run_engine: {}", e);
+                error!(
+                    "[InitOverlay] CRITICAL: Engine initialization failed during run_engine: {}",
+                    e
+                );
                 engine_atomic_ptr_instance.store(ptr::null_mut(), Ordering::SeqCst);
                 panic!("Engine initialization failed during run_engine: {}", e);
             }
         };
 
-        info!("[InitOverlay] Enabling engine semantics...");
+        /************************************************************************\
+         * POST-INITIALIZATION & FINALIZATION                  *
+        \************************************************************************/
         (engine_dll_arc.FlutterEngineUpdateSemanticsEnabled)(engine_handle, true);
-        info!("[InitOverlay] Engine semantics enabled.");
 
-        info!("[InitOverlay] Storing engine handle in overlay structure and atomic pointer...");
         overlay_box.engine = engine_handle;
         engine_atomic_ptr_instance.store(engine_handle, Ordering::SeqCst);
-        assert_eq!(overlay_box.engine, engine_handle, "Engine handle mismatch after storing.");
-        info!("[InitOverlay] Engine handle stored successfully.");
-        
-        info!("[InitOverlay] Sending initial window metrics to Flutter...");
+        assert_eq!(
+            overlay_box.engine, engine_handle,
+            "Engine handle mismatch after storing."
+        );
+
         update_flutter_window_metrics(engine_handle, width, height, overlay_box.engine_dll.clone());
-        info!("[InitOverlay] Initial window metrics sent.");
-        
-        info!("[InitOverlay] Initialization for '{}' completed successfully.", overlay_box.name);
+
+        info!(
+            "[InitOverlay] Initialization for '{}' completed successfully.",
+            overlay_box.name
+        );
         overlay_box
     }
 }

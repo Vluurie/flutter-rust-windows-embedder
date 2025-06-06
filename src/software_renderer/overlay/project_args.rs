@@ -8,13 +8,14 @@ use std::ffi::{CStr, CString, OsStr, c_void};
 use std::sync::Arc;
 
 const ARGS: &[&str] = &[
-    "flutter_rust_embedder_app",
+    "flutter_rust_embedder_instance",
     "--enable-software-rendering",
     "--skia-deterministic-rendering",
     "--verbose-system-logs",
     "--show-performance-overlay",
-    "--disable-service-auth-codes",
-    "--observatory-port=8801",
+    // "--disable-service-auth-codes",
+    //TODO: Since we have now multi instances we dont know port upfront, if only one instance exist maybe we can add a new configure option to set the port from outside
+    // "--observatory-port=8801",
 ];
 
 pub static FLUTTER_LOG_TAG: &CStr =

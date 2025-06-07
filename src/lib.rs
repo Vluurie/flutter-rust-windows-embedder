@@ -14,7 +14,7 @@ mod app_state;
 mod constants;
 mod dynamic_flutter_windows_dll_loader;
 mod flutter_utils;
-mod path_utils;
+pub mod path_utils;
 mod plugin_loader;
 pub mod software_renderer;
 mod win32_utils;

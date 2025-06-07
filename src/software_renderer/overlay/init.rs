@@ -279,7 +279,6 @@ pub(crate) fn init_overlay(
         /************************************************************************\
          * RUN THE FLUTTER ENGINE                           *
         \************************************************************************/
-        info!("[InitOverlay] All preparations complete. Calling run_engine...");
         let engine_run_result = run_engine(
             FLUTTER_ENGINE_VERSION,
             &rdr_cfg,

@@ -331,10 +331,6 @@ impl OverlayManager {
         };
         for (id, overlay_instance) in self.active_instances.iter_mut() {
             if !overlay_instance.engine.is_null() {
-                info!(
-                    "[OverlayManager:{}] Calling handle_window_resize for ({}, {})",
-                    id, width, height
-                );
                 overlay_instance.handle_window_resize(width, height, &device);
             } else {
                 warn!(
@@ -356,15 +352,7 @@ impl OverlayManager {
 
             if self.focused_overlay_id.as_deref() == Some(identifier) {
                 self.focused_overlay_id = self.overlay_order.last().cloned();
-                info!(
-                    "[OverlayManager:{}] Focus shifted to {:?} after shutdown.",
-                    identifier, self.focused_overlay_id
-                );
             }
-            info!(
-                "[OverlayManager:{}] Overlay removed. Remaining order: {:?}",
-                identifier, self.overlay_order
-            );
             overlay_box.shutdown()
         } else {
             warn!(

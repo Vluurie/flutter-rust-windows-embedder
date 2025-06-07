@@ -25,16 +25,6 @@ use crate::{
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
-unsafe extern "C" fn flutter_log_callback(
-    tag: *const c_char,
-    message: *const c_char,
-    _user_data: *mut c_void,
-) {
-    let tag = unsafe { CStr::from_ptr(tag).to_string_lossy() };
-    let msg = unsafe { CStr::from_ptr(message).to_string_lossy() };
-    info!("[Flutter][{}] {}", tag, msg);
-}
-
 /// Represents a single Flutter overlay instance, managing its engine, rendering,
 /// and various UI-related states.
 /// Initialization is handled by `init_overlay`, which is responsible for correctly

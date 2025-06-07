@@ -12,30 +12,20 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{thread, time::Duration};
 
-// This is the stable, one-argument version
+
 pub fn start_task_runner(overlay: &mut FlutterOverlay) {
     if overlay.task_runner_thread.is_some() {
-        info!(
-            "[TaskRunner] Task runner for '{}' is already running.",
-            overlay.name
-        );
         return;
     }
 
-    info!(
-        "[TaskRunner] Spawning task runner for overlay '{}'...",
-        overlay.name
-    );
-
     let engine_dll_for_thread = overlay.engine_dll.clone();
-    let task_queue_for_thread = overlay.task_queue_state.clone(); // From FlutterOverlay
+    let task_queue_for_thread = overlay.task_queue_state.clone();
     let name_for_thread = overlay.name.clone();
     let engine_atomic_ptr = overlay.engine_atomic_ptr.clone();
 
     let handle = thread::Builder::new()
         .name(format!("task_runner_{}", name_for_thread))
         .spawn(move || {
-            // This is your exact task running loop logic
             loop {
                 let engine = engine_atomic_ptr.load(Ordering::SeqCst);
 
@@ -81,11 +71,8 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
 
     let thread_id = handle.thread().id();
 
-    // This modifies the context owned by FlutterOverlay.
-    // This is the key part for the one-argument version.
     if let Some(context_ref_mut) = &mut overlay._platform_runner_context {
         context_ref_mut.task_runner_thread_id = Some(thread_id);
-        info!("[TaskRunner] Context for '{}' updated with thread ID: {:?}", overlay.name, thread_id);
     } else {
         // This case should ideally not happen if init_overlay correctly initializes _platform_runner_context
         error!("[TaskRunner] CRITICAL: _platform_runner_context is None in FlutterOverlay. Cannot set thread ID.");

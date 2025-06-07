@@ -97,10 +97,6 @@ impl FlutterOverlay {
             ));
         }
 
-        info!(
-            "[FlutterOverlay::create] Flutter Overlay '{}' initialized successfully. Engine: {:?}",
-            overlay_box.name, overlay_box.engine
-        );
         Ok(overlay_box)
     }
 
@@ -114,10 +110,6 @@ impl FlutterOverlay {
     /// and informs the Flutter engine.
     pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32, device: &ID3D11Device) {
         if self.width == new_width && self.height == new_height {
-            info!(
-                "[FlutterOverlay] Resize called but dimensions are same: W: {}, H: {}",
-                new_width, new_height
-            );
         }
         self.width = new_width;
         self.height = new_height;
@@ -226,11 +218,6 @@ impl FlutterOverlay {
     /// `Ok(())` on successful shutdown or if the overlay was already effectively shut down.
     /// Logs an error if `FlutterEngineShutdown` reports a failure but still attempts to complete resource cleanup.
     pub fn shutdown(self: Box<Self>) -> Result<(), FlutterEmbedderError> {
-        info!(
-            "[FlutterOverlay::shutdown] Shutting down Flutter Overlay for '{}', engine: {:?}",
-            self.name, self.engine
-        );
-
         if self.engine.is_null() {
             warn!(
                 "[FlutterOverlay::shutdown] Shutdown attempted on an overlay with a null engine handle."
@@ -240,19 +227,10 @@ impl FlutterOverlay {
 
         if let Some(handle_arc) = self.task_runner_thread {
             if let Ok(handle) = Arc::try_unwrap(handle_arc) {
-                info!(
-                    "[FlutterOverlay::shutdown] Joining task runner thread for overlay '{}'...",
-                    self.name
-                );
                 if let Err(e) = handle.join() {
                     error!(
                         "[FlutterOverlay::shutdown] Failed to join task runner thread for '{}': {:?}",
                         self.name, e
-                    );
-                } else {
-                    info!(
-                        "[FlutterOverlay::shutdown] Task runner thread for '{}' joined successfully.",
-                        self.name
                     );
                 }
             } else {

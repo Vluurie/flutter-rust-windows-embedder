@@ -83,18 +83,12 @@ pub(crate) fn update_flutter_window_metrics(engine: FlutterEngine, width: u32, h
     wm.width = width.try_into().unwrap();
     wm.height = height.try_into().unwrap();
     wm.pixel_ratio = 1.0;
-    info!(
-        "[Metrics] Sending window metrics: {}x{} (PixelRatio: {}) for engine {:?}",
-        width, height, wm.pixel_ratio, engine
-    );
     let r = unsafe { (engine_dll.FlutterEngineSendWindowMetricsEvent)(engine, &wm) };
     if r != embedder::FlutterEngineResult_kSuccess {
         error!(
             "[Metrics] FlutterEngineSendWindowMetricsEvent failed with result: {:?}",
             r
         );
-    } else {
-        info!("[Metrics] FlutterEngineSendWindowMetricsEvent successful.");
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::embedder::FlutterTaskRunnerDescription;
+use crate::software_renderer::overlay::overlay_impl::FLUTTER_LOG_TAG;
 use crate::software_renderer::ticker::task_scheduler::{
     destroy_task_runner_context_callback, post_task_callback, runs_task_on_current_thread_callback, TaskQueueState, TaskRunnerContext
 };
@@ -17,9 +18,6 @@ const ARGS: &[&str] = &[
     //TODO: Since we have now multi instances we dont know port upfront, if only one instance exist maybe we can add a new configure option to set the port from outside
     // "--observatory-port=8801",
 ];
-
-pub static FLUTTER_LOG_TAG: &CStr =
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flutter_log_callback(

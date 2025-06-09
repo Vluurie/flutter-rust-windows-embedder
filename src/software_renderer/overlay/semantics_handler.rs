@@ -7,7 +7,7 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
-use crate::embedder::{
+use crate::bindings::embedder::{
     FlutterRect, FlutterSemanticsFlag, FlutterSemanticsFlag_kFlutterSemanticsFlagHasCheckedState,
     FlutterSemanticsFlag_kFlutterSemanticsFlagHasEnabledState,
     FlutterSemanticsFlag_kFlutterSemanticsFlagHasExpandedState,

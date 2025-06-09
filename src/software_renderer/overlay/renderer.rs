@@ -1,4 +1,4 @@
-use crate::embedder;
+use crate::bindings::embedder;
 use super::overlay_impl::on_present;
 
 /// Build a software‐renderer config with the *present* callback.

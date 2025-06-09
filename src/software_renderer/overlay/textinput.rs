@@ -4,7 +4,7 @@ use std::ptr;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::embedder::FlutterEngine;
+use crate::bindings::embedder::{FlutterEngine, FlutterPlatformMessage};
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
@@ -132,8 +132,8 @@ fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i3
         Ok(s) => s,
         Err(_e) => { return; } 
     };
-    let platform_message = crate::embedder::FlutterPlatformMessage {
-        struct_size: std::mem::size_of::<crate::embedder::FlutterPlatformMessage>(),
+    let platform_message = FlutterPlatformMessage {
+        struct_size: std::mem::size_of::<FlutterPlatformMessage>(),
         channel: channel_name_cstring.as_ptr(),
         message: payload_bytes.as_ptr(),
         message_size: payload_bytes.len(),
@@ -156,7 +156,7 @@ pub(crate) fn send_perform_action_to_flutter(engine: FlutterEngine,  engine_dll:
 
 #[unsafe(no_mangle)]
 pub(crate) unsafe extern "C" fn custom_text_input_platform_message_handler(
-    platform_message: *const crate::embedder::FlutterPlatformMessage,
+    platform_message: *const FlutterPlatformMessage,
     user_data: *mut c_void,
 ) {
     unsafe {

@@ -13,7 +13,7 @@ use winapi::um::winuser::{
     MK_RBUTTON as WINAPI_MK_RBUTTON, WHEEL_DELTA,
 };
 
-use crate::embedder::{
+use crate::bindings::embedder::{
     FlutterEngine, FlutterEngineResult, FlutterPointerDeviceKind_kFlutterPointerDeviceKindMouse,
     FlutterPointerEvent, FlutterPointerPhase, FlutterPointerPhase_kAdd, FlutterPointerPhase_kDown,
     FlutterPointerPhase_kHover, FlutterPointerPhase_kMove, FlutterPointerPhase_kRemove,

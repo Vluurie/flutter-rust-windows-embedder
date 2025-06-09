@@ -1,4 +1,4 @@
-use crate::embedder::FlutterTaskRunnerDescription;
+use crate::bindings::embedder::FlutterTaskRunnerDescription;
 use crate::software_renderer::overlay::overlay_impl::FLUTTER_LOG_TAG;
 use crate::software_renderer::ticker::task_scheduler::{
     destroy_task_runner_context_callback, post_task_callback, runs_task_on_current_thread_callback, TaskQueueState, TaskRunnerContext
@@ -8,16 +8,6 @@ use log::info;
 use std::ffi::{CStr, CString, OsStr, c_void};
 use std::sync::Arc;
 
-const ARGS: &[&str] = &[
-    "flutter_rust_embedder_instance",
-    "--enable-software-rendering",
-    "--skia-deterministic-rendering",
-    "--verbose-system-logs",
-    "--show-performance-overlay",
-    // "--disable-service-auth-codes",
-    //TODO: Since we have now multi instances we dont know port upfront, if only one instance exist maybe we can add a new configure option to set the port from outside
-    // "--observatory-port=8801",
-];
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flutter_log_callback(
@@ -64,6 +54,7 @@ pub(crate) fn build_project_args_and_strings(
     icu: &str,
     dart_args_opt: Option<&[String]>,
     is_debug: bool,
+    engine_args_opt: Option<&[String]>,
 ) -> (
     CString,          // assets_c
     CString,          // icu_c
@@ -72,9 +63,13 @@ pub(crate) fn build_project_args_and_strings(
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
+
+  
     let engine_argv_cs: Vec<CString> = if is_debug {
-        ARGS.iter()
-            .map(|&s| CString::new(s).expect("Failed to create CString from ARGS"))
+        engine_args_opt
+            .unwrap_or(&[])
+            .iter()
+            .map(|s| CString::new(s.as_str()).expect("Failed to create CString from ARGS"))
             .collect()
     } else {
         Vec::new()

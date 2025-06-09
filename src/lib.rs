@@ -18,15 +18,7 @@ pub mod path_utils;
 mod plugin_loader;
 pub mod software_renderer;
 mod win32_utils;
-
-pub mod windows {
-    include!(concat!(env!("OUT_DIR"), "/flutter_windows_bindings.rs"));
-}
-
-pub mod embedder {
-    include!(concat!(env!("OUT_DIR"), "/flutter_embedder_bindings.rs"));
-}
-
+pub mod bindings;
 static LOGGER_INIT: Once = Once::new();
 
 /// Init logging for the enviroument debug filtered.

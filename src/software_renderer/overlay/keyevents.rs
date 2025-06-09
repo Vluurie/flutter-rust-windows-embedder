@@ -16,12 +16,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-use crate::embedder::{
+use crate::bindings::embedder::{
     FlutterEngine, FlutterEngineResult, FlutterKeyEvent,
     FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard, FlutterKeyEventType,
     FlutterKeyEventType_kFlutterKeyEventTypeDown, FlutterKeyEventType_kFlutterKeyEventTypeRepeat,
     FlutterKeyEventType_kFlutterKeyEventTypeUp, FlutterPlatformMessage,
 };
+use crate::bindings::keyboard_layout::{get_key_map, KeyMapEntry};
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::{
@@ -29,7 +30,6 @@ use crate::software_renderer::overlay::textinput::{
     send_update_editing_state_to_flutter,
 };
 
-include!(concat!(env!("OUT_DIR"), "/generated_keyboard_map.rs"));
 
 const LOGICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
 const PHYSICAL_KEY_UNKNOWN_CONST: u64 = 0x0;

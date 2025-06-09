@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[derive(serde::Deserialize, Debug)]
@@ -10,7 +10,7 @@ use std::{
 #[allow(dead_code)]
 struct PhysicalKeyEntry {
     names: HashMap<String, String>,
-    scan_codes: HashMap<String, serde_json::Value>, // number or array
+    scan_codes: HashMap<String, serde_json::Value>,
     key_codes: Option<HashMap<String, serde_json::Value>>,
 }
 
@@ -26,6 +26,7 @@ struct LogicalKeyEntry {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct KeyData {
     name: String,
     platform: i64,
@@ -34,17 +35,17 @@ struct KeyData {
     fallback: Option<i64>,
 }
 
+#[allow(dead_code)]
 fn first_number(value: &serde_json::Value) -> Option<i64> {
     match value {
         serde_json::Value::Number(n) => n.as_i64(),
-        serde_json::Value::Array(a) => a[0].as_i64(),
+        serde_json::Value::Array(a) => a.get(0).and_then(|v| v.as_i64()),
         _ => None,
     }
 }
-
-pub fn generate_keyboard_map(platform_name: &str) -> anyhow::Result<()> {
+#[allow(dead_code)]
+pub fn generate_keyboard_map(platform_name: &str, out_file_path: &Path) -> anyhow::Result<()> {
     let root_dir: PathBuf = std::env::var("CARGO_MANIFEST_DIR")?.into();
-    let out_dir: PathBuf = std::env::var("OUT_DIR")?.into();
 
     let codes_dir = root_dir.join("keyboard_map");
     let physical = fs::read_to_string(codes_dir.join("physical_key_data.g.json"))?;
@@ -93,21 +94,21 @@ pub fn generate_keyboard_map(platform_name: &str) -> anyhow::Result<()> {
                     platform,
                     physical: usb,
                     logical,
-                    fallback, // US layout fallback
+                    fallback,
                 },
             );
         }
     }
 
-    let gen_path = out_dir.join("generated_keyboard_map.rs");
-    let mut file = File::create(gen_path)?;
+    let mut file = File::create(out_file_path)?;
     writeln!(file, "#[allow(dead_code)]")?;
     writeln!(
         file,
-        "struct KeyMapEntry {{ platform: i64, physical: i64, logical: Option<i64>, fallback: Option<i64> }}"
+        "pub struct KeyMapEntry {{ pub platform: i64, pub physical: i64, pub logical: Option<i64>, pub fallback: Option<i64> }}"
     )?;
     writeln!(file)?;
-    writeln!(file, "fn get_key_map() -> Vec<KeyMapEntry> {{")?;
+    writeln!(file, "#[allow(dead_code)]")?;
+    writeln!(file, "pub fn get_key_map() -> Vec<KeyMapEntry> {{")?;
     writeln!(file, "    vec![")?;
     for v in key_data.values() {
         writeln!(

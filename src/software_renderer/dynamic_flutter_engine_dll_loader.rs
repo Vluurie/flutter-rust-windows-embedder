@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::embedder as e;
+use crate::bindings::embedder as e;
 
 #[derive(Debug)]
 pub struct FlutterEngineDll {

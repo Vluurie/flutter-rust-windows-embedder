@@ -39,7 +39,7 @@ use std::{
 
 use crate::{
     dynamic_flutter_windows_dll_loader::FlutterDll,
-    windows::{FlutterDesktopEngineRef, FlutterDesktopPluginRegistrarRef},
+    bindings::windows::{FlutterDesktopEngineRef, FlutterDesktopPluginRegistrarRef},
 };
 
 const REG_SUFFIX: &str = "RegisterWithRegistrar";

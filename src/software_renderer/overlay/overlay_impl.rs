@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicPtr}, Arc, Mutex
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicI32, AtomicPtr},
     },
     thread,
 };
@@ -13,16 +14,40 @@ use windows::Win32::{
 };
 
 use crate::{
-    bindings::embedder::{self, FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
+    bindings::embedder::{
+        self, FlutterEngine,
+    },
     software_renderer::{
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
-        ticker::task_scheduler::{TaskQueueState, TaskRunnerContext},
+        ticker::task_scheduler::{SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState, TaskRunnerContext},
     },
 };
 
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
+
+// A wrapper around the raw FlutterEngine pointer to make it Send + Sync.
+// WARNING: This is only safe because we PROMISE to only use the pointer
+// on the thread that the Flutter Engine is designed to run on.
+#[derive(Debug,Copy, Clone)]
+pub struct SendableFlutterEngine(pub FlutterEngine);
+
+// By implementing these traits, we are making a manual guarantee to the compiler.
+unsafe impl Send for SendableFlutterEngine {}
+unsafe impl Sync for SendableFlutterEngine {}
+
+impl PartialEq for SendableFlutterEngine {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<FlutterEngine> for SendableFlutterEngine {
+    fn eq(&self, other: &FlutterEngine) -> bool {
+        self.0 == *other
+    }
+}
 
 /// Represents a single Flutter overlay instance, managing its engine, rendering,
 /// and various UI-related states.
@@ -50,6 +75,24 @@ pub struct FlutterOverlay {
     /// Updated by `handle_window_resize`. Must be > 0 for rendering.
     pub height: u32,
 
+    /// Overlay position X
+    pub x: i32,
+    /// Overlay position X
+    pub y: i32,
+
+    /// By default true and does nothing directly even when set to false
+    /// Caller requires to call it when appropiated. Example like this:
+    /// ```rust
+    /// if !overlay_instance.is_visible() {
+    ///     continue; // <-- ...we skip EVERYTHING below for this overlay.
+    /// }
+    ///
+    /// overlay_instance.request_frame();
+    /// update_interactive_widget_hover_state(overlay_instance);
+    /// Self::paint_flutter_overlay(overlay_instance, painter, id);
+    /// ```
+    pub visible: bool,
+
     /// A user-defined name for this overlay instance. Useful for identification,
     /// logging, or debugging purposes by any part of the crate.
     pub name: String,
@@ -67,7 +110,7 @@ pub struct FlutterOverlay {
     /// Pointer to the native Flutter engine instance. Managed internally.
     /// Can be used to check for operations if the engine !is_null()
     /// **CRITICAL: Must be valid post-`init_overlay` for all operations.**
-    pub engine: FlutterEngine,
+    pub engine: SendableFlutterEngine,
 
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
@@ -111,8 +154,8 @@ pub struct FlutterOverlay {
     pub(crate) _dart_argv_cs: Vec<CString>,
     pub(crate) _aot_c: Option<CString>,
     pub(crate) _platform_runner_context: Option<Box<TaskRunnerContext>>,
-    pub(crate) _platform_runner_description: Option<Box<FlutterTaskRunnerDescription>>,
-    pub(crate) _custom_task_runners_struct: Option<Box<FlutterCustomTaskRunners>>,
+    pub(crate) _platform_runner_description: Option<Box<SendableFlutterTaskRunnerDescription>>,
+    pub(crate) _custom_task_runners_struct: Option<Box<SendableFlutterCustomTaskRunners>>,
 }
 
 impl Clone for FlutterOverlay {
@@ -123,6 +166,9 @@ impl Clone for FlutterOverlay {
             pixel_buffer: self.pixel_buffer.clone(),
             width: self.width,
             height: self.height,
+            visible: true,
+            x: self.x,
+            y: self.y,
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             desired_cursor: self.desired_cursor.clone(),

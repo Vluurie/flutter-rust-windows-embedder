@@ -1,4 +1,4 @@
-use crate::bindings::embedder::FlutterTask;
+use crate::bindings::embedder::{FlutterCustomTaskRunners, FlutterTask, FlutterTaskRunnerDescription};
 
 use log::{error, warn};
 use std::cmp::Ordering;
@@ -14,6 +14,38 @@ pub struct SafeFlutterTask(pub FlutterTask);
 unsafe impl Send for SafeFlutterTask {}
 unsafe impl Sync for SafeFlutterTask {}
 
+
+#[repr(transparent)]
+pub struct SendableCvoid(*mut c_void);
+
+unsafe impl Send for SendableCvoid {}
+unsafe impl Sync for SendableCvoid {}
+
+impl From<*mut c_void> for SendableCvoid {
+    fn from(ptr: *mut c_void) -> Self {
+        SendableCvoid(ptr)
+    }
+}
+
+impl From<SendableCvoid> for *mut c_void {
+    fn from(wrapper: SendableCvoid) -> Self {
+        wrapper.0
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(transparent)]
+pub struct SendableFlutterTaskRunnerDescription(pub FlutterTaskRunnerDescription);
+
+unsafe impl Send for SendableFlutterTaskRunnerDescription {}
+unsafe impl Sync for SendableFlutterTaskRunnerDescription {}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(transparent)]
+pub struct SendableFlutterCustomTaskRunners(pub FlutterCustomTaskRunners);
+
+unsafe impl Send for SendableFlutterCustomTaskRunners {}
+unsafe impl Sync for SendableFlutterCustomTaskRunners {}
 #[derive(Debug, Copy, Clone)]
 pub struct ScheduledTask {
     pub task: SafeFlutterTask,

@@ -1,10 +1,11 @@
 use crate::bindings::embedder::{self};
+use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
 use log::error;
 
-use std::ffi::{CStr, c_void};
+use std::ffi::{c_void, CStr, CString};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::{ptr, str};
 
@@ -151,7 +152,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
         if message.channel.is_null() {
             if !message.response_handle.is_null() {
                 let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                    engine_handle,
+                    engine_handle.0,
                     message.response_handle,
                     ptr::null(),
                     0,
@@ -202,7 +203,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
         } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
             if !message.response_handle.is_null() {
                 let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                    engine_handle,
+                    engine_handle.0,
                     message.response_handle,
                     ptr::null(),
                     0,
@@ -213,11 +214,56 @@ pub(crate) extern "C" fn simple_platform_message_callback(
 
         if !response_sent_by_handler && !message.response_handle.is_null() {
             let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                engine_handle,
+                engine_handle.0,
                 message.response_handle,
                 ptr::null(),
                 0,
             );
+        }
+    }
+}
+
+
+/// Sends a platform message directly to the Dart side of the overlay.
+/// This is the primary way to communicate with your Flutter app from Rust.
+///
+/// # Arguments
+/// * `channel`: The name of the channel to send the message on (e.g., "app/lifecycle").
+/// * `message`: A byte slice representing the message payload.
+///
+/// # Returns
+/// `Ok(())` on success, or a `FlutterEmbedderError` on failure.
+pub fn send_platform_message(
+    overlay: &FlutterOverlay,
+    channel: &str,
+    message: &[u8],
+) -> Result<(), FlutterEmbedderError> {
+    if overlay.engine.0.is_null() {
+        return Err(FlutterEmbedderError::EngineNotRunning);
+    }
+
+    let channel_cstring = match CString::new(channel) {
+        Ok(s) => s,
+        Err(e) => return Err(FlutterEmbedderError::OperationFailed(format!("Invalid channel name: {}", e))),
+    };
+
+    let platform_message = embedder::FlutterPlatformMessage {
+        struct_size: std::mem::size_of::<embedder::FlutterPlatformMessage>(),
+        channel: channel_cstring.as_ptr(),
+        message: message.as_ptr(),
+        message_size: message.len(),
+        response_handle: ptr::null(),
+    };
+
+    unsafe {
+        let result = (overlay.engine_dll.FlutterEngineSendPlatformMessage)(overlay.engine.0, &platform_message);
+        
+        if result == embedder::FlutterEngineResult_kSuccess {
+            Ok(())
+        } else {
+            let err_msg = format!("Failed to send platform message on channel '{}': {:?}", channel, result);
+            error!("[FlutterOverlay:'{}'] {}", overlay.name, err_msg);
+            Err(FlutterEmbedderError::OperationFailed(err_msg))
         }
     }
 }

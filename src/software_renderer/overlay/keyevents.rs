@@ -22,23 +22,17 @@ use crate::bindings::embedder::{
     FlutterKeyEventType_kFlutterKeyEventTypeDown, FlutterKeyEventType_kFlutterKeyEventTypeRepeat,
     FlutterKeyEventType_kFlutterKeyEventTypeUp, FlutterPlatformMessage,
 };
-use crate::bindings::keyboard_layout::{get_key_map, KeyMapEntry};
+use crate::bindings::keyboard_layout::{KeyMapEntry, get_key_map};
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::{
-     TextInputModel, send_perform_action_to_flutter,
-    send_update_editing_state_to_flutter,
+    TextInputModel, send_perform_action_to_flutter, send_update_editing_state_to_flutter,
 };
-
 
 const LOGICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
 const PHYSICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
 
- fn resolve_modifier_virtual_key(
-    virtual_key: u16,
-    is_extended_key: bool,
-    scan_code: u32,
-) -> u16 {
+fn resolve_modifier_virtual_key(virtual_key: u16, is_extended_key: bool, scan_code: u32) -> u16 {
     match virtual_key as i32 {
         VK_SHIFT => {
             let mapped_vk = unsafe { MapVirtualKeyW(scan_code as UINT, MAPVK_VSC_TO_VK_EX) };
@@ -132,13 +126,16 @@ fn send_legacy_key_event_platform_message(
     }
 }
 
-
-
-pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+pub fn handle_keyboard_event(
+    overlay: &FlutterOverlay,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> bool {
     let engine = overlay.engine;
     let engine_dll = &overlay.engine_dll;
 
-    if engine.is_null() {
+    if engine.0.is_null() {
         return false;
     }
 
@@ -155,7 +152,7 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
 
                 {
                     let mut active_state_guard = overlay.text_input_state.lock().unwrap();
-                    
+
                     if let Some(active_state) = active_state_guard.as_mut() {
                         match original_virtual_key as i32 {
                             VK_RETURN => {
@@ -163,14 +160,16 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                                 let input_action = active_state.input_action.clone();
                                 if active_state.input_action.contains("newline") {
                                     active_state.model.insert_char('\n');
-                                    send_update_args = Some((client_id, active_state.model.clone()));
+                                    send_update_args =
+                                        Some((client_id, active_state.model.clone()));
                                 }
                                 send_action_args = Some((client_id, input_action));
                                 event_handled_by_text_input = true;
                             }
                             VK_BACK => {
                                 active_state.model.backspace();
-                                send_update_args = Some((active_state.client_id, active_state.model.clone()));
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
                                 event_handled_by_text_input = true;
                             }
                             _ => {}
@@ -179,10 +178,15 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                 }
 
                 if let Some((client_id, cloned_model)) = send_update_args {
-                    send_update_editing_state_to_flutter(engine, engine_dll, client_id, &cloned_model);
+                    send_update_editing_state_to_flutter(
+                        engine.0,
+                        engine_dll,
+                        client_id,
+                        &cloned_model,
+                    );
                 }
                 if let Some((client_id, action_string)) = send_action_args {
-                    send_perform_action_to_flutter(engine, engine_dll, client_id, &action_string);
+                    send_perform_action_to_flutter(engine.0, engine_dll, client_id, &action_string);
                 }
 
                 if event_handled_by_text_input {
@@ -209,7 +213,7 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                     get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl);
 
                 send_key_event_to_flutter(
-                    engine,
+                    engine.0,
                     engine_dll,
                     flutter_event_type,
                     physical_key,
@@ -219,7 +223,7 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                 );
 
                 send_legacy_key_event_platform_message(
-                    engine,
+                    engine.0,
                     engine_dll,
                     "keydown",
                     original_virtual_key,
@@ -233,16 +237,16 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                 let original_virtual_key = wparam.0 as u16;
                 let scan_code_raw = ((lparam.0 >> 16) & 0xFF) as u32;
                 let is_extended_key = ((lparam.0 >> 24) & 0x01) != 0;
-                
+
                 let (physical_key, logical_key) = windows_to_flutter_key_codes(
                     original_virtual_key,
                     scan_code_raw,
                     is_extended_key,
                     hkl,
                 );
-                
+
                 send_key_event_to_flutter(
-                    engine,
+                    engine.0,
                     engine_dll,
                     FlutterKeyEventType_kFlutterKeyEventTypeUp,
                     physical_key,
@@ -250,9 +254,9 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                     &[0u8; 8],
                     false,
                 );
-                
+
                 send_legacy_key_event_platform_message(
-                    engine,
+                    engine.0,
                     engine_dll,
                     "keyup",
                     original_virtual_key,
@@ -270,7 +274,7 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                 if let Some(char_val) = std::char::from_u32(char_code) {
                     {
                         let mut active_state_guard = overlay.text_input_state.lock().unwrap();
-                        
+
                         if let Some(active_state) = active_state_guard.as_mut() {
                             if char_val != '\x08' && char_val != '\r' && !char_val.is_control() {
                                 active_state.model.insert_char(char_val);
@@ -281,7 +285,12 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
                         }
                     }
                     if let Some((client_id, cloned_model)) = send_update_args_char {
-                        send_update_editing_state_to_flutter(engine, engine_dll, client_id, &cloned_model);
+                        send_update_editing_state_to_flutter(
+                            engine.0,
+                            engine_dll,
+                            client_id,
+                            &cloned_model,
+                        );
                     }
                     if event_handled_by_text_input {
                         return true;
@@ -295,7 +304,6 @@ pub fn handle_keyboard_event(overlay: &FlutterOverlay, msg: u32, wparam: WPARAM,
         }
     }
 }
-
 
 fn send_key_event_to_flutter(
     engine: FlutterEngine,

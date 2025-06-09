@@ -1,4 +1,4 @@
-use crate::embedder::{self};
+use crate::bindings::embedder::{self};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 

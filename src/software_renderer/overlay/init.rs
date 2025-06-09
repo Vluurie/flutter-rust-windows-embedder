@@ -9,7 +9,7 @@ use crate::software_renderer::overlay::project_args::{
 };
 use crate::software_renderer::overlay::renderer::build_software_renderer_config;
 
-use crate::embedder::{
+use crate::bindings::embedder::{
     self, FlutterCustomTaskRunners, FlutterEngineAOTDataSource,
     FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath,
     FlutterEngineResult_kSuccess, FlutterProjectArgs, FlutterTaskRunnerDescription,
@@ -42,6 +42,7 @@ pub(crate) fn init_overlay(
     width: u32,
     height: u32,
     dart_args_opt: Option<&[String]>,
+    engine_args_opt: Option<&[String]>,
 ) -> Box<FlutterOverlay> {
     unsafe {
 
@@ -88,6 +89,7 @@ pub(crate) fn init_overlay(
                 &icu.to_string_lossy(),
                 dart_args_opt,
                 initial_is_debug,
+                engine_args_opt
             );
 
         let aot_c_temp = maybe_load_aot_path_to_cstring(aot_opt.as_deref());

@@ -1,4 +1,4 @@
-use crate::embedder::{self as e, FlutterEngine};
+use crate::bindings::embedder::{self as e, FlutterEngine};
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init as internal_embedder_init;
@@ -72,6 +72,7 @@ impl FlutterOverlay {
         initial_height: u32,
         flutter_data_dir: PathBuf,
         dart_entrypoint_args: Option<Vec<String>>,
+        engine_args_opt: Option<Vec<String>>,
     ) -> Result<Box<Self>, FlutterEmbedderError> {
         info!(
             "[FlutterOverlay::create] Initializing Flutter Overlay '{}'. Data dir: {:?}",
@@ -86,6 +87,7 @@ impl FlutterOverlay {
             initial_width,
             initial_height,
             dart_entrypoint_args.as_deref(),
+            engine_args_opt.as_deref(),
         );
 
         if overlay_box.engine.is_null() {
@@ -109,8 +111,7 @@ impl FlutterOverlay {
     /// Handles resizing of the overlay. Updates dimensions, GPU resources,
     /// and informs the Flutter engine.
     pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32, device: &ID3D11Device) {
-        if self.width == new_width && self.height == new_height {
-        }
+        if self.width == new_width && self.height == new_height {}
         self.width = new_width;
         self.height = new_height;
         self.texture = create_texture(device, self.width, self.height);

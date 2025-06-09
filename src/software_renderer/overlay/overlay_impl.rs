@@ -1,20 +1,19 @@
 use std::{
     collections::HashMap,
-    ffi::{c_char, c_void, CStr, CString},
+    ffi::{CStr, CString},
     sync::{
         atomic::{AtomicBool, AtomicI32, AtomicPtr}, Arc, Mutex
     },
     thread,
 };
 
-use log::info;
 use windows::Win32::{
     Foundation::HWND,
     Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
 use crate::{
-    embedder::{self, FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
+    bindings::embedder::{self, FlutterCustomTaskRunners, FlutterEngine, FlutterTaskRunnerDescription},
     software_renderer::{
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},

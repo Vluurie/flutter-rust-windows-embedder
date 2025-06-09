@@ -1,10 +1,10 @@
-use crate::embedder::{
+use crate::bindings::embedder::{
     self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig, FlutterWindowMetricsEvent,
 };
 
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 
-use log::{error, info};
+use log::{error};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::Ordering;

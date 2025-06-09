@@ -1,4 +1,4 @@
-use crate::embedder::{FlutterEngineResult_kSuccess};
+use crate::bindings::embedder::{FlutterEngineResult_kSuccess};
 
 use crate::software_renderer::overlay::overlay_impl::
     FlutterOverlay
@@ -7,7 +7,7 @@ use crate::software_renderer::ticker::task_scheduler::
     ScheduledTask
 ;
 
-use log::{error, info};
+use log::{error};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{thread, time::Duration};

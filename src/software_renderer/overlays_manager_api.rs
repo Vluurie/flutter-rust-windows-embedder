@@ -98,6 +98,7 @@ impl OverlayManager {
         flutter_asset_dir: &PathBuf,
         identifier: &str,
         dart_args_for_this_instance: Option<Vec<String>>,
+        engine_args_opt: Option<Vec<String>>,
     ) -> bool {
         if self.active_instances.contains_key(identifier) {
             self.bring_to_front(identifier);
@@ -150,6 +151,7 @@ impl OverlayManager {
             height,
             flutter_asset_dir.clone(),
             dart_args_for_this_instance,
+            engine_args_opt,
         ) {
             Ok(overlay_box) => {
                 self.add_overlay_instance(identifier.to_string(), overlay_box);
@@ -182,7 +184,6 @@ impl OverlayManager {
         if self.active_instances.contains_key(identifier) {
             self.focused_overlay_id = Some(identifier.to_string());
             self.bring_to_front(identifier);
-           
         }
     }
 
@@ -257,7 +258,6 @@ impl OverlayManager {
         );
 
         if is_pointer_event {
-
             let overlay_order_copy: Vec<String> = self.overlay_order.clone();
 
             for identifier in overlay_order_copy.iter().rev() {
@@ -268,7 +268,6 @@ impl OverlayManager {
                         .is_interactive_widget_hovered
                         .load(Ordering::SeqCst)
                     {
-                       
                         self.bring_to_front(identifier);
                         return true;
                     }
@@ -371,6 +370,7 @@ pub fn init_flutter_instance(
     flutter_asset_dir: &PathBuf,
     identifier: &str,
     dart_args_for_this_instance: Option<Vec<String>>,
+    engine_args_for_this_instance: Option<Vec<String>>,
 ) -> bool {
     if let Some(manager_mutex) = get_overlay_manager() {
         match manager_mutex.lock() {
@@ -379,6 +379,7 @@ pub fn init_flutter_instance(
                 flutter_asset_dir,
                 identifier,
                 dart_args_for_this_instance,
+                engine_args_for_this_instance,
             ),
             Err(poisoned) => {
                 error!(

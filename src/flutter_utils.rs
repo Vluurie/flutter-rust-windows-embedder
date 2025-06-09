@@ -1,5 +1,5 @@
 use crate::{
-    constants, dynamic_flutter_windows_dll_loader::FlutterDll, windows, path_utils, win32_utils
+    constants, dynamic_flutter_windows_dll_loader::FlutterDll, bindings::windows, path_utils, win32_utils
 };
 use log::{error, info};
 use std::{ffi::c_char, mem, ptr, sync::Arc};

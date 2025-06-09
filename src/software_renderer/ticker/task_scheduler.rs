@@ -1,4 +1,4 @@
-use crate::embedder::FlutterTask;
+use crate::bindings::embedder::FlutterTask;
 
 use log::{error, warn};
 use std::cmp::Ordering;

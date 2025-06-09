@@ -20,16 +20,38 @@ use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
 
+/// A thread-safe, clonable handle for interacting with the global OverlayManager.
+#[derive(Clone, Copy)]
+pub struct FlutterOverlayManagerHandle {
+    pub manager: &'static Mutex<OverlayManager>,
+}
+
+/// Gets a thread-safe handle to the global OverlayManager.
+///
+/// This handle is lightweight and can be cloned and passed between threads.
+pub fn get_flutter_overlay_manager_handle() -> Option<FlutterOverlayManagerHandle> {
+    get_overlay_manager().map(|manager_mutex| FlutterOverlayManagerHandle {
+        manager: manager_mutex,
+    })
+}
+
 static OVERLAY_MANAGER: Once = Once::new();
 static mut GLOBAL_OVERLAY_MANAGER: Option<Mutex<OverlayManager>> = None;
 
 pub trait FlutterPainter {
     /// Paint the given Flutter texture with the main scene.
-    fn paint_texture(&mut self, texture_srv: &ID3D11ShaderResourceView);
+     fn paint_texture(
+        &mut self,
+        texture_srv: &ID3D11ShaderResourceView,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    );
 }
 
 /// Provides access to the global `OverlayManager` singleton.
-pub fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
+fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
     unsafe {
         OVERLAY_MANAGER.call_once(|| {
             GLOBAL_OVERLAY_MANAGER = Some(Mutex::new(OverlayManager::new()));
@@ -40,11 +62,11 @@ pub fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
 
 pub struct OverlayManager {
     /// Stores the actual FlutterOverlay instances, keyed by a unique identifier.
-    active_instances: HashMap<String, Box<FlutterOverlay>>,
+    pub active_instances: HashMap<String, Box<FlutterOverlay>>,
     /// Defines the rendering and input priority. The last element is considered topmost.
-    overlay_order: Vec<String>,
+    pub overlay_order: Vec<String>,
     /// Identifier of the overlay that currently has keyboard focus.
-    focused_overlay_id: Option<String>,
+    pub focused_overlay_id: Option<String>,
     /// Shared Direct3D device context for ticking overlays.
     shared_d3d_context: Option<ID3D11DeviceContext>,
 }
@@ -60,8 +82,59 @@ impl OverlayManager {
         }
     }
 
-    fn is_focused(&self, identifier: &str) -> bool {
+    pub fn is_focused(&self, identifier: &str) -> bool {
         self.focused_overlay_id.as_deref() == Some(identifier)
+    }
+
+    pub fn get_all_overlay_dimensions(&self) -> HashMap<String, (u32, u32)> {
+        self.active_instances
+            .iter()
+            .map(|(id, overlay)| (id.clone(), overlay.get_dimensions()))
+            .collect()
+    }
+
+    pub fn set_overlay_visibility(&mut self, identifier: &str, is_visible: bool) {
+        if let Some(overlay) = self.active_instances.get_mut(identifier) {
+            overlay.set_visibility(is_visible);
+        } else {
+            warn!(
+                "[OverlayManager] Attempted to set visibility for unknown overlay '{}'.",
+                identifier
+            );
+        }
+    }
+
+    /// Sets the screen-space position for a specific overlay.
+    pub fn set_overlay_position(&mut self, identifier: &str, x: i32, y: i32) {
+        if let Some(overlay) = self.active_instances.get_mut(identifier) {
+            overlay.set_position(x, y);
+        } else {
+            warn!(
+                "[OverlayManager] Attempted to set position for unknown overlay '{}'.",
+                identifier
+            );
+        }
+    }
+
+    /// Finds the topmost, visible overlay that contains the given screen coordinates.
+    pub fn find_topmost_overlay_at_position(&self, x: i32, y: i32) -> Option<String> {
+        for identifier in self.overlay_order.iter().rev() {
+            if let Some(overlay) = self.active_instances.get(identifier) {
+                if !overlay.is_visible() {
+                    continue;
+                }
+                let (ox, oy) = overlay.get_position();
+                let (ow, oh) = overlay.get_dimensions();
+                if (x >= ox && x < (ox + ow as i32)) && (y >= oy && y < (oy + oh as i32)) {
+                    return Some(identifier.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
+        self.shared_d3d_context.clone()
     }
 
     /// Internal helper to add an overlay instance and manage its order and focus.
@@ -141,12 +214,17 @@ impl OverlayManager {
         let width = desc.BufferDesc.Width;
         let height = desc.BufferDesc.Height;
 
+        let initial_x = 0;
+        let initial_y = 0;
+
         init_logging();
 
         match FlutterOverlay::create(
             identifier.to_string(),
             &device,
             swap_chain,
+            initial_x,
+            initial_y,
             width,
             height,
             flutter_asset_dir.clone(),
@@ -196,7 +274,11 @@ impl OverlayManager {
         //  overlays in Z-order (bottom to top)
         for id in &self.overlay_order {
             if let Some(overlay_instance) = self.active_instances.get(id) {
-                if overlay_instance.engine.is_null() {
+                if !overlay_instance.is_visible() {
+                    continue;
+                }
+
+                if overlay_instance.engine.0.is_null() {
                     continue;
                 }
                 if let Err(e) = overlay_instance.request_frame() {
@@ -209,7 +291,7 @@ impl OverlayManager {
 
         if let Some(d3d_ctx) = self.shared_d3d_context.as_ref() {
             for overlay_instance in self.active_instances.values() {
-                if !overlay_instance.engine.is_null() {
+                if overlay_instance.is_visible() && !overlay_instance.engine.0.is_null() {
                     overlay_instance.tick(d3d_ctx);
                 }
             }
@@ -224,7 +306,9 @@ impl OverlayManager {
     ) {
         match overlay_instance.get_texture_srv() {
             Ok(srv) => {
-                painter.paint_texture(&srv);
+                 let (x, y) = overlay_instance.get_position();
+                 let (width, height) = overlay_instance.get_dimensions();
+                painter.paint_texture(&srv, x, y, width, height);
             }
             Err(e) => error!(
                 "[OverlayManager:{}] Failed to get SRV for compositing: {}",
@@ -262,6 +346,10 @@ impl OverlayManager {
 
             for identifier in overlay_order_copy.iter().rev() {
                 if let Some(overlay_instance) = self.active_instances.get(identifier) {
+                    if !overlay_instance.is_visible() {
+                        continue;
+                    }
+
                     overlay_instance.handle_pointer_event(hwnd, msg, wparam, lparam);
 
                     if overlay_instance
@@ -276,8 +364,10 @@ impl OverlayManager {
         } else if is_key_event {
             if let Some(focused_id) = &self.focused_overlay_id {
                 if let Some(overlay_instance) = self.active_instances.get(focused_id) {
-                    if overlay_instance.handle_keyboard_event(msg, wparam, lparam) {
-                        return true;
+                    if overlay_instance.is_visible() {
+                        if overlay_instance.handle_keyboard_event(msg, wparam, lparam) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -314,7 +404,7 @@ impl OverlayManager {
     }
 
     /// Handles resizing for all active overlays.
-    fn handle_resize(&mut self, swap_chain: &IDXGISwapChain, width: u32, height: u32) {
+    fn handle_resize(&mut self, swap_chain: &IDXGISwapChain, x_pos: i32, y_pos: i32,  width: u32, height: u32) {
         if self.active_instances.is_empty() {
             return;
         }
@@ -329,8 +419,8 @@ impl OverlayManager {
             }
         };
         for (id, overlay_instance) in self.active_instances.iter_mut() {
-            if !overlay_instance.engine.is_null() {
-                overlay_instance.handle_window_resize(width, height, &device);
+            if !overlay_instance.engine.0.is_null() {
+                overlay_instance.handle_window_resize(x_pos, y_pos, width, height, &device);
             } else {
                 warn!(
                     "[OverlayManager:{}] Engine handle is null, cannot resize.",
@@ -361,193 +451,214 @@ impl OverlayManager {
             Ok(())
         }
     }
+
+    /// Shuts down all active Flutter overlay instances.
+    pub fn shutdown_all_instances(&mut self) {
+        let all_ids: Vec<String> = self.active_instances.keys().cloned().collect();
+
+        for id in all_ids {
+            if let Err(e) = self.shutdown_instance(&id) {
+                error!(
+                    "[OverlayManager] Error during shutdown of instance {}: {}",
+                    id, e
+                );
+            }
+        }
+
+        info!("[OverlayManager] All instances shut down.");
+    }
+
+    /// Sends the same platform message to all visible overlay instances.
+    /// This is useful for broadcasting global events.
+    pub fn broadcast_platform_message(&self, channel: &str, message: &[u8]) {
+        for (id, overlay) in self.active_instances.iter() {
+            if !overlay.is_visible() {
+                continue;
+            }
+
+            if let Err(e) = overlay.send_platform_message(channel, message) {
+                error!(
+                    "[OverlayManager] Failed to broadcast message to overlay '{}': {}",
+                    id, e
+                );
+            }
+        }
+    }
 }
 
-/// Initializes a Flutter instance with the given identifier.
-/// Returns `true` if initialization was successful or if the instance already existed.
-pub fn init_flutter_instance(
-    swap_chain: &IDXGISwapChain,
-    flutter_asset_dir: &PathBuf,
-    identifier: &str,
-    dart_args_for_this_instance: Option<Vec<String>>,
-    engine_args_for_this_instance: Option<Vec<String>>,
-) -> bool {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => manager.init(
+impl FlutterOverlayManagerHandle {
+    /// Initializes a new Flutter overlay instance. Returns true on success.
+    pub fn init_instance(
+        &self,
+        swap_chain: &IDXGISwapChain,
+        flutter_asset_dir: &PathBuf,
+        identifier: &str,
+        dart_args: Option<Vec<String>>,
+        engine_args: Option<Vec<String>>,
+    ) -> bool {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.init(
                 swap_chain,
                 flutter_asset_dir,
                 identifier,
-                dart_args_for_this_instance,
-                engine_args_for_this_instance,
-            ),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for init (poisoned): {:?}",
-                    poisoned
-                );
-                false
-            }
+                dart_args,
+                engine_args,
+            )
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for init_instance.");
+            false
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for init.");
-        false
     }
-}
 
-/// Runs the tick and rendering logic for all active Flutter overlays.
-pub fn run_flutter_tick<T: FlutterPainter>(painter: &mut T) {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(manager) => manager.run(painter),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for run_flutter_tick (poisoned): {:?}",
-                    poisoned
-                );
-            }
+    /// Runs the tick and rendering logic for all active Flutter overlays.
+    pub fn run_flutter_tick<T: FlutterPainter>(&self, painter: &mut T) {
+        if let Ok(manager) = self.manager.lock() {
+            manager.run(painter);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for run_flutter_tick.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for run_flutter_tick.");
     }
-}
 
-/// Forwards a Windows input message to the appropriate Flutter overlay(s).
-/// Returns `true` if the message was consumed by any Flutter overlay.
-pub fn forward_input_to_flutter(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => manager.handle_input_event(hwnd, msg, wparam, lparam),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for forward_input_to_flutter (poisoned): {:?}",
-                    poisoned
-                );
-                false
-            }
+    /// Forwards a Windows input message to the appropriate Flutter overlay(s).
+    /// Returns `true` if the message was consumed by any Flutter overlay.
+    pub fn forward_input_to_flutter(
+        &self,
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> bool {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.handle_input_event(hwnd, msg, wparam, lparam)
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for forward_input_to_flutter.");
+            false
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for forward_input_to_flutter.");
-        false
     }
-}
 
-/// Asks active Flutter overlays to set the cursor.
-/// Returns `Some(LRESULT)` if an overlay handled the cursor, `None` otherwise.
-pub fn set_flutter_cursor(
-    hwnd_for_setcursor_message: HWND,
-    lparam: LPARAM,
-    original_hwnd: HWND,
-) -> Option<LRESULT> {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(manager) => {
-                manager.handle_set_cursor(hwnd_for_setcursor_message, lparam, original_hwnd)
-            }
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for set_flutter_cursor (poisoned): {:?}",
-                    poisoned
-                );
-                None
-            }
+    /// Asks active Flutter overlays to set the cursor.
+    /// Returns `Some(LRESULT)` if an overlay handled the cursor, `None` otherwise.
+    pub fn set_flutter_cursor(
+        &self,
+        hwnd_for_setcursor_message: HWND,
+        lparam: LPARAM,
+        original_hwnd: HWND,
+    ) -> Option<LRESULT> {
+        if let Ok(manager) = self.manager.lock() {
+            manager.handle_set_cursor(hwnd_for_setcursor_message, lparam, original_hwnd)
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for set_flutter_cursor.");
+            None
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for set_flutter_cursor.");
-        None
     }
-}
 
-/// Notifies all Flutter overlays of a window resize.
-pub fn resize_flutter_overlays(swap_chain: &IDXGISwapChain, width: u32, height: u32) {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => manager.handle_resize(swap_chain, width, height),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for resize_flutter_overlays (poisoned): {:?}",
-                    poisoned
-                );
-            }
+    /// Notifies all Flutter overlays of a window resize.
+    pub fn resize_flutter_overlays(&self, swap_chain: &IDXGISwapChain,x_pos: i32, y_pos: i32,  width: u32, height: u32) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.handle_resize(swap_chain, x_pos, y_pos, width, height);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for resize_flutter_overlays.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for resize_flutter_overlays.");
     }
-}
 
-/// Shuts down a specific Flutter instance by its identifier.
-pub fn shutdown_flutter_instance(identifier: &str) {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => {
-                if let Err(e) = manager.shutdown_instance(identifier) {
-                    error!(
-                        "[Flutter] Error during shutdown of instance {}: {}",
-                        identifier, e
-                    );
-                }
-            }
-            Err(poisoned) => {
+    /// Shuts down a specific Flutter overlay instance by its identifier.
+    pub fn shutdown_instance(&self, identifier: &str) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Err(e) = manager.shutdown_instance(identifier) {
                 error!(
-                    "[Flutter] Failed to lock OverlayManager for shutdown_flutter_instance (poisoned): {:?}",
-                    poisoned
+                    "[OverlayManagerHandle] Error during shutdown of instance {}: {}",
+                    identifier, e
                 );
             }
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for shutdown_instance.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for shutdown_flutter_instance.");
     }
-}
 
-/// Brings the specified overlay to the front of the Z-order.
-pub fn bring_overlay_to_front(identifier: &str) {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => manager.bring_to_front(identifier),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for bring_overlay_to_front (poisoned): {:?}",
-                    poisoned
-                );
-            }
+    /// Shuts down all currently active Flutter overlay instances.
+    pub fn shutdown_all_instances(&self) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.shutdown_all_instances();
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for shutdown_all_instances.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for bring_overlay_to_front.");
     }
-}
 
-/// Sets keyboard focus to the specified overlay (also brings it to front).
-pub fn set_overlay_focus(identifier: &str) {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(mut manager) => manager.set_keyboard_focus(identifier),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for set_overlay_focus (poisoned): {:?}",
-                    poisoned
-                );
-            }
+    /// Brings the specified overlay to the top of the Z-order.
+    pub fn bring_to_front(&self, identifier: &str) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.bring_to_front(identifier);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for bring_to_front.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for set_overlay_focus.");
     }
-}
 
-/// Checks if the overlay with the given identifier currently has keyboard focus.
-pub fn is_overlay_focused(identifier: &str) -> bool {
-    if let Some(manager_mutex) = get_overlay_manager() {
-        match manager_mutex.lock() {
-            Ok(manager) => manager.is_focused(identifier),
-            Err(poisoned) => {
-                error!(
-                    "[Flutter] Failed to lock OverlayManager for is_overlay_focused (poisoned): {:?}",
-                    poisoned
-                );
-                false
-            }
+    /// Sets keyboard focus to the specified overlay and brings it to the front.
+    pub fn set_focus(&self, identifier: &str) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.set_keyboard_focus(identifier);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for set_focus.");
         }
-    } else {
-        error!("[Flutter] OverlayManager not available for is_overlay_focused.");
-        false
+    }
+
+    /// Checks if the overlay with the given identifier currently has keyboard focus.
+    pub fn is_focused(&self, identifier: &str) -> bool {
+        self.manager
+            .lock()
+            .map_or(false, |manager| manager.is_focused(identifier))
+    }
+
+    /// Sets the visibility of a specific Flutter overlay.
+    ///
+    /// An overlay that is not visible will not be rendered and will not receive
+    /// any mouse or keyboard input.
+    pub fn set_visibility(&self, identifier: &str, is_visible: bool) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.set_overlay_visibility(identifier, is_visible);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for set_visibility.");
+        }
+    }
+
+    /// Sets the screen-space position of a specific overlay.
+    pub fn set_position(&self, identifier: &str, x: i32, y: i32) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.set_overlay_position(identifier, x, y);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for set_position.");
+        }
+    }
+
+    /// Sends a platform message to all visible overlays simultaneously.
+    pub fn broadcast_message(&self, channel: &str, message: &[u8]) {
+        if let Ok(manager) = self.manager.lock() {
+            manager.broadcast_platform_message(channel, message);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for broadcast_message.");
+        }
+    }
+
+    /// Gets the dimensions of all overlays. Returns an empty map on failure.
+    pub fn get_all_dimensions(&self) -> HashMap<String, (u32, u32)> {
+        self.manager.lock().map_or(HashMap::new(), |manager| {
+            manager.get_all_overlay_dimensions()
+        })
+    }
+
+    /// Gets a clone of the shared Direct3D device context.
+    pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
+        self.manager
+            .lock()
+            .ok()
+            .and_then(|manager| manager.get_d3d_context())
+    }
+
+    /// Finds the ID of the topmost, visible overlay at a given screen coordinate.
+    pub fn find_at_position(&self, x: i32, y: i32) -> Option<String> {
+        self.manager
+            .lock()
+            .ok()
+            .and_then(|manager| manager.find_topmost_overlay_at_position(x, y))
     }
 }

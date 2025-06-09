@@ -31,10 +31,10 @@ pub fn handle_pointer_event(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> bool {
-    let engine = overlay.engine;
+    let engine = &overlay.engine;
     let engine_dll = &overlay.engine_dll;
 
-    if engine.is_null() {
+    if engine.0.is_null() {
         return false;
     }
 
@@ -72,7 +72,7 @@ pub fn handle_pointer_event(
                 .mouse_buttons_state
                 .store(current_buttons_state, Ordering::Relaxed);
             send_pointer_event_to_flutter(
-                engine,
+                engine.0,
                 engine_dll,
                 phase,
                 x,
@@ -102,7 +102,7 @@ pub fn handle_pointer_event(
             if !overlay.is_mouse_added.load(Ordering::SeqCst) {
                 overlay.is_mouse_added.store(true, Ordering::SeqCst);
                 send_pointer_event_to_flutter(
-                    engine,
+                    engine.0,
                     engine_dll,
                     FlutterPointerPhase_kAdd,
                     x,
@@ -114,7 +114,7 @@ pub fn handle_pointer_event(
             }
 
             send_pointer_event_to_flutter(
-                engine,
+                engine.0,
                 engine_dll,
                 FlutterPointerPhase_kDown,
                 x,
@@ -143,7 +143,7 @@ pub fn handle_pointer_event(
                 .store(current_buttons_state, Ordering::Relaxed);
 
             send_pointer_event_to_flutter(
-                engine,
+                engine.0,
                 engine_dll,
                 FlutterPointerPhase_kUp,
                 x,
@@ -158,7 +158,7 @@ pub fn handle_pointer_event(
             if overlay.is_mouse_added.load(Ordering::SeqCst) {
                 overlay.is_mouse_added.store(false, Ordering::SeqCst);
                 send_pointer_event_to_flutter(
-                    engine,
+                    engine.0,
                     engine_dll,
                     FlutterPointerPhase_kRemove,
                     0.0,
@@ -191,7 +191,7 @@ pub fn handle_pointer_event(
             let scroll_delta_y_flutter = -(wheel_delta as f64 / WHEEL_DELTA as f64) * 20.0;
 
             send_pointer_event_to_flutter(
-                engine,
+                engine.0,
                 engine_dll,
                 FlutterPointerPhase_kHover,
                 x_client,

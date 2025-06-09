@@ -6,6 +6,7 @@ use crate::software_renderer::overlay::init as internal_embedder_init;
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
 
@@ -68,6 +69,8 @@ impl FlutterOverlay {
         name: String,
         d3d11_device: &ID3D11Device,
         swap_chain: &IDXGISwapChain,
+        initial_x_pos: i32,
+        initial_y_pos: i32,
         initial_width: u32,
         initial_height: u32,
         flutter_data_dir: PathBuf,
@@ -86,11 +89,13 @@ impl FlutterOverlay {
             swap_chain,
             initial_width,
             initial_height,
+            initial_x_pos,
+            initial_y_pos,
             dart_entrypoint_args.as_deref(),
             engine_args_opt.as_deref(),
         );
 
-        if overlay_box.engine.is_null() {
+        if overlay_box.engine.0.is_null() {
             error!(
                 "[FlutterOverlay::create] Initialization failed: Engine handle is null after init."
             );
@@ -105,22 +110,33 @@ impl FlutterOverlay {
     /// Returns the raw `FlutterEngine` pointer. **USE WITH CAUTION.**
     /// Prefer using methods on `FlutterOverlay` for interaction.
     pub fn get_engine_ptr(&self) -> FlutterEngine {
-        self.engine
+        self.engine.0
     }
 
     /// Handles resizing of the overlay. Updates dimensions, GPU resources,
     /// and informs the Flutter engine.
-    pub fn handle_window_resize(&mut self, new_width: u32, new_height: u32, device: &ID3D11Device) {
+    pub fn handle_window_resize(
+        &mut self,
+        new_x: i32,
+        new_y: i32,
+        new_width: u32,
+        new_height: u32,
+        device: &ID3D11Device,
+    ) {
         if self.width == new_width && self.height == new_height {}
         self.width = new_width;
         self.height = new_height;
+        self.x = new_x;
+        self.y = new_y;
         self.texture = create_texture(device, self.width, self.height);
         self.srv = create_srv(device, &self.texture);
         let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
         self.pixel_buffer.resize(new_buffer_size, 0);
-        if !self.engine.is_null() {
+        if !self.engine.0.is_null() {
             update_flutter_window_metrics(
-                self.engine,
+                self.engine.0,
+                self.x,
+                self.y,
                 self.width,
                 self.height,
                 self.engine_dll.clone(),
@@ -174,11 +190,11 @@ impl FlutterOverlay {
     /// Notifies the Flutter engine that this overlay instance requests a new frame.
     /// Call this in your main loop to drive Flutter animations and UI updates.
     pub fn request_frame(&self) -> Result<(), FlutterEmbedderError> {
-        if self.engine.is_null() {
+        if self.engine.0.is_null() {
             return Err(FlutterEmbedderError::EngineNotRunning);
         }
         unsafe {
-            let result_code = (self.engine_dll.FlutterEngineScheduleFrame)(self.engine);
+            let result_code = (self.engine_dll.FlutterEngineScheduleFrame)(self.engine.0);
             if result_code == e::FlutterEngineResult_kSuccess {
                 Ok(())
             } else {
@@ -219,7 +235,7 @@ impl FlutterOverlay {
     /// `Ok(())` on successful shutdown or if the overlay was already effectively shut down.
     /// Logs an error if `FlutterEngineShutdown` reports a failure but still attempts to complete resource cleanup.
     pub fn shutdown(self: Box<Self>) -> Result<(), FlutterEmbedderError> {
-        if self.engine.is_null() {
+        if self.engine.0.is_null() {
             warn!(
                 "[FlutterOverlay::shutdown] Shutdown attempted on an overlay with a null engine handle."
             );
@@ -243,7 +259,7 @@ impl FlutterOverlay {
         }
 
         unsafe {
-            let result = (self.engine_dll.FlutterEngineShutdown)(self.engine);
+            let result = (self.engine_dll.FlutterEngineShutdown)(self.engine.0);
             if result != e::FlutterEngineResult_kSuccess {
                 let err_msg = format!(
                     "FlutterEngineShutdown failed for '{}': {:?}",
@@ -259,5 +275,75 @@ impl FlutterOverlay {
             }
         }
         Ok(())
+    }
+
+    /// Sets the screen-space position of the overlay's top-left corner.
+    pub fn set_position(&mut self, new_x: i32, new_y: i32) {
+        self.x = new_x;
+        self.y = new_y;
+
+        if !self.engine.0.is_null() {
+            update_flutter_window_metrics(
+                self.engine.0,
+                self.x,
+                self.y,
+                self.width,
+                self.height,
+                self.engine_dll.clone(),
+            );
+        }
+    }
+
+    /// Get th widht and height of the overlay.
+    pub fn get_dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Returns the current (x, y) position of the overlay.
+    /// The counterpart to the `set_position` method you implemented.
+    pub fn get_position(&self) -> (i32, i32) {
+        (self.x, self.y)
+    }
+
+    pub fn send_platform_message(
+        &self,
+        channel: &str,
+        message: &[u8],
+    ) -> Result<(), FlutterEmbedderError> {
+        send_platform_message(self, channel, message)
+    }
+
+    /// Sets the visibility of the overlay.
+    /// An invisible overlay will not be rendered and will not receive input.
+    pub fn set_visibility(&mut self, is_visible: bool) {
+        self.visible = is_visible;
+    }
+
+    /// Checks if the overlay is currently marked as visible.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Triggers a "Hot Restart" for the running Flutter application.
+    ///
+    /// This works by sending a specific message on the "app/lifecycle" platform
+    /// channel, which the Dart application must listen for.
+    /// ```dart
+    ///   const channel = BasicMessageChannel<String?>('app/lifecycle', StringCodec());
+    ///   channel.setMessageHandler((String? message) async {
+    ///     if (message == 'hot.restart') {
+    ///       debugPrint("Hot restart command received from native code. Restarting...");
+    ///       await ServicesBinding.instance.reassembleApplication();
+    ///     }
+    ///     return null;
+    ///   });
+    ///   ```
+    pub fn hot_restart(&self) -> Result<(), FlutterEmbedderError> {
+        info!(
+            "[FlutterOverlay:'{}'] Sending 'hot.restart' command...",
+            self.name
+        );
+
+        self.send_platform_message("app/lifecycle", "hot.restart".as_bytes())
     }
 }

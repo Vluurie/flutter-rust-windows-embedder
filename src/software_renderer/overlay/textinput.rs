@@ -245,7 +245,7 @@ pub(crate) unsafe extern "C" fn custom_text_input_platform_message_handler(
 
     if !message.response_handle.is_null() {
         let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-            engine_handle,
+            engine_handle.0,
             message.response_handle,
             ptr::null(),
             0,

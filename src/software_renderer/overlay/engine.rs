@@ -3,6 +3,7 @@ use crate::bindings::embedder::{
 };
 
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
+use crate::software_renderer::overlay::overlay_impl::SendableFlutterEngine;
 
 use log::{error};
 use std::ffi::c_void;
@@ -48,7 +49,7 @@ pub(crate) fn run_engine(
             return Err(err_msg);
         }
 
-        (*overlay_raw_ptr).engine = engine_handle;
+        (*overlay_raw_ptr).engine = SendableFlutterEngine(engine_handle);
         (*overlay_raw_ptr).engine_atomic_ptr.store(engine_handle, Ordering::SeqCst);
 
 
@@ -63,7 +64,7 @@ pub(crate) fn run_engine(
             
 
             (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
-            (*overlay_raw_ptr).engine = ptr::null_mut();
+            (*overlay_raw_ptr).engine = SendableFlutterEngine(ptr::null_mut());
             (*overlay_raw_ptr).engine_atomic_ptr.store(ptr::null_mut(), Ordering::SeqCst);
 
             return Err(err_msg);
@@ -73,16 +74,27 @@ pub(crate) fn run_engine(
 }
 
 
-pub(crate) fn update_flutter_window_metrics(engine: FlutterEngine, width: u32, height: u32,  engine_dll: Arc<FlutterEngineDll>) {
+pub(crate) fn update_flutter_window_metrics(
+    engine: FlutterEngine,
+    x: i32,   
+    y: i32,  
+    width: u32, 
+    height: u32,
+    engine_dll: Arc<FlutterEngineDll>,
+) {
     if engine.is_null() {
         error!("[Metrics] Attempted to send metrics with a null engine handle.");
         return;
     }
+
     let mut wm: FlutterWindowMetricsEvent = unsafe { std::mem::zeroed() };
     wm.struct_size = std::mem::size_of::<FlutterWindowMetricsEvent>();
-    wm.width = width.try_into().unwrap();
-    wm.height = height.try_into().unwrap();
+
+    wm.width = width as usize;
+    wm.height = height as usize;
     wm.pixel_ratio = 1.0;
+    wm.left = x as usize;  
+    wm.top = y as usize;  
     let r = unsafe { (engine_dll.FlutterEngineSendWindowMetricsEvent)(engine, &wm) };
     if r != embedder::FlutterEngineResult_kSuccess {
         error!(
@@ -91,5 +103,3 @@ pub(crate) fn update_flutter_window_metrics(engine: FlutterEngine, width: u32, h
         );
     }
 }
-
-

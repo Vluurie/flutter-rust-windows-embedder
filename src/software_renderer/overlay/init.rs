@@ -2,7 +2,7 @@ use crate::path_utils::load_flutter_paths;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
-use crate::software_renderer::overlay::overlay_impl::FLUTTER_LOG_TAG;
+use crate::software_renderer::overlay::overlay_impl::{FLUTTER_LOG_TAG, SendableFlutterEngine};
 use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
 use crate::software_renderer::overlay::project_args::{
     build_project_args_and_strings, flutter_log_callback, maybe_load_aot_path_to_cstring,
@@ -17,7 +17,8 @@ use crate::bindings::embedder::{
 use crate::software_renderer::overlay::semantics_handler::semantics_update_callback;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::task_scheduler::{
-    TaskQueueState, TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
+    SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
+    TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
     runs_task_on_current_thread_callback,
 };
 
@@ -41,11 +42,12 @@ pub(crate) fn init_overlay(
     swap_chain: &IDXGISwapChain,
     width: u32,
     height: u32,
+    x: i32,
+    y: i32,
     dart_args_opt: Option<&[String]>,
     engine_args_opt: Option<&[String]>,
 ) -> Box<FlutterOverlay> {
     unsafe {
-
         /************************************************************************\
          * LOAD FLUTTER ENGINE DLL                         *
         \************************************************************************/
@@ -89,7 +91,7 @@ pub(crate) fn init_overlay(
                 &icu.to_string_lossy(),
                 dart_args_opt,
                 initial_is_debug,
-                engine_args_opt
+                engine_args_opt,
             );
 
         let aot_c_temp = maybe_load_aot_path_to_cstring(aot_opt.as_deref());
@@ -110,11 +112,14 @@ pub(crate) fn init_overlay(
         \************************************************************************/
         let mut overlay_box = Box::new(FlutterOverlay {
             name: name,
-            engine: ptr::null_mut(),
+            engine: SendableFlutterEngine(ptr::null_mut()),
             engine_atomic_ptr: engine_atomic_ptr_instance.clone(),
             pixel_buffer: vec![0; (width * height * 4) as usize],
             width,
             height,
+            visible: true,
+            x: x,
+            y: y,
             texture: current_texture,
             srv: current_srv,
             desired_cursor: Arc::new(Mutex::new(None)),
@@ -155,7 +160,7 @@ pub(crate) fn init_overlay(
         /************************************************************************\
          * CONFIGURE CUSTOM TASK RUNNERS                     *
         \************************************************************************/
-        let platform_description_box = Box::new(FlutterTaskRunnerDescription {
+        let platform_description = FlutterTaskRunnerDescription {
             struct_size: std::mem::size_of::<FlutterTaskRunnerDescription>(),
             user_data: overlay_box
                 ._platform_runner_context
@@ -166,15 +171,23 @@ pub(crate) fn init_overlay(
             post_task_callback: Some(post_task_callback),
             identifier: 1,
             destruction_callback: Some(destroy_task_runner_context_callback),
-        });
+        };
 
-        let custom_task_runners_box = Box::new(FlutterCustomTaskRunners {
+        let platform_description_box =
+            Box::new(SendableFlutterTaskRunnerDescription(platform_description));
+
+        let custom_task_runners = FlutterCustomTaskRunners {
             struct_size: std::mem::size_of::<FlutterCustomTaskRunners>(),
-            platform_task_runner: &*platform_description_box,
-            render_task_runner: &*platform_description_box,
-            thread_priority_setter: None,
-        });
 
+            platform_task_runner: &platform_description_box.0,
+            render_task_runner: &platform_description_box.0,
+            thread_priority_setter: None,
+        };
+
+        let custom_task_runners_box =
+            Box::new(SendableFlutterCustomTaskRunners(custom_task_runners));
+
+        // Assign the *wrapped* boxes to the overlay_box fields
         overlay_box._platform_runner_description = Some(platform_description_box);
         overlay_box._custom_task_runners_struct = Some(custom_task_runners_box);
 
@@ -208,7 +221,7 @@ pub(crate) fn init_overlay(
             custom_task_runners: overlay_box
                 ._custom_task_runners_struct
                 .as_ref()
-                .map_or(ptr::null(), |b| &**b as *const _),
+                .map_or(ptr::null(), |b| &b.0 as *const FlutterCustomTaskRunners),
             aot_data: ptr::null_mut(),
             dart_entrypoint_argc: dart_argv_ptrs.len() as i32,
             dart_entrypoint_argv: if dart_argv_ptrs.is_empty() {
@@ -307,14 +320,14 @@ pub(crate) fn init_overlay(
         \************************************************************************/
         (engine_dll_arc.FlutterEngineUpdateSemanticsEnabled)(engine_handle, true);
 
-        overlay_box.engine = engine_handle;
+        overlay_box.engine = SendableFlutterEngine(engine_handle);
         engine_atomic_ptr_instance.store(engine_handle, Ordering::SeqCst);
         assert_eq!(
             overlay_box.engine, engine_handle,
             "Engine handle mismatch after storing."
         );
 
-        update_flutter_window_metrics(engine_handle, width, height, overlay_box.engine_dll.clone());
+        update_flutter_window_metrics(engine_handle, x, y, width, height, overlay_box.engine_dll.clone());
 
         info!(
             "[InitOverlay] Initialization for '{}' completed successfully.",

@@ -2365,6 +2365,98 @@ const _: () = {
 pub type FlutterComputePlatformResolvedLocaleCallback = ::std::option::Option<
     unsafe extern "C" fn(arg1: *mut *const FlutterLocale, arg2: usize) -> *const FlutterLocale,
 >;
+pub type FlutterEngineDartPort = i64;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeNull:
+    FlutterEngineDartObjectType = 0;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeBool:
+    FlutterEngineDartObjectType = 1;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeInt32:
+    FlutterEngineDartObjectType = 2;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeInt64:
+    FlutterEngineDartObjectType = 3;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeDouble:
+    FlutterEngineDartObjectType = 4;
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeString:
+    FlutterEngineDartObjectType = 5;
+#[doc = " The object will be made available to Dart code as an instance of\n Uint8List."]
+pub const FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeBuffer:
+    FlutterEngineDartObjectType = 6;
+pub type FlutterEngineDartObjectType = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterEngineDartBuffer {
+    #[doc = " The size of this struct. Must be sizeof(FlutterEngineDartBuffer)."]
+    pub struct_size: usize,
+    #[doc = " An opaque baton passed back to the embedder when the\n buffer_collect_callback is invoked. The engine does not interpret this\n field in any way."]
+    pub user_data: *mut ::std::os::raw::c_void,
+    #[doc = " This is an optional field.\n\n When specified, the engine will assume that the buffer is owned by the\n embedder. When the data is no longer needed by any isolate, this callback\n will be made on an internal engine managed thread. The embedder is free to\n collect the buffer here. When this field is specified, it is the embedders\n responsibility to keep the buffer alive and not modify it till this\n callback is invoked by the engine. The user data specified in the callback\n is the value of `user_data` field in this struct.\n\n When NOT specified, the VM creates an internal copy of the buffer. The\n caller is free to modify the buffer as necessary or collect it immediately\n after the call to `FlutterEnginePostDartObject`.\n\n @attention      The buffer_collect_callback is will only be invoked by the\n                 engine when the `FlutterEnginePostDartObject` method\n                 returns kSuccess. In case of non-successful calls to this\n                 method, it is the embedders responsibility to collect the\n                 buffer."]
+    pub buffer_collect_callback: VoidCallback,
+    #[doc = " A pointer to the bytes of the buffer. When the buffer is owned by the\n embedder (by specifying the `buffer_collect_callback`), Dart code may\n modify that embedder owned buffer. For this reason, it is important that\n this buffer not have page protections that restrict writing to this\n buffer."]
+    pub buffer: *mut u8,
+    #[doc = " The size of the buffer."]
+    pub buffer_size: usize,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterEngineDartBuffer"][::std::mem::size_of::<FlutterEngineDartBuffer>() - 40usize];
+    ["Alignment of FlutterEngineDartBuffer"]
+        [::std::mem::align_of::<FlutterEngineDartBuffer>() - 8usize];
+    ["Offset of field: FlutterEngineDartBuffer::struct_size"]
+        [::std::mem::offset_of!(FlutterEngineDartBuffer, struct_size) - 0usize];
+    ["Offset of field: FlutterEngineDartBuffer::user_data"]
+        [::std::mem::offset_of!(FlutterEngineDartBuffer, user_data) - 8usize];
+    ["Offset of field: FlutterEngineDartBuffer::buffer_collect_callback"]
+        [::std::mem::offset_of!(FlutterEngineDartBuffer, buffer_collect_callback) - 16usize];
+    ["Offset of field: FlutterEngineDartBuffer::buffer"]
+        [::std::mem::offset_of!(FlutterEngineDartBuffer, buffer) - 24usize];
+    ["Offset of field: FlutterEngineDartBuffer::buffer_size"]
+        [::std::mem::offset_of!(FlutterEngineDartBuffer, buffer_size) - 32usize];
+};
+#[doc = " This struct specifies the native representation of a Dart object that can be\n sent via a send port to any isolate in the VM that has the corresponding\n receive port.\n\n All fields in this struct are copied out in the call to\n `FlutterEnginePostDartObject` and the caller is free to reuse or collect\n this struct after that call."]
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct FlutterEngineDartObject {
+    pub type_: FlutterEngineDartObjectType,
+    pub __bindgen_anon_1: FlutterEngineDartObject__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union FlutterEngineDartObject__bindgen_ty_1 {
+    pub bool_value: bool,
+    pub int32_value: i32,
+    pub int64_value: i64,
+    pub double_value: f64,
+    #[doc = " A null terminated string. This string will be copied by the VM in the\n call to `FlutterEnginePostDartObject` and must be collected by the\n embedder after that call is made."]
+    pub string_value: *const ::std::os::raw::c_char,
+    pub buffer_value: *const FlutterEngineDartBuffer,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterEngineDartObject__bindgen_ty_1"]
+        [::std::mem::size_of::<FlutterEngineDartObject__bindgen_ty_1>() - 8usize];
+    ["Alignment of FlutterEngineDartObject__bindgen_ty_1"]
+        [::std::mem::align_of::<FlutterEngineDartObject__bindgen_ty_1>() - 8usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::bool_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, bool_value) - 0usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::int32_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, int32_value) - 0usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::int64_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, int64_value) - 0usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::double_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, double_value) - 0usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::string_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, string_value) - 0usize];
+    ["Offset of field: FlutterEngineDartObject__bindgen_ty_1::buffer_value"]
+        [::std::mem::offset_of!(FlutterEngineDartObject__bindgen_ty_1, buffer_value) - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterEngineDartObject"][::std::mem::size_of::<FlutterEngineDartObject>() - 16usize];
+    ["Alignment of FlutterEngineDartObject"]
+        [::std::mem::align_of::<FlutterEngineDartObject>() - 8usize];
+    ["Offset of field: FlutterEngineDartObject::type_"]
+        [::std::mem::offset_of!(FlutterEngineDartObject, type_) - 0usize];
+};
 pub const FlutterEngineAOTDataSourceType_kFlutterEngineAOTDataSourceTypeElfPath:
     FlutterEngineAOTDataSourceType = 0;
 #[doc = " AOT data source type."]
@@ -2683,6 +2775,14 @@ unsafe extern "C" {
     pub fn FlutterEngineRunTask(
         engine: FlutterEngine,
         task: *const FlutterTask,
+    ) -> FlutterEngineResult;
+}
+unsafe extern "C" {
+    #[doc = " @brief      Posts a Dart object to specified send port. The corresponding\n             receive port for send port can be in any isolate running in the\n             VM. This isolate can also be the root isolate for an\n             unrelated engine. The engine parameter is necessary only to\n             ensure the call is not made when no engine (and hence no VM) is\n             running.\n\n             Unlike the platform messages mechanism, there are no threading\n             restrictions when using this API. Message can be posted on any\n             thread and they will be made available to isolate on which the\n             corresponding send port is listening.\n\n             However, it is the embedders responsibility to ensure that the\n             call is not made during an ongoing call the\n             `FlutterEngineDeinitialize` or `FlutterEngineShutdown` on\n             another thread.\n\n @param[in]  engine     A running engine instance.\n @param[in]  port       The send port to send the object to.\n @param[in]  object     The object to send to the isolate with the\n                        corresponding receive port.\n\n @return     If the message was posted to the send port.\n"]
+    pub fn FlutterEnginePostDartObject(
+        engine: FlutterEngine,
+        port: FlutterEngineDartPort,
+        object: *const FlutterEngineDartObject,
     ) -> FlutterEngineResult;
 }
 unsafe extern "C" {

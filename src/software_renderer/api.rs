@@ -1,4 +1,6 @@
-use crate::bindings::embedder::{self as e, FlutterEngine};
+use crate::bindings::embedder::{
+    self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
+};
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init as internal_embedder_init;
@@ -9,10 +11,11 @@ use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
-
 use log::{error, info, warn};
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
     ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
@@ -345,5 +348,186 @@ impl FlutterOverlay {
         );
 
         self.send_platform_message("app/lifecycle", "hot.restart".as_bytes())
+    }
+
+    /// Stores a Dart `SendPort` to enable native-to-Dart communication for this overlay.
+    pub fn register_dart_port(&self, port: e::FlutterEngineDartPort) {
+        info!(
+            "[FlutterOverlay:'{}'] Registering Dart port: {}",
+            self.name, port
+        );
+        self.dart_send_port.store(port, Ordering::SeqCst);
+    }
+
+    /// The internal dispatcher for sending a pre-constructed `FlutterEngineDartObject`
+    /// to the Dart isolate.
+    ///
+    /// # Arguments
+    ///
+    /// * `object`: A reference to the FFI-compatible object to be sent.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the object was successfully posted.
+    /// * `Err(FlutterEmbedderError)` if the engine is not running or if a Dart port
+    ///   has not been registered via `register_dart_port`.
+    ///
+    /// # Safety
+    ///
+    /// The call to `FlutterEnginePostDartObject` is `unsafe` because it's a raw FFI
+    /// call. This is considered safe in this context because:
+    /// 1. The `FlutterEngineDll` loader ensures the function pointer is valid upon initialization.
+    /// 2. We explicitly check that the `engine` handle is not null.
+    /// 3. The `object` structure is built according to the C API's expectations.
+    fn post_dart_object(
+        &self,
+        object: &e::FlutterEngineDartObject,
+    ) -> Result<(), FlutterEmbedderError> {
+        let port = self.dart_send_port.load(Ordering::SeqCst);
+        if self.engine.0.is_null() {
+            return Err(FlutterEmbedderError::EngineNotRunning);
+        }
+        if port == 0 {
+            return Err(FlutterEmbedderError::OperationFailed(
+                "Dart port not registered. Call `register_dart_port` first.".to_string(),
+            ));
+        }
+
+        let result =
+            unsafe { (self.engine_dll.FlutterEnginePostDartObject)(self.engine.0, port, object) };
+
+        if result == e::FlutterEngineResult_kSuccess {
+            Ok(())
+        } else {
+            let err_msg = format!("Failed to post Dart object with code: {:?}", result);
+            error!("[FlutterOverlay:'{}'] {}", self.name, err_msg);
+            Err(FlutterEmbedderError::OperationFailed(err_msg))
+        }
+    }
+
+    /// Posts a boolean value to the Dart isolate.
+    ///
+    /// In Dart, this will be received as a `bool`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value`: The `bool` value to send.
+    ///
+    /// # Returns
+    ///
+    /// * A `Result` indicating the success or failure of the operation. See `post_dart_object`.
+    pub fn post_bool(&self, value: bool) -> Result<(), FlutterEmbedderError> {
+        let obj = e::FlutterEngineDartObject {
+            type_: e::FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeBool,
+            __bindgen_anon_1: DartObjectUnion { bool_value: value },
+        };
+        self.post_dart_object(&obj)
+    }
+
+    /// Posts a 64-bit integer to the Dart isolate.
+    ///
+    /// In Dart, this will be received as an `int`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value`: The `i64` value to send.
+    ///
+    /// # Returns
+    ///
+    /// * A `Result` indicating the success or failure of the operation. See `post_dart_object`.
+    pub fn post_i64(&self, value: i64) -> Result<(), FlutterEmbedderError> {
+        let obj = e::FlutterEngineDartObject {
+            type_: e::FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeInt64,
+            __bindgen_anon_1: DartObjectUnion { int64_value: value },
+        };
+        self.post_dart_object(&obj)
+    }
+
+    /// Posts a 64-bit floating-point number to the Dart isolate.
+    ///
+    /// In Dart, this will be received as a `double`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value`: The `f64` value to send.
+    ///
+    /// # Returns
+    ///
+    /// * A `Result` indicating the success or failure of the operation. See `post_dart_object`.
+    pub fn post_f64(&self, value: f64) -> Result<(), FlutterEmbedderError> {
+        let obj = e::FlutterEngineDartObject {
+            type_: e::FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeDouble,
+            __bindgen_anon_1: DartObjectUnion {
+                double_value: value,
+            },
+        };
+        self.post_dart_object(&obj)
+    }
+
+    /// Posts a UTF-8 string to the Dart isolate.
+    ///
+    /// This function handles the conversion from a Rust `&str` to a C-compatible,
+    /// null-terminated string. The Flutter engine makes a copy of the string data,
+    /// so the memory allocated for the C-string is safely freed when this function returns.
+    ///
+    /// In Dart, this will be received as a `String`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value`: The string slice to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input string contains internal null `\0` bytes,
+    /// as this is not permitted in C-style strings.
+    pub fn post_string(&self, value: &str) -> Result<(), FlutterEmbedderError> {
+        let c_string = match CString::new(value) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(FlutterEmbedderError::OperationFailed(
+                    "String contains null bytes.".to_string(),
+                ));
+            }
+        };
+        let obj = e::FlutterEngineDartObject {
+            type_: e::FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeString,
+            __bindgen_anon_1: DartObjectUnion {
+                string_value: c_string.as_ptr(),
+            },
+        };
+        self.post_dart_object(&obj)
+    }
+
+    /// Posts a raw byte slice to the Dart isolate.
+    ///
+    /// This method is highly efficient for sending arbitrary binary data, such as
+    /// serialized objects, file contents, or image data. The engine makes an internal
+    /// copy of the buffer, so the caller retains ownership of the original slice.
+    ///
+    /// In Dart, this will be received as a `Uint8List`.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer`: The byte slice to send.
+    ///
+    /// # Returns
+    ///
+    /// * A `Result` indicating the success or failure of the operation. See `post_dart_object`.
+    pub fn post_buffer(&self, buffer: &[u8]) -> Result<(), FlutterEmbedderError> {
+        let dart_buffer = e::FlutterEngineDartBuffer {
+            struct_size: std::mem::size_of::<e::FlutterEngineDartBuffer>(),
+            user_data: std::ptr::null_mut(),
+            buffer_collect_callback: None, // Lets the engine perform a copy.
+            buffer: buffer.as_ptr() as *mut u8,
+            buffer_size: buffer.len(),
+        };
+
+        let obj = e::FlutterEngineDartObject {
+            type_: e::FlutterEngineDartObjectType_kFlutterEngineDartObjectTypeBuffer,
+            __bindgen_anon_1: DartObjectUnion {
+                buffer_value: &dart_buffer,
+            },
+        };
+        self.post_dart_object(&obj)
     }
 }

@@ -115,6 +115,14 @@ pub struct FlutterEngineDll {
             frame_target_time_nanos: u64,
         ) -> e::FlutterEngineResult,
     >,
+      pub FlutterEnginePostDartObject: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            engine: e::FlutterEngine,
+            port: e::FlutterEngineDartPort,
+            object: *const e::FlutterEngineDartObject,
+        ) -> e::FlutterEngineResult,
+    >,
 }
 
 static ENGINE_DLL_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<FlutterEngineDll>>>> =
@@ -190,6 +198,10 @@ impl FlutterEngineDll {
             )?,
             FlutterEngineCreateAOTData: load_symbol!(lib_static, b"FlutterEngineCreateAOTData\0")?,
             FlutterEngineOnVsync: load_symbol!(lib_static, b"FlutterEngineOnVsync\0")?,
+             FlutterEnginePostDartObject: load_symbol!(
+                lib_static,
+                b"FlutterEnginePostDartObject\0"
+            )?,
         })
     }
 

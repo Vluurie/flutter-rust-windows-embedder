@@ -104,6 +104,60 @@ impl OverlayManager {
         }
     }
 
+       /// Registers a Dart port for a specific overlay instance.
+    pub fn register_dart_port(&self, identifier: &str, port: i64) {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.register_dart_port(port);
+        } else {
+            warn!("[OverlayManager] Attempted to register port for unknown overlay '{}'.", identifier);
+        }
+    }
+
+    /// Posts a boolean message to a specific overlay instance.
+    pub fn post_bool_to_overlay(&self, identifier: &str, value: bool) -> Result<(), FlutterEmbedderError> {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.post_bool(value)
+        } else {
+            Err(FlutterEmbedderError::InvalidHandle)
+        }
+    }
+
+    /// Posts an i64 message to a specific overlay instance.
+    pub fn post_i64_to_overlay(&self, identifier: &str, value: i64) -> Result<(), FlutterEmbedderError> {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.post_i64(value)
+        } else {
+            Err(FlutterEmbedderError::InvalidHandle)
+        }
+    }
+
+    /// Posts an f64 message to a specific overlay instance.
+    pub fn post_f64_to_overlay(&self, identifier: &str, value: f64) -> Result<(), FlutterEmbedderError> {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.post_f64(value)
+        } else {
+            Err(FlutterEmbedderError::InvalidHandle)
+        }
+    }
+
+    /// Posts a string message to a specific overlay instance.
+    pub fn post_string_to_overlay(&self, identifier: &str, value: &str) -> Result<(), FlutterEmbedderError> {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.post_string(value)
+        } else {
+            Err(FlutterEmbedderError::InvalidHandle)
+        }
+    }
+
+    /// Posts a byte buffer to a specific overlay instance.
+    pub fn post_buffer_to_overlay(&self, identifier: &str, buffer: &[u8]) -> Result<(), FlutterEmbedderError> {
+        if let Some(overlay) = self.active_instances.get(identifier) {
+            overlay.post_buffer(buffer)
+        } else {
+            Err(FlutterEmbedderError::InvalidHandle)
+        }
+    }
+
     /// Sets the screen-space position for a specific overlay.
     pub fn set_overlay_position(&mut self, identifier: &str, x: i32, y: i32) {
         if let Some(overlay) = self.active_instances.get_mut(identifier) {
@@ -487,11 +541,30 @@ impl OverlayManager {
 }
 
 impl FlutterOverlayManagerHandle {
-    /// Initializes a new Flutter overlay instance. Returns true on success.
+    /// Creates and initializes a new Flutter overlay instance and adds it to the manager.
+    ///
+    /// This function is the entry point for creating a new Flutter UI surface. It handles
+    /// loading the Flutter engine, preparing rendering resources, and running the Dart
+    /// isolate. If an overlay with the same `identifier` exists, it is shut down and
+    /// replaced by the new instance.
+    ///
+    /// # Arguments
+    /// * `swap_chain`: A reference to the host application's `IDXGISwapChain`.
+    /// * `flutter_asset_build_dir`: The file path to the Flutter project's assets directory,
+    ///   which is `Debug or Release` in the Flutter app's build output of windows or others..
+    ///   The Debug or Release dir needs to contain the flutter_engine.dll/lib JIT or AOT build since it get's loaded dynamically.
+    /// * `identifier`: A unique string like "flutter_{any name}" that identifies this overlay instance for all
+    ///   subsequent API calls.
+    /// * `dart_args`: Optional. A vector of string arguments for the Dart `main()` function.
+    /// * `engine_args`: Optional. A vector of command-line switches for the Flutter Engine used in Debug JIT.
+    ///
+    /// # Returns
+    /// Returns `true` if the overlay was initialized successfully. Returns `false` if an
+    /// error occurred, which will be logged internally.
     pub fn init_instance(
         &self,
         swap_chain: &IDXGISwapChain,
-        flutter_asset_dir: &PathBuf,
+        flutter_asset_build_dir: &PathBuf,
         identifier: &str,
         dart_args: Option<Vec<String>>,
         engine_args: Option<Vec<String>>,
@@ -499,7 +572,7 @@ impl FlutterOverlayManagerHandle {
         if let Ok(mut manager) = self.manager.lock() {
             manager.init(
                 swap_chain,
-                flutter_asset_dir,
+                flutter_asset_build_dir,
                 identifier,
                 dart_args,
                 engine_args,
@@ -510,7 +583,17 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Runs the tick and rendering logic for all active Flutter overlays.
+    /// Executes the per-frame rendering logic for all active and visible overlays.
+    ///
+    /// This function must be called once per frame in the host application's main loop.
+    /// It performs two actions:
+    /// 1. Signals each Flutter engine to produce a new frame, driving UI updates and animations.
+    /// 2. Invokes the provided `painter` callback for each overlay, passing the rendered
+    ///    Flutter UI as a texture to be drawn by the host application.
+    ///
+    /// # Arguments
+    /// * `painter`: A trait object that implements the host's logic for drawing a
+    ///   D3D11 texture to the screen.
     pub fn run_flutter_tick<T: FlutterPainter>(&self, painter: &mut T) {
         if let Ok(manager) = self.manager.lock() {
             manager.run(painter);
@@ -519,8 +602,19 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Forwards a Windows input message to the appropriate Flutter overlay(s).
-    /// Returns `true` if the message was consumed by any Flutter overlay.
+    /// Forwards a raw Windows message to the manager for input processing.
+    ///
+    /// The manager routes the event to the appropriate overlay based on Z-order for
+    /// pointer events and keyboard focus for key events. This function is the primary
+    /// mechanism for delivering user input to the Flutter UIs.
+    ///
+    /// # Usage
+    /// This function must be called from the host application's `WndProc` for all
+    /// relevant input messages (e.g., `WM_MOUSEMOVE`, `WM_KEYDOWN`, `WM_CHAR`).
+    ///
+    /// # Returns
+    /// Returns `true` if a Flutter overlay consumed the event. The host application can
+    /// use this to suppress further processing of the input. Returns `false` otherwise.
     pub fn forward_input_to_flutter(
         &self,
         hwnd: HWND,
@@ -536,8 +630,16 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Asks active Flutter overlays to set the cursor.
-    /// Returns `Some(LRESULT)` if an overlay handled the cursor, `None` otherwise.
+    /// Requests that the topmost active overlay under the cursor set the mouse cursor style.
+    ///
+    /// # Usage
+    /// This function must be called from the host application's `WndProc` when handling
+    /// the `WM_SETCURSOR` message.
+    ///
+    /// # Returns
+    /// * `Some(LRESULT(1))` if a Flutter overlay handled the cursor request. The `WndProc`
+    ///   should return this value to prevent default Windows cursor handling.
+    /// * `None` if no overlay handled the request.
     pub fn set_flutter_cursor(
         &self,
         hwnd_for_setcursor_message: HWND,
@@ -552,8 +654,14 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Notifies all Flutter overlays of a window resize.
-    pub fn resize_flutter_overlays(&self, swap_chain: &IDXGISwapChain,x_pos: i32, y_pos: i32,  width: u32, height: u32) {
+    /// Notifies all active overlays of a window or render area resize.
+    ///
+    /// This call updates the logical and physical dimensions for each Flutter instance
+    /// and regenerates its underlying GPU texture to match the new size.
+    ///
+    /// # Usage
+    /// Call this function when the main window is resized or the D3D11 swap chain is recreated.
+    pub fn resize_flutter_overlays(&self, swap_chain: &IDXGISwapChain,x_pos: i32, y_pos: i32, 	width: u32, height: u32) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.handle_resize(swap_chain, x_pos, y_pos, width, height);
         } else {
@@ -561,7 +669,8 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Shuts down a specific Flutter overlay instance by its identifier.
+    /// Shuts down a specific Flutter overlay instance, releasing all its resources.
+    /// The overlay identified by the `identifier` can no longer be used after this call.
     pub fn shutdown_instance(&self, identifier: &str) {
         if let Ok(mut manager) = self.manager.lock() {
             if let Err(e) = manager.shutdown_instance(identifier) {
@@ -584,16 +693,21 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Brings the specified overlay to the top of the Z-order.
+    /// Brings the specified overlay to the top of the rendering order (Z-order).
+    /// The identified overlay will be drawn on top of all other overlays.
     pub fn bring_to_front(&self, identifier: &str) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.bring_to_front(identifier);
+            manager.set_keyboard_focus(identifier);
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for bring_to_front.");
         }
     }
 
-    /// Sets keyboard focus to the specified overlay and brings it to the front.
+    /// Sets keyboard focus to the specified overlay.
+    ///
+    /// The focused overlay will receive all subsequent keyboard input. This action also
+    /// brings the overlay to the front of the rendering order.
     pub fn set_focus(&self, identifier: &str) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.set_keyboard_focus(identifier);
@@ -610,9 +724,7 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Sets the visibility of a specific Flutter overlay.
-    ///
-    /// An overlay that is not visible will not be rendered and will not receive
-    /// any mouse or keyboard input.
+    /// An invisible overlay is not rendered and does not receive input.
     pub fn set_visibility(&self, identifier: &str, is_visible: bool) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.set_overlay_visibility(identifier, is_visible);
@@ -621,7 +733,7 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Sets the screen-space position of a specific overlay.
+    /// Sets the screen-space position of an overlay's top-left corner.
     pub fn set_position(&self, identifier: &str, x: i32, y: i32) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.set_overlay_position(identifier, x, y);
@@ -630,7 +742,11 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Sends a platform message to all visible overlays simultaneously.
+    /// Sends a platform message to all visible overlays.
+    ///
+    /// # Note
+    /// For new development, prefer the `post_*` methods for high-performance,
+    /// one-way messaging.
     pub fn broadcast_message(&self, channel: &str, message: &[u8]) {
         if let Ok(manager) = self.manager.lock() {
             manager.broadcast_platform_message(channel, message);
@@ -639,14 +755,14 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Gets the dimensions of all overlays. Returns an empty map on failure.
+    /// Gets the dimensions (width, height) of all active overlays.
     pub fn get_all_dimensions(&self) -> HashMap<String, (u32, u32)> {
         self.manager.lock().map_or(HashMap::new(), |manager| {
             manager.get_all_overlay_dimensions()
         })
     }
 
-    /// Gets a clone of the shared Direct3D device context.
+    /// Gets a clone of the shared Direct3D device context used by the manager.
     pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
         self.manager
             .lock()
@@ -654,11 +770,75 @@ impl FlutterOverlayManagerHandle {
             .and_then(|manager| manager.get_d3d_context())
     }
 
-    /// Finds the ID of the topmost, visible overlay at a given screen coordinate.
+    /// Finds the identifier of the topmost, visible overlay at a given screen coordinate.
+    /// This is used for hit-testing to determine which overlay is under the mouse.
     pub fn find_at_position(&self, x: i32, y: i32) -> Option<String> {
         self.manager
             .lock()
             .ok()
             .and_then(|manager| manager.find_topmost_overlay_at_position(x, y))
+    }
+
+    /// Registers a Dart `SendPort` with a specific overlay instance.
+    ///
+    /// This is a required setup step for using the `post_*_to_overlay` methods.
+    /// The Dart application must create a `ReceivePort`, get its `sendPort.nativePort`,
+    /// and send the resulting `i64` handle to this function via an FFI call.
+    pub fn register_dart_port(&self, identifier: &str, port: i64) {
+        if let Ok(manager) = self.manager.lock() {
+            manager.register_dart_port(identifier, port);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for register_dart_port.");
+        }
+    }
+
+    /// Sends a boolean message to a single overlay identified by its name.
+    pub fn post_bool_to_overlay(&self, identifier: &str, value: bool) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            manager.post_bool_to_overlay(identifier, value).is_ok()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for post_bool_to_overlay.");
+            false
+        }
+    }
+
+    /// Sends an i64 message to a single overlay identified by its name.
+    pub fn post_i64_to_overlay(&self, identifier: &str, value: i64) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            manager.post_i64_to_overlay(identifier, value).is_ok()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for post_i64_to_overlay.");
+            false
+        }
+    }
+
+    /// Sends an f64 message to a single overlay identified by its name.
+    pub fn post_f64_to_overlay(&self, identifier: &str, value: f64) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            manager.post_f64_to_overlay(identifier, value).is_ok()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for post_f64_to_overlay.");
+            false
+        }
+    }
+
+    /// Sends a string message to a single overlay identified by its name.
+    pub fn post_string_to_overlay(&self, identifier: &str, value: &str) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            manager.post_string_to_overlay(identifier, value).is_ok()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for post_string_to_overlay.");
+            false
+        }
+    }
+
+    /// Sends a byte buffer to a single overlay identified by its name.
+    pub fn post_buffer_to_overlay(&self, identifier: &str, buffer: &[u8]) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            manager.post_buffer_to_overlay(identifier, buffer).is_ok()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for post_buffer_to_overlay.");
+            false
+        }
     }
 }

@@ -2,8 +2,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicI32, AtomicPtr},
+        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr}, Arc, Mutex
     },
     thread,
 };
@@ -146,6 +145,9 @@ pub struct FlutterOverlay {
     /// Semantics tree data for this overlay. Managed by semantics callbacks and hover state updates.
     pub(crate) semantics_tree_data: Arc<Mutex<HashMap<i32, ProcessedSemanticsNode>>>,
 
+    /// The Dart port used for sending messages directly to the Dart isolate.
+    pub(crate) dart_send_port: Arc<AtomicI64>,
+
     // --- Crate-internal fields for FFI setup, primarily managed by `init_overlay`
     // and `build_project_args_and_strings`. These are implementation details.
     pub(crate) _assets_c: CString,
@@ -173,6 +175,7 @@ impl Clone for FlutterOverlay {
             srv: self.srv.clone(),
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
+             dart_send_port: self.dart_send_port.clone(),
             _assets_c: self._assets_c.clone(),
             _icu_c: self._icu_c.clone(),
             _engine_argv_cs: self._engine_argv_cs.clone(),

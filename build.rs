@@ -110,6 +110,11 @@ mod regenerate_assets {
             .allowlist_function("FlutterEngineScheduleFrame")
             .allowlist_function("FlutterEngineOnVsync")
             .allowlist_function("FlutterEngineScheduleFrame")
+            .allowlist_type("FlutterEngineDartObject")
+            .allowlist_function("FlutterEnginePostDartObject")
+            .allowlist_type("FlutterEngineDartPort")
+            .allowlist_type("FlutterEngineDartBuffer")
+            .allowlist_type("FlutterEngineDartObjectType")
             .generate()
             .expect("Unable to generate flutter_embedder bindings");
 

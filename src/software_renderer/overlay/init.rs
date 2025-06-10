@@ -25,7 +25,7 @@ use crate::software_renderer::ticker::task_scheduler::{
 use log::{error, info};
 use std::collections::HashMap;
 use std::ffi::c_char;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
@@ -147,6 +147,7 @@ pub(crate) fn init_overlay(
                 desc.OutputWindow
             },
             is_debug_build: initial_is_debug,
+            dart_send_port: Arc::new(AtomicI64::new(0)),
         });
 
         /************************************************************************\

@@ -42,14 +42,19 @@
 
 use crate::{
     app_state::AppState,
-    constants,
     bindings::windows::{
         HWND as RawHWND, LPARAM as RawLPARAM, LRESULT as RawLRESULT, UINT as RawUINT,
         WPARAM as RawWPARAM,
     },
+    constants,
 };
 use log::{debug, error, info, warn};
-use std::{ffi::OsStr, ffi::c_void, os::windows::ffi::OsStrExt, sync::Once};
+use std::{
+    ffi::{OsStr, c_void},
+    os::windows::ffi::OsStrExt,
+    ptr::null_mut,
+    sync::Once,
+};
 use windows::{
     Win32::{
         Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM},
@@ -265,7 +270,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                     let r = *new_rc;
                     let _ = SetWindowPos(
                         hwnd,
-                        HWND(0),
+                        Some(HWND(null_mut())),
                         r.left,
                         r.top,
                         r.right - r.left,
@@ -346,7 +351,8 @@ pub fn register_window_class() {
 /// On failure, cleans up and panics.
 pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
     info!("[Win32 Utils] Creating main window");
-    let hwnd = unsafe {
+
+    let create_window_result = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             constants::WINDOW_CLASS_NAME,
@@ -356,27 +362,30 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
             100,
             constants::DEFAULT_WINDOW_WIDTH,
             constants::DEFAULT_WINDOW_HEIGHT,
-            None::<&HWND>,
-            HMENU::default(),
-            GetModuleHandleW(None).unwrap(),
+            None::<HWND>,
+            Some(HMENU::default()),
+            Some(GetModuleHandleW(None).unwrap().into()),
             Some(app_state_ptr as *mut c_void),
         )
     };
-    if hwnd.0 == 0 {
-        let err = unsafe { GetLastError() };
-        error!("[Win32 Utils] CreateWindowExW failed: {:?}", err);
-        unsafe {
-            drop(Box::from_raw(app_state_ptr));
-            let dll = &(*app_state_ptr).dll;
-            (dll.FlutterDesktopViewControllerDestroy)((*app_state_ptr).controller);
-            windows::Win32::System::Com::CoUninitialize();
-        }
-        panic!("[Win32 Utils] Could not create main window");
-    }
-    info!("[Win32 Utils] Main window created: {:?}", hwnd);
-    hwnd
-}
 
+    match create_window_result {
+        Ok(hwnd) => {
+            info!("[Win32 Utils] Main window created: {:?}", hwnd);
+            hwnd
+        }
+        Err(e) => {
+            error!("[Win32 Utils] CreateWindowExW failed: {:?}", e);
+            unsafe {
+                drop(Box::from_raw(app_state_ptr));
+                let dll = &(*app_state_ptr).dll;
+                (dll.FlutterDesktopViewControllerDestroy)((*app_state_ptr).controller);
+                windows::Win32::System::Com::CoUninitialize();
+            }
+            panic!("[Win32 Utils] Could not create main window");
+        }
+    }
+}
 /// Embed the Flutter `child` into our `parent` window:
 /// 1. Strip WS_POPUP/WS_OVERLAPPEDWINDOW → add WS_CHILD & WS_VISIBLE  
 /// 2. Force a frame recalculation (SWP_FRAMECHANGED)  
@@ -397,7 +406,7 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
         SetWindowLongPtrW(child, GWL_STYLE, new);
         let _ = SetWindowPos(
             child,
-            HWND(0),
+            Some(HWND(null_mut())),
             0,
             0,
             0,
@@ -407,8 +416,8 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
     }
     debug!("[Win32 Utils] Child style {:#x} → {:#x}", old, new);
 
-    let prev = unsafe { SetParent(child, parent) };
-    if prev == HWND(0) {
+    let prev = unsafe { SetParent(child, Some(parent)) };
+    if prev == Ok(HWND(null_mut())) {
         let err = windows::core::Error::from_win32();
         warn!("[Win32 Utils] SetParent failed: {:?}", err);
     } else {
@@ -417,14 +426,16 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
 
     let mut rc = RECT::default();
     if unsafe { GetClientRect(parent, &mut rc) }.is_ok() {
-        unsafe { let _ = MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, true); };
+        unsafe {
+            let _ = MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, true);
+        };
     }
 
     unsafe {
-        SendMessageW(child, WM_PAINT, WPARAM(0), LPARAM(0));
+        SendMessageW(child, WM_PAINT, Some(WPARAM(0)), Some(LPARAM(0)));
     }
     unsafe {
-        let _ = PostMessageW(parent, WM_SIZE, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(Some(parent), WM_SIZE, WPARAM(0), LPARAM(0));
     }
 }
 
@@ -433,8 +444,8 @@ pub fn run_message_loop(parent: HWND, _app_state_ptr: *mut AppState) {
     info!("[Win32 Utils] Entering message loop");
     let mut msg = MSG::default();
     unsafe {
-        while GetMessageW(&mut msg, HWND(0), 0, 0).as_bool() {
-            TranslateMessage(&msg);
+        while GetMessageW(&mut msg, Some(HWND(null_mut())), 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }

@@ -41,24 +41,28 @@
 
 use log::{debug, error, info};
 use std::{
-    ffi::{c_void, OsString},
+    ffi::{OsString, c_void},
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
+    ptr::null_mut,
 };
 use windows::{
-    core::PCWSTR,
     Win32::{
         Foundation::{HWND, MAX_PATH},
         System::{
-            Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED},
+            Com::{
+                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+                CoTaskMemFree,
+            },
             LibraryLoader::{
-                GetModuleFileNameW, GetModuleHandleExW,
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, GetModuleFileNameW,
+                GetModuleHandleExW,
             },
         },
-        UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_PICKFOLDERS, SIGDN_FILESYSPATH},
+        UI::Shell::{FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH},
     },
+    core::PCWSTR,
 };
 
 /// Returns `(assets_path, icu_data_path, aot_library_path)` by inspecting
@@ -77,24 +81,29 @@ pub fn get_flutter_paths() -> (Vec<u16>, Vec<u16>, Vec<u16>) {
 /// Panics if `flutter_assets` or `icudtl.dat` are not found under `root_dir/data/`;
 /// but if `app.so` is missing, falls back to JIT mode (returns an empty AOT path).
 pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-
-    let data_dir   = root_dir.join("data");
+    let data_dir = root_dir.join("data");
     let assets_dir = data_dir.join("flutter_assets");
-    let icu_file   = data_dir.join("icudtl.dat");
-    let aot_lib    = data_dir.join("app.so");
+    let icu_file = data_dir.join("icudtl.dat");
+    let aot_lib = data_dir.join("app.so");
 
     // 1) flutter_assets must exist
     debug!("[Path Utils] Checking for `{}`", assets_dir.display());
     if !assets_dir.is_dir() {
         error!("[Path Utils] Missing directory `{}`", assets_dir.display());
-        panic!("[Path Utils] Missing `flutter_assets` at `{}`", assets_dir.display());
+        panic!(
+            "[Path Utils] Missing `flutter_assets` at `{}`",
+            assets_dir.display()
+        );
     }
 
     // 2) icudtl.dat must exist
     debug!("[Path Utils] Checking for `{}`", icu_file.display());
     if !icu_file.is_file() {
         error!("[Path Utils] Missing file `{}`", icu_file.display());
-        panic!("[Path Utils] Missing `icudtl.dat` at `{}`", icu_file.display());
+        panic!(
+            "[Path Utils] Missing `icudtl.dat` at `{}`",
+            icu_file.display()
+        );
     }
 
     // 3) app.so (AOT lib) is optional — fall back to JIT if missing
@@ -125,12 +134,11 @@ pub fn get_flutter_paths_from(root_dir: &Path) -> (Vec<u16>, Vec<u16>, Vec<u16>)
 
     // Build wide strings for assets & ICU (always present)
     let assets = to_wide(&assets_dir);
-    let icu    = to_wide(&icu_file);
+    let icu = to_wide(&icu_file);
 
     info!("[Path Utils] Resolved Flutter asset paths successfully");
     (assets, icu, aot_path_vec)
 }
-
 
 /// Displays the standard Windows “Select Folder” dialog.  
 /// Returns `Some(PathBuf)` if the user picks a folder, or `None` if
@@ -141,15 +149,12 @@ pub fn select_data_directory() -> Option<PathBuf> {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
         // Create and configure the folder-picker.
-        let dialog: IFileOpenDialog = CoCreateInstance(
-            &FileOpenDialog,
-            None,
-            CLSCTX_INPROC_SERVER,
-        ).ok()?;
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         dialog.SetOptions(FOS_PICKFOLDERS).ok()?;
 
         // Show it (no owner window).
-        dialog.Show(HWND(0)).ok()?;
+        dialog.Show(Some(HWND(null_mut()))).ok()?;
 
         // Get the selected item.
         let item = dialog.GetResult().ok()?;
@@ -170,7 +175,10 @@ pub fn select_data_directory() -> Option<PathBuf> {
         }
         let slice = std::slice::from_raw_parts(pwstr.0, len);
         let os = OsString::from_wide(slice);
-        debug!("[Path Utils] User selected directory: {}", os.to_string_lossy());
+        debug!(
+            "[Path Utils] User selected directory: {}",
+            os.to_string_lossy()
+        );
 
         // Free the string that COM allocated.
         CoTaskMemFree(Some(pwstr.0.cast::<c_void>() as *const _));
@@ -179,24 +187,22 @@ pub fn select_data_directory() -> Option<PathBuf> {
     }
 }
 
-
 /// Returns the directory containing this DLL (or executable).  
 /// Internally uses `GetModuleHandleExW` and `GetModuleFileNameW` to
 /// locate the module by the address of this function.
 pub fn dll_directory() -> PathBuf {
     unsafe {
         debug!("[Path Utils] Locating module filename via Win32 APIs");
-        let mut hmod = windows::Win32::Foundation::HMODULE(0);
+        let mut hmod = windows::Win32::Foundation::HMODULE(null_mut());
         let addr = PCWSTR(dll_directory as *const () as _);
         let _ = GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             addr,
             &mut hmod,
         );
 
         let mut buf = [0u16; MAX_PATH as usize];
-        let len = GetModuleFileNameW(hmod, &mut buf) as usize;
+        let len = GetModuleFileNameW(Some(hmod), &mut buf) as usize;
         let os: OsString = OsString::from_wide(&buf[..len]);
         let path = PathBuf::from(os);
         let dir = path.parent().unwrap().to_path_buf();
@@ -206,21 +212,25 @@ pub fn dll_directory() -> PathBuf {
     }
 }
 
-
 /// Returns (assets, icu, aot) as Vec<u16> with trailing NULs stripped on conversion.
 /// Panics if assets or icu missing; returns empty Vec for aot if missing.
 pub fn load_flutter_paths(data_dir: Option<PathBuf>) -> (OsString, OsString, Option<OsString>) {
     let (assets_w, icu_w, aot_w) = match data_dir.as_ref() {
         Some(dir) => crate::path_utils::get_flutter_paths_from(dir),
-        None      => crate::path_utils::get_flutter_paths(),
+        None => crate::path_utils::get_flutter_paths(),
     };
 
-    let strip = |mut v: Vec<u16>| { if v.last()==Some(&0) { v.pop(); } v };
+    let strip = |mut v: Vec<u16>| {
+        if v.last() == Some(&0) {
+            v.pop();
+        }
+        v
+    };
     let os_from = |v: Vec<u16>| OsString::from_wide(&strip(v));
 
     let assets_os = os_from(assets_w);
-    let icu_os    = os_from(icu_w);
-    let aot_vec   = strip(aot_w);
+    let icu_os = os_from(icu_w);
+    let aot_vec = strip(aot_w);
 
     let aot_os = if aot_vec.is_empty() {
         None
@@ -230,4 +240,3 @@ pub fn load_flutter_paths(data_dir: Option<PathBuf>) -> (OsString, OsString, Opt
 
     (assets_os, icu_os, aot_os)
 }
-

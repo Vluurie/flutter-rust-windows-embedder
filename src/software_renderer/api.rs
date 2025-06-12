@@ -211,6 +211,36 @@ impl FlutterOverlay {
         }
     }
 
+    /// Composites (renders) the Flutter overlay onto the Direct3D device context.
+    ///
+    /// Renders the overlay's content to the screen. Rendering only occurs
+    /// if the overlay is **visible** and has **valid dimensions** (width and height are
+    /// greater than zero).
+    pub fn composite(
+        &self,
+        context: &ID3D11DeviceContext,
+        screen_width: u32,
+        screen_height: u32,
+        time: f32,
+    ) {
+        if !self.visible || self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        self.compositor.render_texture(
+            context,
+            &self.srv,
+            &self.effect_config,
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            screen_width as f32,
+            screen_height as f32,
+            time,
+        );
+    }
+
     /// Retrieves the D3D11 Shader Resource View (SRV) for this overlay's texture.
     /// Used by the host application to render the Flutter UI.
     /// This clones the SRV (calls AddRef). The caller must Release it.

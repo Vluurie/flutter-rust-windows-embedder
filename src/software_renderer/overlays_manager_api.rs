@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, Once};
+use std::time::Instant;
 
 use log::{error, info, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -17,6 +18,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::init_logging;
 use crate::software_renderer::api::FlutterEmbedderError;
+use crate::software_renderer::d3d11_compositor::effects::{
+    EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
+};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
 
@@ -40,7 +44,7 @@ static mut GLOBAL_OVERLAY_MANAGER: Option<Mutex<OverlayManager>> = None;
 
 pub trait FlutterPainter {
     /// Paint the given Flutter texture with the main scene.
-     fn paint_texture(
+    fn paint_texture(
         &mut self,
         texture_srv: &ID3D11ShaderResourceView,
         x: i32,
@@ -69,6 +73,16 @@ pub struct OverlayManager {
     pub focused_overlay_id: Option<String>,
     /// Shared Direct3D device context for ticking overlays.
     shared_d3d_context: Option<ID3D11DeviceContext>,
+    /// The width of the screen in pixels.
+    screen_width: u32,
+    /// The height of the screen in pixels.
+    screen_height: u32,
+    /// The time when the `OverlayManager` was created or resumed.
+    start_time: Instant,
+    /// Indicates whether the `OverlayManager` is currently paused.
+    is_paused: bool,
+    /// The time in seconds when the `OverlayManager` was paused.
+    time_at_pause: f32,
 }
 
 impl OverlayManager {
@@ -79,20 +93,38 @@ impl OverlayManager {
             overlay_order: Vec::new(),
             focused_overlay_id: None,
             shared_d3d_context: None,
+            screen_width: 0,
+            screen_height: 0,
+            start_time: Instant::now(),
+            is_paused: false,
+            time_at_pause: 0.0,
         }
     }
-
+    /// Checks if the overlay identified by `identifier` currently has keyboard focus.
     pub fn is_focused(&self, identifier: &str) -> bool {
         self.focused_overlay_id.as_deref() == Some(identifier)
     }
-
+    /// Retrieves the dimensions (width, height) for all active overlays.
+    ///
+    /// # Returns
+    ///
+    /// A `HashMap` where keys are overlay identifiers and values are tuples
+    /// containing the width and height of the overlay.
     pub fn get_all_overlay_dimensions(&self) -> HashMap<String, (u32, u32)> {
         self.active_instances
             .iter()
             .map(|(id, overlay)| (id.clone(), overlay.get_dimensions()))
             .collect()
     }
-
+    /// Sets the visibility of a specific overlay instance.
+    ///
+    /// If the overlay with the given `identifier` does not exist, a warning is logged.
+    ///
+    /// # Arguments
+    ///
+    /// * `identifier` - The unique identifier of the overlay.
+    /// * `is_visible` - A boolean indicating whether the overlay should be visible (`true`)
+    ///                  or hidden (`false`).
     pub fn set_overlay_visibility(&mut self, identifier: &str, is_visible: bool) {
         if let Some(overlay) = self.active_instances.get_mut(identifier) {
             overlay.set_visibility(is_visible);
@@ -104,17 +136,24 @@ impl OverlayManager {
         }
     }
 
-       /// Registers a Dart port for a specific overlay instance.
+    /// Registers a Dart port for a specific overlay instance.
     pub fn register_dart_port(&self, identifier: &str, port: i64) {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.register_dart_port(port);
         } else {
-            warn!("[OverlayManager] Attempted to register port for unknown overlay '{}'.", identifier);
+            warn!(
+                "[OverlayManager] Attempted to register port for unknown overlay '{}'.",
+                identifier
+            );
         }
     }
 
     /// Posts a boolean message to a specific overlay instance.
-    pub fn post_bool_to_overlay(&self, identifier: &str, value: bool) -> Result<(), FlutterEmbedderError> {
+    pub fn post_bool_to_overlay(
+        &self,
+        identifier: &str,
+        value: bool,
+    ) -> Result<(), FlutterEmbedderError> {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.post_bool(value)
         } else {
@@ -123,7 +162,11 @@ impl OverlayManager {
     }
 
     /// Posts an i64 message to a specific overlay instance.
-    pub fn post_i64_to_overlay(&self, identifier: &str, value: i64) -> Result<(), FlutterEmbedderError> {
+    pub fn post_i64_to_overlay(
+        &self,
+        identifier: &str,
+        value: i64,
+    ) -> Result<(), FlutterEmbedderError> {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.post_i64(value)
         } else {
@@ -132,7 +175,11 @@ impl OverlayManager {
     }
 
     /// Posts an f64 message to a specific overlay instance.
-    pub fn post_f64_to_overlay(&self, identifier: &str, value: f64) -> Result<(), FlutterEmbedderError> {
+    pub fn post_f64_to_overlay(
+        &self,
+        identifier: &str,
+        value: f64,
+    ) -> Result<(), FlutterEmbedderError> {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.post_f64(value)
         } else {
@@ -141,7 +188,11 @@ impl OverlayManager {
     }
 
     /// Posts a string message to a specific overlay instance.
-    pub fn post_string_to_overlay(&self, identifier: &str, value: &str) -> Result<(), FlutterEmbedderError> {
+    pub fn post_string_to_overlay(
+        &self,
+        identifier: &str,
+        value: &str,
+    ) -> Result<(), FlutterEmbedderError> {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.post_string(value)
         } else {
@@ -150,7 +201,11 @@ impl OverlayManager {
     }
 
     /// Posts a byte buffer to a specific overlay instance.
-    pub fn post_buffer_to_overlay(&self, identifier: &str, buffer: &[u8]) -> Result<(), FlutterEmbedderError> {
+    pub fn post_buffer_to_overlay(
+        &self,
+        identifier: &str,
+        buffer: &[u8],
+    ) -> Result<(), FlutterEmbedderError> {
         if let Some(overlay) = self.active_instances.get(identifier) {
             overlay.post_buffer(buffer)
         } else {
@@ -268,6 +323,9 @@ impl OverlayManager {
         let width = desc.BufferDesc.Width;
         let height = desc.BufferDesc.Height;
 
+        self.screen_width = width;
+        self.screen_height = height;
+
         let initial_x = 0;
         let initial_y = 0;
 
@@ -320,54 +378,36 @@ impl OverlayManager {
     }
 
     /// Runs the per-frame logic for all active overlays.
-    fn run(&self, painter: &mut dyn FlutterPainter) {
+    fn run(&mut self) {
         if self.active_instances.is_empty() {
             return;
         }
 
-        //  overlays in Z-order (bottom to top)
+        let context = match self.get_d3d_context() {
+            Some(ctx) => ctx,
+            None => return,
+        };
+
+        let time = if self.is_paused {
+            self.time_at_pause
+        } else {
+            let now = self.start_time.elapsed().as_secs_f32();
+            self.time_at_pause = now;
+            now
+        };
+
         for id in &self.overlay_order {
             if let Some(overlay_instance) = self.active_instances.get(id) {
-                if !overlay_instance.is_visible() {
-                    continue;
-                }
-
-                if overlay_instance.engine.0.is_null() {
-                    continue;
-                }
-                if let Err(e) = overlay_instance.request_frame() {
-                    error!("[OverlayManager:{}] request_frame failed: {}", id, e);
-                }
+                overlay_instance.request_frame().ok();
                 update_interactive_widget_hover_state(&overlay_instance);
-                Self::paint_flutter_overlay(overlay_instance, painter, id);
+                overlay_instance.composite(&context, self.screen_width, self.screen_height, time);
             }
         }
 
-        if let Some(d3d_ctx) = self.shared_d3d_context.as_ref() {
-            for overlay_instance in self.active_instances.values() {
-                if overlay_instance.is_visible() && !overlay_instance.engine.0.is_null() {
-                    overlay_instance.tick(d3d_ctx);
-                }
+        for overlay_instance in self.active_instances.values() {
+            if overlay_instance.is_visible() {
+                overlay_instance.tick(&context);
             }
-        }
-    }
-
-    /// Helper function to draw a single overlay.
-    fn paint_flutter_overlay(
-        overlay_instance: &FlutterOverlay,
-        painter: &mut dyn FlutterPainter,
-        identifier: &str,
-    ) {
-        match overlay_instance.get_texture_srv() {
-            Ok(srv) => {
-                 let (x, y) = overlay_instance.get_position();
-                 let (width, height) = overlay_instance.get_dimensions();
-                painter.paint_texture(&srv, x, y, width, height);
-            }
-            Err(e) => error!(
-                "[OverlayManager:{}] Failed to get SRV for compositing: {}",
-                identifier, e
-            ),
         }
     }
 
@@ -458,7 +498,17 @@ impl OverlayManager {
     }
 
     /// Handles resizing for all active overlays.
-    fn handle_resize(&mut self, swap_chain: &IDXGISwapChain, x_pos: i32, y_pos: i32,  width: u32, height: u32) {
+    fn handle_resize(
+        &mut self,
+        swap_chain: &IDXGISwapChain,
+        x_pos: i32,
+        y_pos: i32,
+        width: u32,
+        height: u32,
+    ) {
+        self.screen_width = width;
+        self.screen_height = height;
+
         if self.active_instances.is_empty() {
             return;
         }
@@ -583,22 +633,98 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Executes the per-frame rendering logic for all active and visible overlays.
-    ///
-    /// This function must be called once per frame in the host application's main loop.
-    /// It performs two actions:
-    /// 1. Signals each Flutter engine to produce a new frame, driving UI updates and animations.
-    /// 2. Invokes the provided `painter` callback for each overlay, passing the rendered
-    ///    Flutter UI as a texture to be drawn by the host application.
-    ///
-    /// # Arguments
-    /// * `painter`: A trait object that implements the host's logic for drawing a
-    ///   D3D11 texture to the screen.
-    pub fn run_flutter_tick<T: FlutterPainter>(&self, painter: &mut T) {
-        if let Ok(manager) = self.manager.lock() {
-            manager.run(painter);
+    /// Executes the per-frame rendering logic for all overlays.
+    /// This function should be called once per frame from the host application's render loop.
+    pub fn run_flutter_tick(&self) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.run();
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for run_flutter_tick.");
+        }
+    }
+
+    /// Updates the screen dimensions used by the overlays.
+    /// This must be called when the main window is resized.
+    pub fn update_screen_size(&self, width: u32, height: u32) {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.screen_width = width;
+            manager.screen_height = height;
+        }
+    }
+
+    /// Pauses all shader animations for all overlays.
+    pub fn pause_animations(&self) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if !manager.is_paused {
+                manager.time_at_pause = manager.start_time.elapsed().as_secs_f32();
+                manager.is_paused = true;
+            }
+        }
+    }
+
+    /// Resumes all shader animations for all overlays.
+    pub fn resume_animations(&self) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if manager.is_paused {
+                manager.start_time =
+                    Instant::now() - std::time::Duration::from_secs_f32(manager.time_at_pause);
+                manager.is_paused = false;
+            }
+        }
+    }
+
+    /// Sets a post-processing effect for the **entire** overlay.
+    pub fn set_fullscreen_effect(&self, identifier: &str, effect: PostEffect) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+                overlay.effect_config.params = match effect {
+                    PostEffect::Passthrough => EffectParams::None,
+                    PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
+                    PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                    //...
+                };
+                overlay.effect_config.target = EffectTarget::Fullscreen;
+            }
+        }
+    }
+
+    // TODO: Make it not by widget - make it by widgets []
+    /// Applies a post-processing effect to a **specific area** of an overlay.
+    pub fn set_widget_effect(&self, identifier: &str, effect: PostEffect, bounds: [f32; 4]) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+                overlay.effect_config.params = match effect {
+                    PostEffect::Passthrough => EffectParams::None,
+                    PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
+                    PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                    //...
+                };
+                overlay.effect_config.target = EffectTarget::Widget(bounds);
+            }
+        }
+    }
+
+    /// Removes any active effect from an overlay, reverting it to the default passthrough shader.
+    pub fn clear_effect(&self, identifier: &str) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+                overlay.effect_config = EffectConfig::default();
+            }
+        }
+    }
+
+    /// Updates the entire effect configuration for a specific overlay.
+    /// This is the single, powerful entry point for controlling an overlay's visual style.
+    ///
+    /// # Arguments
+    /// * `identifier`: The unique name of the overlay to configure.
+    /// * `config`: The complete `EffectConfig` struct defining the target area
+    ///   and the specific effect parameters to apply.
+    pub fn update_effect_config(&self, identifier: &str, config: EffectConfig) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+                overlay.effect_config = config;
+            }
         }
     }
 
@@ -661,7 +787,14 @@ impl FlutterOverlayManagerHandle {
     ///
     /// # Usage
     /// Call this function when the main window is resized or the D3D11 swap chain is recreated.
-    pub fn resize_flutter_overlays(&self, swap_chain: &IDXGISwapChain,x_pos: i32, y_pos: i32, 	width: u32, height: u32) {
+    pub fn resize_flutter_overlays(
+        &self,
+        swap_chain: &IDXGISwapChain,
+        x_pos: i32,
+        y_pos: i32,
+        width: u32,
+        height: u32,
+    ) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.handle_resize(swap_chain, x_pos, y_pos, width, height);
         } else {

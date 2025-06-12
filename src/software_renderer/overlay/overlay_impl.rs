@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr}, Arc, Mutex
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr},
     },
     thread,
 };
@@ -13,13 +14,15 @@ use windows::Win32::{
 };
 
 use crate::{
-    bindings::embedder::{
-        self, FlutterEngine,
-    },
+    bindings::embedder::{self, FlutterEngine},
     software_renderer::{
+        d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
-        ticker::task_scheduler::{SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState, TaskRunnerContext},
+        ticker::task_scheduler::{
+            SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
+            TaskRunnerContext,
+        },
     },
 };
 
@@ -29,7 +32,7 @@ pub static FLUTTER_LOG_TAG: &CStr =
 // A wrapper around the raw FlutterEngine pointer to make it Send + Sync.
 // WARNING: This is only safe because we PROMISE to only use the pointer
 // on the thread that the Flutter Engine is designed to run on.
-#[derive(Debug,Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct SendableFlutterEngine(pub FlutterEngine);
 
 // By implementing these traits, we are making a manual guarantee to the compiler.
@@ -92,6 +95,9 @@ pub struct FlutterOverlay {
     /// ```
     pub visible: bool,
 
+    /// Configuration for shader effects applied to the overlay.
+    pub effect_config: EffectConfig,
+
     /// A user-defined name for this overlay instance. Useful for identification,
     /// logging, or debugging purposes by any part of the crate.
     pub name: String,
@@ -110,6 +116,9 @@ pub struct FlutterOverlay {
     /// Can be used to check for operations if the engine !is_null()
     /// **CRITICAL: Must be valid post-`init_overlay` for all operations.**
     pub engine: SendableFlutterEngine,
+
+    /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
+    pub compositor: D3D11Compositor,
 
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
@@ -169,13 +178,15 @@ impl Clone for FlutterOverlay {
             width: self.width,
             height: self.height,
             visible: true,
+            effect_config: self.effect_config,
             x: self.x,
             y: self.y,
             texture: self.texture.clone(),
             srv: self.srv.clone(),
+            compositor: self.compositor.clone(),
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
-             dart_send_port: self.dart_send_port.clone(),
+            dart_send_port: self.dart_send_port.clone(),
             _assets_c: self._assets_c.clone(),
             _icu_c: self._icu_c.clone(),
             _engine_argv_cs: self._engine_argv_cs.clone(),

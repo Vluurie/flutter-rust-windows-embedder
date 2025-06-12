@@ -1,5 +1,6 @@
-mod overlay;
-mod ticker;
 pub mod api;
+pub mod d3d11_compositor;
 mod dynamic_flutter_engine_dll_loader;
+mod overlay;
 pub mod overlays_manager_api;
+mod ticker;

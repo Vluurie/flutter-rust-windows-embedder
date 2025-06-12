@@ -1,4 +1,6 @@
 use crate::path_utils::load_flutter_paths;
+use crate::software_renderer::d3d11_compositor::compositor::D3D11Compositor;
+use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
@@ -82,6 +84,8 @@ pub(crate) fn init_overlay(
         let current_texture = create_texture(device, width, height);
         let current_srv = create_srv(device, &current_texture);
 
+        let compositor = D3D11Compositor::new(device);
+
         /************************************************************************\
          * BUILD C-COMPATIBLE PROJECT STRINGS                  *
         \************************************************************************/
@@ -118,10 +122,12 @@ pub(crate) fn init_overlay(
             width,
             height,
             visible: true,
+            effect_config: EffectConfig::default(),
             x: x,
             y: y,
             texture: current_texture,
             srv: current_srv,
+            compositor,
             desired_cursor: Arc::new(Mutex::new(None)),
             task_queue_state: task_queue_arc,
             task_runner_thread: None,
@@ -328,7 +334,14 @@ pub(crate) fn init_overlay(
             "Engine handle mismatch after storing."
         );
 
-        update_flutter_window_metrics(engine_handle, x, y, width, height, overlay_box.engine_dll.clone());
+        update_flutter_window_metrics(
+            engine_handle,
+            x,
+            y,
+            width,
+            height,
+            overlay_box.engine_dll.clone(),
+        );
 
         info!(
             "[InitOverlay] Initialization for '{}' completed successfully.",

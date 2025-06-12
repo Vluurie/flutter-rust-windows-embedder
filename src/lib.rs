@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Once;
 
 mod app_state;
+pub mod bindings;
 mod constants;
 mod dynamic_flutter_windows_dll_loader;
 mod flutter_utils;
@@ -18,7 +19,6 @@ pub mod path_utils;
 mod plugin_loader;
 pub mod software_renderer;
 mod win32_utils;
-pub mod bindings;
 static LOGGER_INIT: Once = Once::new();
 
 /// Init logging for the enviroument debug filtered.
@@ -60,7 +60,8 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
 
     // --- COM init (STA) ---
     unsafe {
-        CoInitializeEx(None, COINIT_APARTMENTTHREADED).unwrap_or_else(|e| {
+        let hresult_result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        hresult_result.ok().unwrap_or_else(|e| {
             error!("COM initialization failed: {:?}", e);
             std::process::exit(1);
         });
@@ -135,8 +136,8 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
 
     // 6) Show and enter the message loop
     unsafe {
-        ShowWindow(parent_hwnd, SW_SHOWNORMAL);
-        SetForegroundWindow(parent_hwnd);
+        let _ = ShowWindow(parent_hwnd, SW_SHOWNORMAL);
+        let _ = SetForegroundWindow(parent_hwnd);
     }
     info!("Main window shown");
 

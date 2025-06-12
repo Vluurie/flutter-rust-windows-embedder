@@ -219,35 +219,37 @@ pub fn handle_set_cursor(
             match overlay.desired_cursor.try_lock() {
                 Ok(desired_kind_guard) => {
                     if let Some(kind) = desired_kind_guard.as_ref() {
-                        let mut h_cursor_to_set: HCURSOR = HCURSOR(0);
+                        let mut h_cursor_to_set: HCURSOR = HCURSOR(std::ptr::null_mut());
                         let mut flutter_did_request_cursor_change = true;
 
-                        let h_instance_null: HINSTANCE = HINSTANCE(0);
+                        let h_instance_null: HINSTANCE = HINSTANCE(std::ptr::null_mut());
 
                         match kind.as_str() {
                             "basic" | "basic.default" => {
-                                h_cursor_to_set =
-                                    LoadCursorW(h_instance_null, IDC_ARROW).unwrap_or(HCURSOR(0));
+                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_ARROW)
+                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
                             }
                             "click" | "pointer" => {
-                                h_cursor_to_set =
-                                    LoadCursorW(h_instance_null, IDC_HAND).unwrap_or(HCURSOR(0));
+                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_HAND)
+                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
                             }
                             "text" | "text.TextEditable" => {
-                                h_cursor_to_set =
-                                    LoadCursorW(h_instance_null, IDC_IBEAM).unwrap_or(HCURSOR(0));
+                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_IBEAM)
+                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
                             }
                             "forbidden" | "basic.forbidden" => {
-                                h_cursor_to_set =
-                                    LoadCursorW(h_instance_null, IDC_NO).unwrap_or(HCURSOR(0));
+                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_NO)
+                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
                             }
                             _ => {
                                 flutter_did_request_cursor_change = false;
                             }
                         }
 
-                        if flutter_did_request_cursor_change && h_cursor_to_set.0 != 0 {
-                            SetCursor(h_cursor_to_set);
+                        if flutter_did_request_cursor_change
+                            && h_cursor_to_set.0 != std::ptr::null_mut()
+                        {
+                            SetCursor(Some(h_cursor_to_set));
                             return Some(LRESULT(1));
                         }
                     }

@@ -312,14 +312,24 @@ impl OverlayManager {
             }
         }
 
-        let mut desc: DXGI_SWAP_CHAIN_DESC = unsafe { std::mem::zeroed() };
-        if let Err(e) = unsafe { swap_chain.GetDesc(&mut desc) } {
-            error!(
-                "[OverlayManager:{}] Failed to get SwapChain description: {:?}",
-                identifier, e
-            );
-            return false;
+        let get_desc_result: windows::core::Result<DXGI_SWAP_CHAIN_DESC> =
+            unsafe { swap_chain.GetDesc() };
+
+        let desc: DXGI_SWAP_CHAIN_DESC;
+
+        match get_desc_result {
+            Ok(d) => {
+                desc = d;
+            }
+            Err(e) => {
+                error!(
+                    "[OverlayManager:{}] Failed to get SwapChain description: {:?}",
+                    identifier, e
+                );
+                return false;
+            }
         }
+
         let width = desc.BufferDesc.Width;
         let height = desc.BufferDesc.Height;
 

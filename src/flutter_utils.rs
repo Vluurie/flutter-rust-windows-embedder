@@ -1,9 +1,14 @@
 use crate::{
-    constants, dynamic_flutter_windows_dll_loader::FlutterDll, bindings::windows, path_utils, win32_utils
+    bindings::windows, constants, dynamic_flutter_windows_dll_loader::FlutterDll, path_utils,
+    win32_utils,
 };
-use log::{error, info};
-use std::{ffi::c_char, mem, ptr, sync::Arc};
 use ::windows::Win32::{Foundation::HWND, System::Com::CoUninitialize};
+use log::{error, info};
+use std::{
+    ffi::{c_char, c_void},
+    mem, ptr,
+    sync::Arc,
+};
 
 /// Alias for the raw Flutter engine handles
 pub type FlutterDesktopEngineRef = windows::FlutterDesktopEngineRef;
@@ -17,7 +22,7 @@ pub type FlutterUINT = windows::UINT;
 
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
-pub fn create_flutter_engine( dll: &Arc<FlutterDll>,) -> FlutterDesktopEngineRef {
+pub fn create_flutter_engine(dll: &Arc<FlutterDll>) -> FlutterDesktopEngineRef {
     let (assets_path, icu_data_path, aot_w) = path_utils::get_flutter_paths();
 
     // Prepare Dart entrypoint arguments
@@ -137,8 +142,8 @@ pub fn get_flutter_view_and_hwnd(
     }
 
     info!("[Flutter Utils] Obtaining HWND from view");
-    let raw = unsafe { (dll.FlutterDesktopViewGetHWND)(view) };
-    if raw.is_null() {
+    let raw_handle_as_isize = unsafe { (dll.FlutterDesktopViewGetHWND)(view) };
+    if raw_handle_as_isize.is_null() {
         error!("[Flutter Utils] View returned null HWND");
         unsafe {
             (dll.FlutterDesktopViewControllerDestroy)(controller);
@@ -147,7 +152,7 @@ pub fn get_flutter_view_and_hwnd(
         win32_utils::panic_with_error("FlutterDesktopViewGetHWND failed");
     }
 
-    let hwnd = HWND(raw as isize);
+    let hwnd: HWND = HWND(raw_handle_as_isize as *mut c_void);
     info!("[Flutter Utils] Flutter child HWND = {:?}", hwnd);
     (view, hwnd)
 }

@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
-use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
 
@@ -146,10 +146,10 @@ pub(crate) fn init_overlay(
             semantics_tree_data: Arc::new(Mutex::new(HashMap::new())),
             is_interactive_widget_hovered: AtomicBool::new(false),
             windows_handler: {
-                let mut desc = windows::Win32::Graphics::Dxgi::DXGI_SWAP_CHAIN_DESC::default();
-                swap_chain
-                    .GetDesc(&mut desc)
+                let desc: DXGI_SWAP_CHAIN_DESC = swap_chain
+                    .GetDesc()
                     .expect("Failed to get swap chain description");
+
                 desc.OutputWindow
             },
             is_debug_build: initial_is_debug,

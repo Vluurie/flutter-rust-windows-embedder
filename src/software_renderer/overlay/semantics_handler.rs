@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
-use std::sync::
-    atomic::Ordering
-;
+use std::sync::atomic::Ordering;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
@@ -337,7 +335,7 @@ pub fn update_interactive_widget_hover_state(overlay: &FlutterOverlay) {
             return;
         }
 
-        if GetForegroundWindow() != overlay_hwnd {
+        if GetForegroundWindow() != overlay_hwnd.0 {
             overlay
                 .is_interactive_widget_hovered
                 .store(false, Ordering::Relaxed);
@@ -346,7 +344,7 @@ pub fn update_interactive_widget_hover_state(overlay: &FlutterOverlay) {
 
         let mut client_cursor_pos = cursor_pos_screen;
 
-        if !ScreenToClient(overlay_hwnd, &mut client_cursor_pos).as_bool() {
+        if !ScreenToClient(overlay_hwnd.0, &mut client_cursor_pos).as_bool() {
             overlay
                 .is_interactive_widget_hovered
                 .store(false, Ordering::Relaxed);

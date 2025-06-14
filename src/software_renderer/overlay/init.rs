@@ -4,7 +4,9 @@ use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
-use crate::software_renderer::overlay::overlay_impl::{FLUTTER_LOG_TAG, SendableFlutterEngine};
+use crate::software_renderer::overlay::overlay_impl::{
+    FLUTTER_LOG_TAG, SendHwnd, SendableFlutterEngine,
+};
 use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
 use crate::software_renderer::overlay::project_args::{
     build_project_args_and_strings, flutter_log_callback, maybe_load_aot_path_to_cstring,
@@ -150,7 +152,7 @@ pub(crate) fn init_overlay(
                     .GetDesc()
                     .expect("Failed to get swap chain description");
 
-                desc.OutputWindow
+                SendHwnd(desc.OutputWindow)
             },
             is_debug_build: initial_is_debug,
             dart_send_port: Arc::new(AtomicI64::new(0)),

@@ -260,7 +260,7 @@ impl D3D11Compositor {
         }
         shaders.insert(PostEffect::Hologram, hologram_ps.unwrap());
 
-        let warp_field_bytes = include_bytes!("./shaders/warp_field_ps.cso"); // Angenommener Dateiname
+        let warp_field_bytes = include_bytes!("./shaders/warp_field_ps.cso");
         let mut warp_field_ps: Option<ID3D11PixelShader> = None;
         unsafe {
             device

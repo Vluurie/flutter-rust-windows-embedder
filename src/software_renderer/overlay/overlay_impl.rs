@@ -51,6 +51,12 @@ impl PartialEq<FlutterEngine> for SendableFlutterEngine {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SendHwnd(pub HWND);
+
+unsafe impl Send for SendHwnd {}
+unsafe impl Sync for SendHwnd {}
+
 /// Represents a single Flutter overlay instance, managing its engine, rendering,
 /// and various UI-related states.
 /// Initialization is handled by `init_overlay`, which is responsible for correctly
@@ -130,7 +136,7 @@ pub struct FlutterOverlay {
     pub(crate) desired_cursor: Arc<Mutex<Option<String>>>,
 
     /// The Windows HWND this overlay is associated with. Set by `init_overlay`, used internally.
-    pub(crate) windows_handler: HWND,
+    pub(crate) windows_handler: SendHwnd,
 
     /// Shared reference to the loaded Flutter engine DLL. Managed internally.
     /// **CRITICAL INTERNAL: Must be valid post-`init_overlay`.**

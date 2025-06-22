@@ -598,6 +598,23 @@ impl OverlayManager {
             }
         }
     }
+
+    // Get all texture to process them before calling tick allowing special effects or resizing.
+    pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
+        let mut textures = Vec::new();
+
+        for identifier in &self.overlay_order {
+            if let Some(overlay) = self.active_instances.get(identifier) {
+                if overlay.is_visible() {
+                    if let Ok(texture_srv) = overlay.get_texture_srv() {
+                        textures.push((identifier.clone(), texture_srv));
+                    }
+                }
+            }
+        }
+
+        textures
+    }
 }
 
 impl FlutterOverlayManagerHandle {
@@ -982,6 +999,16 @@ impl FlutterOverlayManagerHandle {
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for post_buffer_to_overlay.");
             false
+        }
+    }
+
+    /// Retrieves the rendered textures from all active and visible overlays.
+    pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
+        if let Ok(manager) = self.manager.lock() {
+            manager.get_all_overlay_textures()
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for get_all_overlay_textures.");
+            Vec::new()
         }
     }
 }

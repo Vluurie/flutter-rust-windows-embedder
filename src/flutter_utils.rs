@@ -23,7 +23,7 @@ pub type FlutterUINT = windows::UINT;
 /// Creates and initializes the Flutter engine with the appropriate properties.
 /// On failure, uninitializes COM and aborts the process.
 pub fn create_flutter_engine(dll: &Arc<FlutterDll>) -> FlutterDesktopEngineRef {
-    let (assets_path, icu_data_path, aot_w) = path_utils::get_flutter_paths();
+    let (assets_path, icu_data_path, aot_w) = path_utils::get_flutter_build_paths();
 
     // Prepare Dart entrypoint arguments
     let args_ptrs: Vec<*const c_char> = constants::DART_ENTRYPOINT_ARGS

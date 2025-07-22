@@ -1,4 +1,4 @@
-use crate::path_utils::load_flutter_paths;
+use crate::path_utils::load_flutter_build_paths;
 use crate::software_renderer::d3d11_compositor::compositor::D3D11Compositor;
 use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
@@ -77,7 +77,7 @@ pub(crate) fn init_overlay(
          * The presence of AOT data is used to determine if this is a debug     *
          * or release build.                                                    *
         \************************************************************************/
-        let (assets, icu, aot_opt) = load_flutter_paths(data_dir.clone());
+        let (assets, icu, aot_opt) = load_flutter_build_paths(data_dir.clone());
         let initial_is_debug = aot_opt.is_none();
 
         /************************************************************************\

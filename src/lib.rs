@@ -70,8 +70,8 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
 
     // 1) Resolve Flutter asset paths
     let (assets, icu, aot) = match data_dir.as_ref() {
-        Some(dir) => path_utils::get_flutter_paths_from(dir),
-        None => path_utils::get_flutter_paths(),
+        Some(dir) => path_utils::get_flutter_build_paths_from(dir),
+        None => path_utils::get_flutter_build_paths(),
     };
 
     let dir_ref = data_dir.as_deref();

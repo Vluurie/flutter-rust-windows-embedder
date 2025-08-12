@@ -17,10 +17,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::init_logging;
-use crate::software_renderer::api::FlutterEmbedderError;
+use crate::software_renderer::api::{FlutterEmbedderError, RendererType};
 use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
+
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
 
@@ -281,6 +282,7 @@ impl OverlayManager {
         identifier: &str,
         dart_args_for_this_instance: Option<Vec<String>>,
         engine_args_opt: Option<Vec<String>>,
+        renderer_type: RendererType,
     ) -> bool {
         if self.active_instances.contains_key(identifier) {
             self.bring_to_front(identifier);
@@ -336,22 +338,20 @@ impl OverlayManager {
         self.screen_width = width;
         self.screen_height = height;
 
-        let initial_x = 0;
-        let initial_y = 0;
-
         init_logging();
 
         match FlutterOverlay::create(
             identifier.to_string(),
             &device,
             swap_chain,
-            initial_x,
-            initial_y,
+            0,
+            0,
             width,
             height,
             flutter_asset_dir.clone(),
             dart_args_for_this_instance,
             engine_args_opt,
+            renderer_type,
         ) {
             Ok(overlay_box) => {
                 self.add_overlay_instance(identifier.to_string(), overlay_box);
@@ -645,6 +645,7 @@ impl FlutterOverlayManagerHandle {
         identifier: &str,
         dart_args: Option<Vec<String>>,
         engine_args: Option<Vec<String>>,
+        renderer_type: RendererType,
     ) -> bool {
         if let Ok(mut manager) = self.manager.lock() {
             manager.init(
@@ -653,6 +654,7 @@ impl FlutterOverlayManagerHandle {
                 identifier,
                 dart_args,
                 engine_args,
+                renderer_type,
             )
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for init_instance.");

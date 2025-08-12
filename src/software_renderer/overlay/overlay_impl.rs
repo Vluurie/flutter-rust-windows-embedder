@@ -18,6 +18,7 @@ use crate::{
     software_renderer::{
         d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
+        gl_renderer::gl_config::GLState,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
         ticker::task_scheduler::{
             SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
@@ -39,6 +40,14 @@ pub struct SendableFlutterEngine(pub FlutterEngine);
 unsafe impl Send for SendableFlutterEngine {}
 unsafe impl Sync for SendableFlutterEngine {}
 
+#[derive(Debug)]
+pub struct SendableGLState(pub Box<GLState>);
+
+// By implementing these traits, we are making a manual guarantee to the compiler
+// that we will only access the OpenGL state from the correct thread.
+unsafe impl Send for SendableGLState {}
+unsafe impl Sync for SendableGLState {}
+
 impl PartialEq for SendableFlutterEngine {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
@@ -48,6 +57,17 @@ impl PartialEq for SendableFlutterEngine {
 impl PartialEq<FlutterEngine> for SendableFlutterEngine {
     fn eq(&self, other: &FlutterEngine) -> bool {
         self.0 == *other
+    }
+}
+
+impl std::fmt::Debug for GLState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GLState")
+            .field("hdc", &self.hdc.0)
+            .field("hglrc", &self.hglrc.0)
+            .field("fbo_id", &self.fbo_id)
+            .field("gl_texture_id", &self.gl_texture_id)
+            .finish()
     }
 }
 
@@ -126,10 +146,13 @@ pub struct FlutterOverlay {
     /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
     pub compositor: D3D11Compositor,
 
+    pub gl_state: Option<SendableGLState>,
+    pub gl_resource_state: Option<SendableGLState>,
+
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
     /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
-    pub(crate) pixel_buffer: Vec<u8>,
+    pub(crate) pixel_buffer: Option<Vec<u8>>,
 
     /// The current cursor style requested by Flutter. Managed internally by `handle_set_cursor`
     /// and platform message callbacks.
@@ -190,6 +213,12 @@ impl Clone for FlutterOverlay {
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             compositor: self.compositor.clone(),
+            gl_state: None,
+            gl_resource_state: None,
+            _platform_runner_context: None,
+            _platform_runner_description: None,
+            _custom_task_runners_struct: None,
+            task_runner_thread: None,
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
             dart_send_port: self.dart_send_port.clone(),
@@ -198,12 +227,9 @@ impl Clone for FlutterOverlay {
             _engine_argv_cs: self._engine_argv_cs.clone(),
             _dart_argv_cs: self._dart_argv_cs.clone(),
             _aot_c: self._aot_c.clone(),
-            _platform_runner_context: self._platform_runner_context.clone(),
-            _platform_runner_description: self._platform_runner_description.clone(),
-            _custom_task_runners_struct: self._custom_task_runners_struct.clone(),
             engine_dll: self.engine_dll.clone(),
             task_queue_state: self.task_queue_state.clone(),
-            task_runner_thread: None,
+
             text_input_state: self.text_input_state.clone(),
             mouse_buttons_state: AtomicI32::new(0),
             is_mouse_added: AtomicBool::new(false),

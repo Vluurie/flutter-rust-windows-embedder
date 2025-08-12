@@ -3,7 +3,7 @@ use crate::bindings::embedder::{
 };
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
-use crate::software_renderer::overlay::init as internal_embedder_init;
+use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
@@ -22,6 +22,10 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
+pub enum RendererType {
+    Software,
+    OpenGL,
+}
 #[derive(Debug)]
 pub enum FlutterEmbedderError {
     InitializationFailed(String),
@@ -79,6 +83,7 @@ impl FlutterOverlay {
         flutter_data_dir: PathBuf,
         dart_entrypoint_args: Option<Vec<String>>,
         engine_args_opt: Option<Vec<String>>,
+        renderer_type: RendererType,
     ) -> Result<Box<Self>, FlutterEmbedderError> {
         info!(
             "[FlutterOverlay::create] Initializing Flutter Overlay '{}'. Data dir: {:?}",
@@ -96,6 +101,7 @@ impl FlutterOverlay {
             initial_y_pos,
             dart_entrypoint_args.as_deref(),
             engine_args_opt.as_deref(),
+            renderer_type,
         );
 
         if overlay_box.engine.0.is_null() {
@@ -126,15 +132,29 @@ impl FlutterOverlay {
         new_height: u32,
         device: &ID3D11Device,
     ) {
-        if self.width == new_width && self.height == new_height {}
+        // Exit early if dimensions haven't changed
+        if self.width == new_width
+            && self.height == new_height
+            && self.x == new_x
+            && self.y == new_y
+        {
+            return;
+        }
+
         self.width = new_width;
         self.height = new_height;
         self.x = new_x;
         self.y = new_y;
-        self.texture = create_texture(device, self.width, self.height);
-        self.srv = create_srv(device, &self.texture);
-        let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
-        self.pixel_buffer.resize(new_buffer_size, 0);
+
+        if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
+            self.texture = create_texture(device, self.width, self.height);
+            self.srv = create_srv(device, &self.texture);
+
+            let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
+            pixel_buffer.resize(new_buffer_size, 0);
+        }
+
+        // This part is common to both renderers
         if !self.engine.0.is_null() {
             update_flutter_window_metrics(
                 self.engine.0,

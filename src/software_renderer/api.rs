@@ -22,6 +22,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum RendererType {
     Software,
     OpenGL,
@@ -152,6 +153,12 @@ impl FlutterOverlay {
 
             let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
             pixel_buffer.resize(new_buffer_size, 0);
+        }
+
+        if self.renderer_type == RendererType::OpenGL {
+            if let Some(gl_state) = &mut self.gl_state {
+                gl_state.0.fbo_id = 0;
+            }
         }
 
         // This part is common to both renderers

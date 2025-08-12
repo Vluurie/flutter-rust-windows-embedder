@@ -37,7 +37,7 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::ffi::c_char;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIResource, IDXGISwapChain};
@@ -201,6 +201,7 @@ pub(crate) fn init_overlay(
             pixel_buffer: pixel_buffer_for_struct,
             gl_state: gl_state_for_struct,
             gl_resource_state: gl_resource_state_for_struct,
+            sync: Arc::new((Mutex::new(false), Condvar::new())),
             width,
             height,
             visible: true,
@@ -230,6 +231,7 @@ pub(crate) fn init_overlay(
             windows_handler: SendHwnd(hwnd),
             is_debug_build: initial_is_debug,
             dart_send_port: Arc::new(AtomicI64::new(0)),
+            renderer_type,
         });
 
         let raw_ptr_to_overlay_data: *mut FlutterOverlay = &mut *overlay_box;

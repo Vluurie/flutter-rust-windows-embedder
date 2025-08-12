@@ -65,6 +65,7 @@ pub struct GLState {
     pub gl_finish: PFNGLFINISH,
     pub wgl_dx_lock_objects: PFNWGLDXLOCKOBJECTSNVPROC,
     pub wgl_dx_unlock_objects: PFNWGLDXUNLOCKOBJECTSNVPROC,
+    pub is_locked: Cell<bool>,
 }
 
 impl GLState {
@@ -211,6 +212,7 @@ impl GLState {
                 gl_finish,
                 wgl_dx_lock_objects,
                 wgl_dx_unlock_objects,
+                is_locked: Cell::new(false),
             })
         }
     }
@@ -231,6 +233,7 @@ impl GLState {
             gl_finish: existing_state.gl_finish,
             wgl_dx_lock_objects: existing_state.wgl_dx_lock_objects,
             wgl_dx_unlock_objects: existing_state.wgl_dx_unlock_objects,
+            is_locked: Cell::new(false),
         }
     }
 
@@ -292,6 +295,11 @@ unsafe extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
     if let Some(gl_state) = &mut overlay.gl_state {
         let state = &mut *gl_state.0;
 
+        if state.is_locked.get() {
+            error!("[Callback FBO] FATAL: Object is already locked. State mismatch.");
+            return 0;
+        }
+
         let lock_ok = (state.wgl_dx_lock_objects)(
             state.dx_interop_device_handle,
             1,
@@ -302,6 +310,8 @@ unsafe extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
             return 0;
         }
 
+        state.is_locked.set(true);
+
         if state.fbo_id == 0 {
             (state.gl_gen_framebuffers)(1, &mut state.fbo_id);
             (state.gl_bind_framebuffer)(0x8D40, state.fbo_id);
@@ -310,12 +320,13 @@ unsafe extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
             let status = (state.gl_check_framebuffer_status)(0x8D40);
             if status != 0x8CD5 {
                 error!("[Callback FBO] Framebuffer incomplete: 0x{:X}", status);
-
                 (state.wgl_dx_unlock_objects)(
                     state.dx_interop_device_handle,
                     1,
                     &state.dx_interop_texture_handle,
                 );
+
+                state.is_locked.set(false);
                 return 0;
             }
         }
@@ -334,16 +345,26 @@ unsafe extern "C" fn present_callback(user_data: *mut c_void) -> bool {
         let state = &*gl_state.0;
 
         (state.gl_flush)();
+        (state.gl_finish)();
 
-        let unlock_ok = (state.wgl_dx_unlock_objects)(
-            state.dx_interop_device_handle,
-            1,
-            &state.dx_interop_texture_handle,
-        );
-        if !unlock_ok {
-            error!("[Callback Present] wglDXUnlockObjectsNV failed!");
-            return false;
+        if state.is_locked.get() {
+            let unlock_ok = (state.wgl_dx_unlock_objects)(
+                state.dx_interop_device_handle,
+                1,
+                &state.dx_interop_texture_handle,
+            );
+            if !unlock_ok {
+                error!("[Callback Present] wglDXUnlockObjectsNV failed!");
+                state.is_locked.set(false);
+                return false;
+            }
+            state.is_locked.set(false);
         }
+
+        let (lock, cvar) = &*overlay.sync;
+        let mut frame_ready = lock.lock().unwrap();
+        *frame_ready = true;
+        cvar.notify_one();
 
         return true;
     }

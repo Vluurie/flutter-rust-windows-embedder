@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr},
     },
     thread,
@@ -16,6 +16,7 @@ use windows::Win32::{
 use crate::{
     bindings::embedder::{self, FlutterEngine},
     software_renderer::{
+        api::RendererType,
         d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         gl_renderer::gl_config::GLState,
@@ -127,6 +128,7 @@ pub struct FlutterOverlay {
     /// A user-defined name for this overlay instance. Useful for identification,
     /// logging, or debugging purposes by any part of the crate.
     pub name: String,
+    pub renderer_type: RendererType,
 
     /// Atomic boolean indicating if the mouse cursor is currently hovering over an
     /// interactive widget (e.g., button, text field) within this overlay's semantics tree.
@@ -148,6 +150,7 @@ pub struct FlutterOverlay {
 
     pub gl_state: Option<SendableGLState>,
     pub gl_resource_state: Option<SendableGLState>,
+    pub sync: Arc<(Mutex<bool>, Condvar)>,
 
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
@@ -206,6 +209,7 @@ impl Clone for FlutterOverlay {
             pixel_buffer: self.pixel_buffer.clone(),
             width: self.width,
             height: self.height,
+            renderer_type: self.renderer_type.clone(),
             visible: true,
             effect_config: self.effect_config,
             x: self.x,
@@ -215,6 +219,7 @@ impl Clone for FlutterOverlay {
             compositor: self.compositor.clone(),
             gl_state: None,
             gl_resource_state: None,
+            sync: self.sync.clone(),
             _platform_runner_context: None,
             _platform_runner_description: None,
             _custom_task_runners_struct: None,

@@ -393,30 +393,23 @@ impl OverlayManager {
             return;
         }
 
-        let context = match self.get_d3d_context() {
-            Some(ctx) => ctx,
-            None => return,
-        };
-
-        let time = if self.is_paused {
-            self.time_at_pause
-        } else {
-            let now = self.start_time.elapsed().as_secs_f32();
-            self.time_at_pause = now;
-            now
-        };
+        let mut gl_sync_primitives = Vec::new();
+        let order_clone = self.overlay_order.clone();
 
         for id in &self.overlay_order {
-            if let Some(overlay_instance) = self.active_instances.get(id) {
-                overlay_instance.request_frame().ok();
-                update_interactive_widget_hover_state(&overlay_instance);
-                overlay_instance.composite(&context, self.screen_width, self.screen_height, time);
-            }
-        }
+            if let Some(overlay) = self.active_instances.get(id) {
+                if !overlay.is_visible() {
+                    continue;
+                }
 
-        for overlay_instance in self.active_instances.values() {
-            if overlay_instance.is_visible() {
-                overlay_instance.tick(&context);
+                overlay.request_frame().ok();
+
+                if overlay.renderer_type == RendererType::OpenGL {
+                    let (lock, _cvar) = &*overlay.sync;
+                    let mut frame_ready = lock.lock().unwrap();
+                    *frame_ready = false;
+                    gl_sync_primitives.push(overlay.sync.clone());
+                }
             }
         }
     }
@@ -665,10 +658,62 @@ impl FlutterOverlayManagerHandle {
     /// Executes the per-frame rendering logic for all overlays.
     /// This function should be called once per frame from the host application's render loop.
     pub fn run_flutter_tick(&self) {
-        if let Ok(mut manager) = self.manager.lock() {
-            manager.run();
+        // --- PHASE 1: VORBEREITEN (unter Lock) ---
+        let mut gl_sync_primitives = Vec::new();
+
+        if let Ok(manager) = self.manager.lock() {
+            for id in &manager.overlay_order {
+                if let Some(overlay) = manager.active_instances.get(id) {
+                    if !overlay.is_visible() {
+                        continue;
+                    }
+
+                    overlay.request_frame().ok();
+
+                    if overlay.renderer_type == RendererType::OpenGL {
+                        let (lock, _cvar) = &*overlay.sync;
+                        let mut frame_ready = lock.lock().unwrap();
+                        *frame_ready = false;
+                        gl_sync_primitives.push(overlay.sync.clone());
+                    }
+                }
+            }
         } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for run_flutter_tick.");
+            error!("[OverlayManagerHandle] Failed to lock manager for tick preparation.");
+            return;
+        }
+
+        for sync_primitive in gl_sync_primitives {
+            let (lock, cvar) = &*sync_primitive;
+            let mut frame_ready = lock.lock().unwrap();
+            while !*frame_ready {
+                frame_ready = cvar.wait(frame_ready).unwrap();
+            }
+        }
+
+        if let Ok(mut manager) = self.manager.lock() {
+            let context = match manager.shared_d3d_context.clone() {
+                Some(ctx) => ctx,
+                None => return,
+            };
+            let time = manager.start_time.elapsed().as_secs_f32();
+
+            for id in &manager.overlay_order {
+                if let Some(overlay) = manager.active_instances.get(id) {
+                    if !overlay.is_visible() {
+                        continue;
+                    }
+
+                    if overlay.renderer_type == RendererType::Software {
+                        overlay.tick(&context);
+                    }
+
+                    update_interactive_widget_hover_state(overlay);
+                    overlay.composite(&context, manager.screen_width, manager.screen_height, time);
+                }
+            }
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for tick compositing.");
         }
     }
 

@@ -393,9 +393,6 @@ impl OverlayManager {
             return;
         }
 
-        let mut gl_sync_primitives = Vec::new();
-        let order_clone = self.overlay_order.clone();
-
         for id in &self.overlay_order {
             if let Some(overlay) = self.active_instances.get(id) {
                 if !overlay.is_visible() {
@@ -405,10 +402,7 @@ impl OverlayManager {
                 overlay.request_frame().ok();
 
                 if overlay.renderer_type == RendererType::OpenGL {
-                    let (lock, _cvar) = &*overlay.sync;
-                    let mut frame_ready = lock.lock().unwrap();
-                    *frame_ready = false;
-                    gl_sync_primitives.push(overlay.sync.clone());
+                    // TODO: Handle opengl renderer
                 }
             }
         }
@@ -658,24 +652,14 @@ impl FlutterOverlayManagerHandle {
     /// Executes the per-frame rendering logic for all overlays.
     /// This function should be called once per frame from the host application's render loop.
     pub fn run_flutter_tick(&self) {
-        // --- PHASE 1: VORBEREITEN (unter Lock) ---
-        let mut gl_sync_primitives = Vec::new();
-
+        // First, request a frame from all visible overlays to start the rendering process.
         if let Ok(manager) = self.manager.lock() {
             for id in &manager.overlay_order {
                 if let Some(overlay) = manager.active_instances.get(id) {
                     if !overlay.is_visible() {
                         continue;
                     }
-
                     overlay.request_frame().ok();
-
-                    if overlay.renderer_type == RendererType::OpenGL {
-                        let (lock, _cvar) = &*overlay.sync;
-                        let mut frame_ready = lock.lock().unwrap();
-                        *frame_ready = false;
-                        gl_sync_primitives.push(overlay.sync.clone());
-                    }
                 }
             }
         } else {
@@ -683,15 +667,8 @@ impl FlutterOverlayManagerHandle {
             return;
         }
 
-        for sync_primitive in gl_sync_primitives {
-            let (lock, cvar) = &*sync_primitive;
-            let mut frame_ready = lock.lock().unwrap();
-            while !*frame_ready {
-                frame_ready = cvar.wait(frame_ready).unwrap();
-            }
-        }
-
-        if let Ok(mut manager) = self.manager.lock() {
+        // Second, perform the tick and composite step.
+        if let Ok(manager) = self.manager.lock() {
             let context = match manager.shared_d3d_context.clone() {
                 Some(ctx) => ctx,
                 None => return,
@@ -704,10 +681,12 @@ impl FlutterOverlayManagerHandle {
                         continue;
                     }
 
+                    // For the software renderer, we need to upload the CPU buffer to the GPU texture.
                     if overlay.renderer_type == RendererType::Software {
                         overlay.tick(&context);
                     }
 
+                    // For both renderers, we update hover state and composite the final D3D11 texture.
                     update_interactive_widget_hover_state(overlay);
                     overlay.composite(&context, manager.screen_width, manager.screen_height, time);
                 }

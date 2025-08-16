@@ -2,14 +2,14 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr},
     },
     thread,
 };
 
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HANDLE, HWND},
     Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
@@ -19,7 +19,7 @@ use crate::{
         api::RendererType,
         d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
-        gl_renderer::gl_config::GLState,
+        gl_renderer::angle_interop::SendableAngleState,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
         ticker::task_scheduler::{
             SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
@@ -27,6 +27,9 @@ use crate::{
         },
     },
 };
+
+// TODO: We need the angel here as new param
+// TODO: All must be sendable send sync always if raw type for angle
 
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
@@ -41,14 +44,6 @@ pub struct SendableFlutterEngine(pub FlutterEngine);
 unsafe impl Send for SendableFlutterEngine {}
 unsafe impl Sync for SendableFlutterEngine {}
 
-#[derive(Debug)]
-pub struct SendableGLState(pub Box<GLState>);
-
-// By implementing these traits, we are making a manual guarantee to the compiler
-// that we will only access the OpenGL state from the correct thread.
-unsafe impl Send for SendableGLState {}
-unsafe impl Sync for SendableGLState {}
-
 impl PartialEq for SendableFlutterEngine {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0
@@ -61,22 +56,16 @@ impl PartialEq<FlutterEngine> for SendableFlutterEngine {
     }
 }
 
-impl std::fmt::Debug for GLState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GLState")
-            .field("hdc", &self.hdc.0)
-            .field("hglrc", &self.hglrc.0)
-            .field("fbo_id", &self.fbo_id)
-            .field("gl_texture_id", &self.gl_texture_id)
-            .finish()
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct SendHwnd(pub HWND);
 
 unsafe impl Send for SendHwnd {}
 unsafe impl Sync for SendHwnd {}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SendableHandle(pub HANDLE);
+unsafe impl Send for SendableHandle {}
+unsafe impl Sync for SendableHandle {}
 
 /// Represents a single Flutter overlay instance, managing its engine, rendering,
 /// and various UI-related states.
@@ -93,6 +82,9 @@ pub struct FlutterOverlay {
     /// Used by shaders to sample from the overlay texture during rendering.
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
+
+    pub(crate) angle_state: Option<SendableAngleState>,
+    pub(crate) d3d11_shared_handle: Option<SendableHandle>,
 
     /// Current width of the overlay in pixels.
     /// Can be read by other parts of the crate for layout purposes.
@@ -147,10 +139,6 @@ pub struct FlutterOverlay {
 
     /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
     pub compositor: D3D11Compositor,
-
-    pub gl_state: Option<SendableGLState>,
-    pub gl_resource_state: Option<SendableGLState>,
-    pub sync: Arc<(Mutex<bool>, Condvar)>,
 
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
@@ -217,9 +205,9 @@ impl Clone for FlutterOverlay {
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             compositor: self.compositor.clone(),
-            gl_state: None,
-            gl_resource_state: None,
-            sync: self.sync.clone(),
+            angle_state: None, // ANGLE state is unique per instance
+            d3d11_shared_handle: None,
+
             _platform_runner_context: None,
             _platform_runner_description: None,
             _custom_task_runners_struct: None,

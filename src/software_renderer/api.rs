@@ -1,18 +1,23 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
-use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
+use crate::software_renderer::gl_renderer::angle_interop::{
+    AngleInteropState, EGL_NO_SURFACE, SendableAngleState,
+};
+use crate::software_renderer::overlay::d3d::{
+    create_shared_texture_and_get_handle, create_srv, create_texture,
+};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+use crate::software_renderer::overlay::overlay_impl::{FlutterOverlay, SendableHandle};
 use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
 use log::{error, info, warn};
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -133,7 +138,6 @@ impl FlutterOverlay {
         new_height: u32,
         device: &ID3D11Device,
     ) {
-        // Exit early if dimensions haven't changed
         if self.width == new_width
             && self.height == new_height
             && self.x == new_x
@@ -147,21 +151,33 @@ impl FlutterOverlay {
         self.x = new_x;
         self.y = new_y;
 
-        if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
-            self.texture = create_texture(device, self.width, self.height);
-            self.srv = create_srv(device, &self.texture);
+        match self.renderer_type {
+            RendererType::Software => {
+                if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
+                    self.texture = create_texture(device, self.width, self.height);
+                    self.srv = create_srv(device, &self.texture);
+                    let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
+                    pixel_buffer.resize(new_buffer_size, 0);
+                }
+            }
+            RendererType::OpenGL => {
+                let (new_texture, new_handle) =
+                    create_shared_texture_and_get_handle(device, self.width, self.height)
+                        .expect("Failed to recreate shared texture on resize");
 
-            let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
-            pixel_buffer.resize(new_buffer_size, 0);
-        }
+                self.texture = new_texture;
+                self.srv = create_srv(device, &self.texture);
+                self.d3d11_shared_handle = Some(SendableHandle(new_handle));
 
-        if self.renderer_type == RendererType::OpenGL {
-            if let Some(gl_state) = &mut self.gl_state {
-                gl_state.0.fbo_id = 0;
+                self.angle_state = None;
+
+                let device_ptr = device as *const _ as *mut c_void;
+                let new_angle_state = AngleInteropState::new(device_ptr)
+                    .expect("Failed to re-initialize ANGLE state on resize");
+                self.angle_state = Some(SendableAngleState(Box::new(new_angle_state)));
             }
         }
 
-        // This part is common to both renderers
         if !self.engine.0.is_null() {
             update_flutter_window_metrics(
                 self.engine.0,

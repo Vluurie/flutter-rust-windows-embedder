@@ -8,9 +8,9 @@ use crate::software_renderer::gl_renderer::angle_interop::{
     AngleInteropState, SendableAngleState, build_opengl_renderer_config,
 };
 use crate::software_renderer::overlay::d3d::{
-    create_compositing_texture, create_d3d_device_on_same_adapter,
-    create_shared_texture_and_get_handle, create_srv, create_texture, log_device_adapter_info,
-    log_device_creation_flags, log_device_feature_level, log_texture_properties,
+    create_compositing_texture, create_shared_texture_and_get_handle, create_srv, create_texture,
+    log_device_adapter_info, log_device_creation_flags, log_device_feature_level,
+    log_texture_properties,
 };
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
 use crate::software_renderer::overlay::overlay_impl::{
@@ -143,7 +143,7 @@ pub(crate) fn init_overlay(
                 let angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
                 let angle_d3d_device = angle_state.get_d3d_device().unwrap();
 
-                // 2. Create the SHARED texture on ANGLE's device. This texture is a RENDER TARGET ONLY.
+                // 2. Create the SHARED texture on ANGLE's device. Flutter will render to this.
                 let (texture_for_angle, shared_handle) =
                     create_shared_texture_and_get_handle(&angle_d3d_device, width, height)
                         .expect("Failed to create shared ANGLE texture");
@@ -164,12 +164,18 @@ pub(crate) fn init_overlay(
                 angle_shared_texture_for_struct = Some(angle_texture_on_game_device.clone());
 
                 // 4. Create a LOCAL, non-shared texture on the GAME's device.
-                //    This texture is a SHADER RESOURCE ONLY.
-                texture_for_struct = create_compositing_texture(game_device, width, height);
-                srv_for_struct = create_srv(game_device, &texture_for_struct);
+                // This texture is a SHADER RESOURCE ONLY, used for the final composition.
+                let local_texture_on_game_device =
+                    create_compositing_texture(game_device, width, height);
+
+                // Now you can safely assign the local texture to the struct field.
+                texture_for_struct = local_texture_on_game_device;
 
                 // 5. Get the mutex from the SHARED texture.
                 keyed_mutex_for_struct = angle_texture_on_game_device.cast().ok();
+
+                // 6. Create the ShaderResourceView from the LOCAL texture.
+                srv_for_struct = create_srv(game_device, &texture_for_struct);
 
                 angle_state_for_struct = Some(SendableAngleState(angle_state));
                 rdr_cfg = build_opengl_renderer_config();

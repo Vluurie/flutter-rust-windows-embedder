@@ -8,7 +8,7 @@ use log::{debug, error, info, warn};
 use std::ffi::{CString, c_void};
 use std::{mem, ptr};
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::core::Interface;
 
@@ -19,6 +19,10 @@ pub const EGL_NO_SURFACE: *mut c_void = 0 as *mut c_void;
 pub const EGL_TRUE: i32 = 1;
 pub const EGL_NONE: i32 = 0x3038;
 pub const EGL_SUCCESS: i32 = 0x3000;
+pub const EGL_WIDTH: i32 = 0x3057;
+pub const EGL_HEIGHT: i32 = 0x3056;
+pub const EGL_D3D11_TEXTURE_ANGLE: i32 = 0x3484;
+pub const GL_BGRA_EXT: i32 = 0x87;
 
 pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
 pub const EGL_SURFACE_TYPE: i32 = 0x3033;
@@ -33,6 +37,7 @@ pub const EGL_DEPTH_SIZE: i32 = 0x3025;
 pub const EGL_STENCIL_SIZE: i32 = 0x3026;
 pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: i32 = 0x3209;
 pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_DEBUG_ANGLE: i32 = 0x3451;
+pub const EGL_DXGI_KEYED_MUTEX_ANGLE: i32 = 0x33A2;
 
 pub const EGL_PLATFORM_ANGLE_ANGLE: i32 = 0x3202;
 pub const EGL_PLATFORM_ANGLE_TYPE_ANGLE: i32 = 0x3203;
@@ -44,6 +49,7 @@ pub const EGL_PLATFORM_ANGLE_MAX_VERSION_MINOR_ANGLE: i32 = 0x3205;
 pub const EGL_PLATFORM_ANGLE_D3D11_ANGLE: i32 = 0x3208;
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE: i32 = 0x33A4;
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE: i32 = 0x33A9;
+pub const EGL_PLATFORM_ANGLE_D3D_TEXTURE_FORMAT_ANGLE: i32 = 0x34A7;
 
 pub const EGL_DEVICE_EXT: i32 = 0x322C;
 pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
@@ -51,6 +57,7 @@ pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
 pub const EGL_GL_COLORSPACE_KHR: i32 = 0x309D;
 pub const EGL_GL_COLORSPACE_SRGB_KHR: i32 = 0x3089;
 pub const EGL_PLATFORM_ANGLE_D3D_DEVICE_ANGLE: i32 = 0x33A1;
+pub const EGL_TEXTURE_INTERNAL_FORMAT_ANGLE: i32 = 0x345D;
 
 pub const GL_FRAMEBUFFER: u32 = 0x8D40;
 pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
@@ -504,24 +511,77 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
 
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
+
+            info!("[AngleInterop] Attempting to make EGL resource context current.");
+            if !make_resource_current_callback(user_data) {
+                error!("[AngleInterop] Failed to make EGL resource context current.");
+                if let Some(mutex) = &overlay.keyed_mutex {
+                    let _ = mutex.ReleaseSync(0);
+                }
+                return 0;
+            }
+            info!("[AngleInterop] EGL resource context is current.");
+
             if state.fbo_id != 0 {
+                info!(
+                    "[AngleInterop] Returning existing FBO (ID: {}).",
+                    state.fbo_id
+                );
                 return state.fbo_id;
             }
+
             if let Some(d3d_texture) = &overlay.gl_internal_linear_texture {
-                let image_attribs = [EGL_NONE as isize];
                 let d3d_texture_ptr = d3d_texture.as_raw();
 
                 if d3d_texture_ptr.is_null() {
                     error!("[AngleInterop] d3d_texture_ptr is null!");
+                    if let Some(mutex) = &overlay.keyed_mutex {
+                        let _ = mutex.ReleaseSync(0);
+                    }
                     return 0;
                 }
+                info!("[AngleInterop] d3d_texture_ptr is valid.");
+
+                let mut texture_desc: D3D11_TEXTURE2D_DESC = std::mem::zeroed();
+                d3d_texture.GetDesc(&mut texture_desc);
+
+                // Add these checks and log the results
+                info!("[AngleInterop] Texture Description:");
+                info!("- Width: {}", texture_desc.Width);
+                info!("- Height: {}", texture_desc.Height);
+                info!("- Format: {:#X}", texture_desc.Format.0);
+                info!("- Usage: {:#X}", texture_desc.Usage.0);
+                info!("- MiscFlags: {:#X}", texture_desc.MiscFlags);
+                info!("- BindFlags: {:#X}", texture_desc.BindFlags);
+                info!("- CPUAccessFlags: {:#X}", texture_desc.CPUAccessFlags);
+
+                // Create a simple attribute list.
+                // According to the ANGLE extension docs, EGL_D3D_TEXTURE_ANGLE
+                // does not accept EGL_DXGI_KEYED_MUTEX_ANGLE as an attribute.
+                let image_attribs = [EGL_NONE as isize];
+
+                info!("-----------------------------------------------------------------");
+                info!("[AngleInterop] DEBUGGING eglCreateImageKHR CALL (Corrected)");
+                info!("- Display: {:p}", state.display);
+                info!("- Context: {:p} (should be EGL_NO_CONTEXT)", EGL_NO_CONTEXT);
+                info!(
+                    "- Target: {:#X} (EGL_D3D_TEXTURE_ANGLE)",
+                    EGL_D3D_TEXTURE_ANGLE
+                );
+                info!("- Buffer: {:p}", d3d_texture_ptr);
+                info!(
+                    "- Attribs (count: {}): {:?}",
+                    image_attribs.len(),
+                    image_attribs
+                );
+                info!("-----------------------------------------------------------------");
 
                 let egl_image = (state.egl_create_image_khr)(
                     state.display,
-                    state.resource_context,
+                    EGL_NO_CONTEXT,
                     EGL_D3D_TEXTURE_ANGLE as u32,
                     d3d_texture_ptr as *mut c_void,
-                    image_attribs.as_ptr(),
+                    image_attribs.as_ptr() as *const isize,
                 );
 
                 if egl_image.is_null() {
@@ -532,6 +592,11 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
                     }
                     return 0;
                 }
+
+                info!(
+                    "[AngleInterop] eglCreateImageKHR succeeded! EGL Image: {:p}",
+                    egl_image
+                );
 
                 state.egl_image = egl_image;
                 (state.gl_gen_textures)(1, &mut state.gl_texture_id);

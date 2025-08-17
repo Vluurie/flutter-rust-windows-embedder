@@ -5,7 +5,8 @@ use crate::software_renderer::gl_renderer::angle_interop::{
     AngleInteropState, EGL_NO_SURFACE, SendableAngleState,
 };
 use crate::software_renderer::overlay::d3d::{
-    create_shared_texture_and_get_handle, create_srv, create_texture,
+    create_d3d_device_on_same_adapter, create_shared_texture_and_get_handle, create_srv,
+    create_texture,
 };
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
@@ -21,11 +22,15 @@ use std::ffi::{CString, c_void};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::thread;
+use std::time::Duration;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
+    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, ID3D11Device,
+    ID3D11Device1, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+use windows::core::Interface;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RendererType {
@@ -128,15 +133,13 @@ impl FlutterOverlay {
         self.engine.0
     }
 
-    /// Handles resizing of the overlay. Updates dimensions, GPU resources,
-    /// and informs the Flutter engine.
     pub fn handle_window_resize(
         &mut self,
         new_x: i32,
         new_y: i32,
         new_width: u32,
         new_height: u32,
-        device: &ID3D11Device,
+        swap_chain: &IDXGISwapChain,
     ) {
         if self.width == new_width
             && self.height == new_height
@@ -146,35 +149,80 @@ impl FlutterOverlay {
             return;
         }
 
+        info!(
+            "[handle_window_resize] Resizing overlay '{}' to {}x{}",
+            self.name, new_width, new_height
+        );
+
         self.width = new_width;
         self.height = new_height;
         self.x = new_x;
         self.y = new_y;
 
+        let game_device = match unsafe { swap_chain.GetDevice::<ID3D11Device>() } {
+            Ok(d) => d,
+            Err(e) => {
+                error!(
+                    "[handle_window_resize] Failed to get device from swap chain: {}",
+                    e
+                );
+                return;
+            }
+        };
+
         match self.renderer_type {
             RendererType::Software => {
                 if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
-                    self.texture = create_texture(device, self.width, self.height);
-                    self.srv = create_srv(device, &self.texture);
+                    self.texture = create_texture(&game_device, self.width, self.height);
+                    self.srv = create_srv(&game_device, &self.texture);
                     let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
                     pixel_buffer.resize(new_buffer_size, 0);
                 }
             }
             RendererType::OpenGL => {
-                let (new_texture, new_handle) =
-                    create_shared_texture_and_get_handle(device, self.width, self.height)
-                        .expect("Failed to recreate shared texture on resize");
+                // --- The "Nuke and Pave" Logic ---
 
-                self.texture = new_texture;
-                self.srv = create_srv(device, &self.texture);
-                self.d3d11_shared_handle = Some(SendableHandle(new_handle));
+                // 1. Drop the old ANGLE state to trigger a full eglTerminate.
+                if let Some(old_state) = self.angle_state.take() {
+                    info!("[handle_window_resize] Tearing down old ANGLE instance...");
+                    drop(old_state);
+                }
 
-                self.angle_state = None;
+                // 2. Re-initialize ANGLE from scratch. This now creates the device internally.
+                let new_angle_state = AngleInteropState::new()
+                    .expect("Failed to create new ANGLE instance on resize");
 
-                let device_ptr = device as *const _ as *mut c_void;
-                let new_angle_state = AngleInteropState::new(device_ptr)
-                    .expect("Failed to re-initialize ANGLE state on resize");
-                self.angle_state = Some(SendableAngleState(Box::new(new_angle_state)));
+                // 3. Get the D3D device that ANGLE just created.
+                let angle_d3d_device = new_angle_state
+                    .get_d3d_device()
+                    .expect("Failed to get D3D device from new ANGLE state");
+
+                // 4. Create the new shared texture on ANGLE's device.
+                let (new_angle_texture, new_shared_handle) = create_shared_texture_and_get_handle(
+                    &angle_d3d_device,
+                    self.width,
+                    self.height,
+                )
+                .expect("Failed to create new shared texture on resize");
+
+                // 5. Open that new texture on the game's device.
+                let new_game_texture: ID3D11Texture2D = unsafe {
+                    let mut opened_resource_option: Option<ID3D11Texture2D> = None;
+                    game_device
+                        .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
+                        .expect("Failed to open new shared texture on game device after resize");
+                    opened_resource_option.expect("Opened shared resource was null after resize")
+                };
+
+                // 6. Update all overlay fields with the new, valid resources.
+                self.texture = new_game_texture;
+                self.srv = create_srv(&game_device, &self.texture);
+                self.gl_internal_linear_texture = Some(new_angle_texture);
+                self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+                self.keyed_mutex = self.texture.cast().ok();
+
+                // 7. Store the new ANGLE state.
+                self.angle_state = Some(SendableAngleState(new_angle_state));
             }
         }
 
@@ -254,11 +302,44 @@ impl FlutterOverlay {
         }
     }
 
+    /// Acquires the keyed mutex lock for the frame.
+    ///
+    /// For OpenGL overlays, it attempts to acquire the lock with a timeout of 0.
+    /// For Software overlays, it always returns true as there is no lock.
+    ///
+    /// # Returns
+    /// `true` if the overlay is ready to be composited this frame.
+    pub fn acquire_frame_lock(&self) -> bool {
+        if self.renderer_type == RendererType::Software {
+            // Software renderer doesn't use a mutex, so it's always ready.
+            return true;
+        }
+
+        if let Some(mutex) = &self.keyed_mutex {
+            // For OpenGL, try to acquire the lock without waiting.
+            if unsafe { mutex.AcquireSync(1, 0) }.is_ok() {
+                return true;
+            }
+        }
+
+        // If there's no mutex or acquiring fails, return false.
+        false
+    }
+
+    /// Releases the keyed mutex lock with key 0.
+    ///
+    /// This should be called at the very end of the frame, after the host
+    /// application is completely finished using the overlay texture.
+    pub fn release_frame_lock(&self) {
+        if let Some(mutex) = &self.keyed_mutex {
+            let _ = unsafe { mutex.ReleaseSync(0) };
+        }
+    }
+
     /// Composites (renders) the Flutter overlay onto the Direct3D device context.
     ///
-    /// Renders the overlay's content to the screen. Rendering only occurs
-    /// if the overlay is **visible** and has **valid dimensions** (width and height are
-    /// greater than zero).
+    /// IMPORTANT: This function assumes the caller has already successfully acquired
+    /// the frame lock. It does not perform any synchronization itself.
     pub fn composite(
         &self,
         context: &ID3D11DeviceContext,
@@ -270,6 +351,14 @@ impl FlutterOverlay {
             return;
         }
 
+        if let Some(angle_texture) = &self.angle_shared_texture {
+            // Perform a GPU-side copy from the shared ANGLE texture to our local game texture.
+            unsafe {
+                context.CopyResource(&self.texture, angle_texture);
+            }
+        }
+
+        // Now, render using our local texture and SRV, which is guaranteed to be safe.
         self.compositor.render_texture(
             context,
             &self.srv,
@@ -283,7 +372,6 @@ impl FlutterOverlay {
             time,
         );
     }
-
     /// Retrieves the D3D11 Shader Resource View (SRV) for this overlay's texture.
     /// Used by the host application to render the Flutter UI.
     /// This clones the SRV (calls AddRef). The caller must Release it.

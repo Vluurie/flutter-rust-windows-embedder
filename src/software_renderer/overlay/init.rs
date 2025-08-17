@@ -8,8 +8,9 @@ use crate::software_renderer::gl_renderer::angle_interop::{
     AngleInteropState, SendableAngleState, build_opengl_renderer_config,
 };
 use crate::software_renderer::overlay::d3d::{
+    create_compositing_texture, create_d3d_device_on_same_adapter,
     create_shared_texture_and_get_handle, create_srv, create_texture, log_device_adapter_info,
-    log_device_creation_flags, log_texture_properties,
+    log_device_creation_flags, log_device_feature_level, log_texture_properties,
 };
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
 use crate::software_renderer::overlay::overlay_impl::{
@@ -33,6 +34,7 @@ use crate::software_renderer::ticker::task_scheduler::{
     TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
     runs_task_on_current_thread_callback,
 };
+use windows::core::Interface;
 
 use log::{error, info};
 use std::collections::HashMap;
@@ -40,8 +42,10 @@ use std::ffi::c_char;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
-use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Device, ID3D11Device1, ID3D11ShaderResourceView, ID3D11Texture2D,
+};
+use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIKeyedMutex, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
 
@@ -67,7 +71,7 @@ pub(crate) fn init_overlay(
                 name
             );
             log_device_adapter_info(&device_from_swapchain);
-            // log_device_feature_level(&device_from_swapchain);
+            log_device_feature_level(&device_from_swapchain);
             let creation_flags = device_from_swapchain.GetCreationFlags();
             log_device_creation_flags(
                 windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_FLAG(creation_flags),
@@ -113,37 +117,64 @@ pub(crate) fn init_overlay(
 
         let rdr_cfg: embedder::FlutterRendererConfig;
         let texture_for_struct: ID3D11Texture2D;
+        let srv_for_struct: ID3D11ShaderResourceView;
+        let mut gl_internal_linear_texture_for_struct: Option<ID3D11Texture2D> = None;
         let mut pixel_buffer_for_struct: Option<Vec<u8>> = None;
         let mut angle_state_for_struct: Option<SendableAngleState> = None;
-        let mut d3d11_shared_handle_for_struct: Option<SendableHandle> = None;
+        let d3d11_shared_handle_for_struct: Option<SendableHandle> = None;
+        let mut keyed_mutex_for_struct: Option<IDXGIKeyedMutex> = None;
+        let mut angle_shared_texture_for_struct: Option<ID3D11Texture2D> = None;
+
+        let game_device: &ID3D11Device = device;
 
         match renderer_type {
             RendererType::Software => {
                 info!("[InitOverlay] Using Software Renderer");
-                texture_for_struct = create_texture(device, width, height);
+                texture_for_struct = create_texture(game_device, width, height);
+                srv_for_struct = create_srv(game_device, &texture_for_struct);
                 pixel_buffer_for_struct = Some(vec![0; (width * height * 4) as usize]);
                 rdr_cfg = build_software_renderer_config();
             }
 
             RendererType::OpenGL => {
-                info!("[InitOverlay] Using OpenGL Renderer (via ANGLE)");
-                let (shared_texture, shared_handle) =
-                    create_shared_texture_and_get_handle(device, width, height)
-                        .expect("Failed to create shared D3D11 texture for ANGLE interop");
+                info!("[InitOverlay] Using two-texture interop model");
 
-                texture_for_struct = shared_texture;
-                d3d11_shared_handle_for_struct = Some(SendableHandle(shared_handle));
+                // 1. Initialize ANGLE, which creates its own internal D3D device.
+                let angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
+                let angle_d3d_device = angle_state.get_d3d_device().unwrap();
 
-                let device_ptr = device as *const _ as *mut c_void;
-                let angle_state =
-                    AngleInteropState::new(device_ptr).expect("Failed to initialize ANGLE state");
-                angle_state_for_struct = Some(SendableAngleState(Box::new(angle_state)));
+                // 2. Create the SHARED texture on ANGLE's device. This texture is a RENDER TARGET ONLY.
+                let (texture_for_angle, shared_handle) =
+                    create_shared_texture_and_get_handle(&angle_d3d_device, width, height)
+                        .expect("Failed to create shared ANGLE texture");
 
+                // This is the texture handle Flutter will use in its fbo_callback.
+                gl_internal_linear_texture_for_struct = Some(texture_for_angle);
+
+                // 3. Open a handle to ANGLE's shared texture on the GAME's device.
+                let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
+                    let mut opt = None;
+                    game_device
+                        .OpenSharedResource(shared_handle, &mut opt)
+                        .unwrap();
+                    opt.unwrap()
+                };
+
+                // This is the handle we will store in our struct to perform the copy from.
+                angle_shared_texture_for_struct = Some(angle_texture_on_game_device.clone());
+
+                // 4. Create a LOCAL, non-shared texture on the GAME's device.
+                //    This texture is a SHADER RESOURCE ONLY.
+                texture_for_struct = create_compositing_texture(game_device, width, height);
+                srv_for_struct = create_srv(game_device, &texture_for_struct);
+
+                // 5. Get the mutex from the SHARED texture.
+                keyed_mutex_for_struct = angle_texture_on_game_device.cast().ok();
+
+                angle_state_for_struct = Some(SendableAngleState(angle_state));
                 rdr_cfg = build_opengl_renderer_config();
             }
         }
-
-        let srv_for_struct = create_srv(device, &texture_for_struct);
         let compositor = D3D11Compositor::new(device);
 
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
@@ -167,6 +198,7 @@ pub(crate) fn init_overlay(
             y,
             texture: texture_for_struct,
             srv: srv_for_struct,
+            gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
             compositor,
             desired_cursor: Arc::new(Mutex::new(None)),
             task_queue_state: task_queue_arc,
@@ -187,13 +219,14 @@ pub(crate) fn init_overlay(
             is_interactive_widget_hovered: AtomicBool::new(false),
             windows_handler: SendHwnd(hwnd),
             is_debug_build: initial_is_debug,
+            angle_shared_texture: angle_shared_texture_for_struct,
             dart_send_port: Arc::new(AtomicI64::new(0)),
             renderer_type,
             angle_state: angle_state_for_struct,
             d3d11_shared_handle: d3d11_shared_handle_for_struct,
+            keyed_mutex: keyed_mutex_for_struct,
         });
 
-        // This pointer is passed to Flutter and used in callbacks to get the overlay state back.
         let user_data_for_engine: *mut c_void = &mut *overlay_box as *mut _ as *mut c_void;
 
         start_task_runner(&mut overlay_box);

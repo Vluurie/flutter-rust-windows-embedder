@@ -1,8 +1,48 @@
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Graphics::Direct3D::D3D11_SRV_DIMENSION_TEXTURE2D;
+use std::slice;
+
+use windows::Win32::Foundation::{HANDLE, HMODULE};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1, D3D11_SRV_DIMENSION_TEXTURE2D,
+};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::{Common::*, IDXGIDevice, IDXGIResource};
+use windows::Win32::Graphics::Dxgi::{
+    Common::*, DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIDevice, IDXGIResource,
+    IDXGIResource1,
+};
 use windows::core::Interface;
+
+pub fn create_d3d_device_on_same_adapter(
+    existing_device: &ID3D11Device,
+    enable_debug: bool,
+) -> windows::core::Result<ID3D11Device> {
+    let dxgi_device: IDXGIDevice = existing_device.cast()?;
+    let adapter = unsafe { dxgi_device.GetAdapter()? };
+    let feature_level: D3D_FEATURE_LEVEL = unsafe { existing_device.GetFeatureLevel() };
+
+    let mut creation_flags = D3D11_CREATE_DEVICE_FLAG(0);
+    if enable_debug {
+        creation_flags |= D3D11_CREATE_DEVICE_DEBUG;
+    }
+
+    let feature_levels = [feature_level];
+    let mut device: Option<ID3D11Device> = None;
+
+    unsafe {
+        D3D11CreateDevice(
+            &adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE(std::ptr::null_mut()),
+            creation_flags,
+            Some(&feature_levels),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            None,
+        )?;
+    }
+    Ok(device.unwrap())
+}
 
 /// Create a dynamic RGBA8 texture of the given size.
 pub fn create_texture(device: &ID3D11Device, width: u32, height: u32) -> ID3D11Texture2D {
@@ -69,7 +109,8 @@ pub fn create_shared_texture_and_get_handle(
                 Quality: 0,
             },
             Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
             CPUAccessFlags: 0,
             MiscFlags: D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32,
         };
@@ -93,6 +134,112 @@ pub fn create_shared_texture_and_get_handle(
         Ok((texture, handle))
     }
 }
+
+pub fn create_compositing_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> ID3D11Texture2D {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT, // Default usage for GPU-to-GPU copies
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    unsafe {
+        let mut tex = None;
+        device
+            .CreateTexture2D(&desc, None, Some(&mut tex))
+            .expect("CreateTexture2D for compositing texture failed");
+        tex.unwrap()
+    }
+}
+
+// pub fn create_shared_texture_on_device(
+//     device: &ID3D11Device,
+//     width: u32,
+//     height: u32,
+// ) -> Result<(ID3D11Texture2D, HANDLE), String> {
+//     unsafe {
+//         let texture_desc = D3D11_TEXTURE2D_DESC {
+//             Width: width,
+//             Height: height,
+//             MipLevels: 1,
+//             ArraySize: 1,
+//             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+//             SampleDesc: DXGI_SAMPLE_DESC {
+//                 Count: 1,
+//                 Quality: 0,
+//             },
+//             Usage: D3D11_USAGE_DEFAULT,
+//             BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+//             CPUAccessFlags: 0 as u32,
+
+//             MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32,
+//         };
+
+//         let mut texture_opt: Option<ID3D11Texture2D> = None;
+//         device
+//             .CreateTexture2D(&texture_desc, None, Some(&mut texture_opt))
+//             .map_err(|e| e.to_string())?;
+
+//         let texture = texture_opt.unwrap();
+
+//         let resource: IDXGIResource = texture.cast().map_err(|e| e.to_string())?;
+
+//         let handle = resource.GetSharedHandle().map_err(|e| e.to_string())?;
+
+//         Ok((texture, handle))
+//     }
+// }
+pub fn log_d3d_debug_messages(device: &ID3D11Device) {
+    if let Ok(info_queue) = device.cast::<ID3D11InfoQueue>() {
+        unsafe {
+            let num_messages = info_queue.GetNumStoredMessages();
+            if num_messages == 0 {
+                println!(
+                    "[D3D11 DEBUG] InfoQueue is empty. (Is Graphics Tools installed and debug flag set?)"
+                );
+                return;
+            }
+
+            println!("\n--- D3D11 DEBUGGER LOG ---");
+            for i in 0..num_messages {
+                let mut message_size = 0;
+                // Get the size of the message
+                if info_queue.GetMessage(i, None, &mut message_size).is_ok() {
+                    // Allocate memory and get the message
+                    let mut message_buffer: Vec<u8> = vec![0; message_size];
+                    let p_message = message_buffer.as_mut_ptr() as *mut D3D11_MESSAGE;
+                    if info_queue
+                        .GetMessage(i, Some(p_message), &mut message_size)
+                        .is_ok()
+                    {
+                        let message_slice = slice::from_raw_parts(
+                            (*p_message).pDescription,
+                            (*p_message).DescriptionByteLength - 1,
+                        );
+                        let description = String::from_utf8_lossy(message_slice);
+                        println!("[D3D11 ERROR] {}", description);
+                    }
+                }
+            }
+            println!("--- END D3D11 LOG ---\n");
+            // Clear the log after printing
+            info_queue.ClearStoredMessages();
+        }
+    }
+}
+
 pub fn log_device_adapter_info(device: &ID3D11Device) {
     println!("[DXGI PROBE] Querying adapter info for device {:p}", device);
 
@@ -216,31 +363,31 @@ pub fn log_texture_properties(texture: &ID3D11Texture2D) {
     println!("    - MiscFlags: [{}]", misc_flags.join(", "));
 }
 
-// pub fn log_device_feature_level(device: &ID3D11Device) {
-//     println!(
-//         "[DXGI PROBE] Querying feature level for device {:p}",
-//         device
-//     );
-//     let feature_level = unsafe { device.GetFeatureLevel() };
+pub fn log_device_feature_level(device: &ID3D11Device) {
+    println!(
+        "[DXGI PROBE] Querying feature level for device {:p}",
+        device
+    );
+    let feature_level = unsafe { device.GetFeatureLevel() };
 
-//     let level_str = match feature_level {
-//         D3D_FEATURE_LEVEL_12_1 => "12.1",
-//         D3D_FEATURE_LEVEL_12_0 => "12.0",
-//         D3D_FEATURE_LEVEL_11_1 => "11.1",
-//         D3D_FEATURE_LEVEL_11_0 => "11.0",
-//         D3D_FEATURE_LEVEL_10_1 => "10.1",
-//         D3D_FEATURE_LEVEL_10_0 => "10.0",
-//         D3D_FEATURE_LEVEL_9_3 => "9.3",
-//         D3D_FEATURE_LEVEL_9_2 => "9.2",
-//         D3D_FEATURE_LEVEL_9_1 => "9.1",
-//         _ => "Unknown or older",
-//     };
+    let level_str = match feature_level {
+        D3D_FEATURE_LEVEL_12_1 => "12.1",
+        D3D_FEATURE_LEVEL_12_0 => "12.0",
+        D3D_FEATURE_LEVEL_11_1 => "11.1",
+        D3D_FEATURE_LEVEL_11_0 => "11.0",
+        D3D_FEATURE_LEVEL_10_1 => "10.1",
+        D3D_FEATURE_LEVEL_10_0 => "10.0",
+        D3D_FEATURE_LEVEL_9_3 => "9.3",
+        D3D_FEATURE_LEVEL_9_2 => "9.2",
+        D3D_FEATURE_LEVEL_9_1 => "9.1",
+        _ => "Unknown or older",
+    };
 
-//     println!(
-//         "[DXGI PROBE]   -> SUCCESS: Device is running with Feature Level: {}",
-//         level_str
-//     );
-// }
+    println!(
+        "[DXGI PROBE]   -> SUCCESS: Device is running with Feature Level: {}",
+        level_str
+    );
+}
 
 pub fn log_device_creation_flags(flags: D3D11_CREATE_DEVICE_FLAG) {
     println!("[DXGI PROBE] Überprüfe D3D11 Device Creation Flags...");

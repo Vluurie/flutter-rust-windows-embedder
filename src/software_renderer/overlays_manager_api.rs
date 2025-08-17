@@ -509,19 +509,10 @@ impl OverlayManager {
         if self.active_instances.is_empty() {
             return;
         }
-        let device = match unsafe { swap_chain.GetDevice::<ID3D11Device>() } {
-            Ok(d) => d,
-            Err(e) => {
-                error!(
-                    "[OverlayManager] Failed to get D3DDevice for resize: {:?}",
-                    e
-                );
-                return;
-            }
-        };
+
         for (id, overlay_instance) in self.active_instances.iter_mut() {
             if !overlay_instance.engine.0.is_null() {
-                overlay_instance.handle_window_resize(x_pos, y_pos, width, height, &device);
+                overlay_instance.handle_window_resize(x_pos, y_pos, width, height, &swap_chain);
             } else {
                 warn!(
                     "[OverlayManager:{}] Engine handle is null, cannot resize.",
@@ -649,6 +640,20 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
+    /// Releases the frame locks for all managed overlays.
+    /// This should be called at the very end of the frame's rendering logic.
+    pub fn release_all_frame_locks(&self) {
+        if let Ok(manager) = self.manager.lock() {
+            for id in &manager.overlay_order {
+                if let Some(overlay) = manager.active_instances.get(id) {
+                    overlay.release_frame_lock();
+                }
+            }
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for releasing frame locks.");
+        }
+    }
+
     /// Executes the per-frame rendering logic for all overlays.
     /// This function should be called once per frame from the host application's render loop.
     pub fn run_flutter_tick(&self) {
@@ -681,14 +686,22 @@ impl FlutterOverlayManagerHandle {
                         continue;
                     }
 
-                    // For the software renderer, we need to upload the CPU buffer to the GPU texture.
                     if overlay.renderer_type == RendererType::Software {
                         overlay.tick(&context);
                     }
 
-                    // For both renderers, we update hover state and composite the final D3D11 texture.
                     update_interactive_widget_hover_state(overlay);
-                    overlay.composite(&context, manager.screen_width, manager.screen_height, time);
+
+                    if overlay.acquire_frame_lock() {
+                        unsafe { context.Flush() };
+
+                        overlay.composite(
+                            &context,
+                            manager.screen_width,
+                            manager.screen_height,
+                            time,
+                        );
+                    }
                 }
             }
         } else {

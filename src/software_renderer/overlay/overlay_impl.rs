@@ -10,7 +10,10 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HANDLE, HWND},
-    Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
+    Graphics::{
+        Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
+        Dxgi::IDXGIKeyedMutex,
+    },
 };
 
 use crate::{
@@ -83,8 +86,11 @@ pub struct FlutterOverlay {
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
 
+    pub(crate) keyed_mutex: Option<IDXGIKeyedMutex>,
     pub(crate) angle_state: Option<SendableAngleState>,
     pub(crate) d3d11_shared_handle: Option<SendableHandle>,
+    pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
+    pub angle_shared_texture: Option<ID3D11Texture2D>,
 
     /// Current width of the overlay in pixels.
     /// Can be read by other parts of the crate for layout purposes.
@@ -207,6 +213,9 @@ impl Clone for FlutterOverlay {
             compositor: self.compositor.clone(),
             angle_state: None, // ANGLE state is unique per instance
             d3d11_shared_handle: None,
+            keyed_mutex: self.keyed_mutex.clone(),
+            gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
+            angle_shared_texture: self.angle_shared_texture.clone(),
 
             _platform_runner_context: None,
             _platform_runner_description: None,

@@ -139,19 +139,15 @@ pub(crate) fn init_overlay(
             RendererType::OpenGL => {
                 info!("[InitOverlay] Using two-texture interop model");
 
-                // 1. Initialize ANGLE, which creates its own internal D3D device.
                 let angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
                 let angle_d3d_device = angle_state.get_d3d_device().unwrap();
 
-                // 2. Create the SHARED texture on ANGLE's device. Flutter will render to this.
                 let (texture_for_angle, shared_handle) =
                     create_shared_texture_and_get_handle(&angle_d3d_device, width, height)
                         .expect("Failed to create shared ANGLE texture");
 
-                // This is the texture handle Flutter will use in its fbo_callback.
                 gl_internal_linear_texture_for_struct = Some(texture_for_angle);
 
-                // 3. Open a handle to ANGLE's shared texture on the GAME's device.
                 let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
                     let mut opt = None;
                     game_device
@@ -160,21 +156,13 @@ pub(crate) fn init_overlay(
                     opt.unwrap()
                 };
 
-                // This is the handle we will store in our struct to perform the copy from.
                 angle_shared_texture_for_struct = Some(angle_texture_on_game_device.clone());
 
-                // 4. Create a LOCAL, non-shared texture on the GAME's device.
-                // This texture is a SHADER RESOURCE ONLY, used for the final composition.
                 let local_texture_on_game_device =
                     create_compositing_texture(game_device, width, height);
 
-                // Now you can safely assign the local texture to the struct field.
                 texture_for_struct = local_texture_on_game_device;
 
-                // 5. Get the mutex from the SHARED texture.
-                keyed_mutex_for_struct = angle_texture_on_game_device.cast().ok();
-
-                // 6. Create the ShaderResourceView from the LOCAL texture.
                 srv_for_struct = create_srv(game_device, &texture_for_struct);
 
                 angle_state_for_struct = Some(SendableAngleState(angle_state));
@@ -230,7 +218,6 @@ pub(crate) fn init_overlay(
             renderer_type,
             angle_state: angle_state_for_struct,
             d3d11_shared_handle: d3d11_shared_handle_for_struct,
-            keyed_mutex: keyed_mutex_for_struct,
         });
 
         let user_data_for_engine: *mut c_void = &mut *overlay_box as *mut _ as *mut c_void;

@@ -112,7 +112,7 @@ pub fn create_shared_texture_and_get_handle(
 
             BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32 | D3D11_BIND_SHADER_RESOURCE.0 as u32,
             CPUAccessFlags: 0,
-            MiscFlags: D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX.0 as u32,
+            MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32, // | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0 as u32,
         };
 
         let mut texture_opt: Option<ID3D11Texture2D> = None;

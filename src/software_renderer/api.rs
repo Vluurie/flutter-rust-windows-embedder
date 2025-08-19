@@ -219,7 +219,6 @@ impl FlutterOverlay {
                 self.srv = create_srv(&game_device, &self.texture);
                 self.gl_internal_linear_texture = Some(new_angle_texture);
                 self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
-                self.keyed_mutex = self.texture.cast().ok();
 
                 // 7. Store the new ANGLE state.
                 self.angle_state = Some(SendableAngleState(new_angle_state));
@@ -299,40 +298,6 @@ impl FlutterOverlay {
                 error!("[FlutterOverlay] {}", err_msg);
                 Err(FlutterEmbedderError::OperationFailed(err_msg))
             }
-        }
-    }
-
-    /// Acquires the keyed mutex lock for the frame.
-    ///
-    /// For OpenGL overlays, it attempts to acquire the lock with a timeout of 0.
-    /// For Software overlays, it always returns true as there is no lock.
-    ///
-    /// # Returns
-    /// `true` if the overlay is ready to be composited this frame.
-    pub fn acquire_frame_lock(&self) -> bool {
-        if self.renderer_type == RendererType::Software {
-            // Software renderer doesn't use a mutex, so it's always ready.
-            return true;
-        }
-
-        if let Some(mutex) = &self.keyed_mutex {
-            // For OpenGL, try to acquire the lock without waiting.
-            if unsafe { mutex.AcquireSync(1, 0) }.is_ok() {
-                return true;
-            }
-        }
-
-        // If there's no mutex or acquiring fails, return false.
-        false
-    }
-
-    /// Releases the keyed mutex lock with key 0.
-    ///
-    /// This should be called at the very end of the frame, after the host
-    /// application is completely finished using the overlay texture.
-    pub fn release_frame_lock(&self) {
-        if let Some(mutex) = &self.keyed_mutex {
-            let _ = unsafe { mutex.ReleaseSync(0) };
         }
     }
 

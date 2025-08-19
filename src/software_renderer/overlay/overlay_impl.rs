@@ -86,7 +86,6 @@ pub struct FlutterOverlay {
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
 
-    pub(crate) keyed_mutex: Option<IDXGIKeyedMutex>,
     pub(crate) angle_state: Option<SendableAngleState>,
     pub(crate) d3d11_shared_handle: Option<SendableHandle>,
     pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
@@ -211,9 +210,8 @@ impl Clone for FlutterOverlay {
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             compositor: self.compositor.clone(),
-            angle_state: None, // ANGLE state is unique per instance
+            angle_state: None,
             d3d11_shared_handle: None,
-            keyed_mutex: self.keyed_mutex.clone(),
             gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
             angle_shared_texture: self.angle_shared_texture.clone(),
 

@@ -8,8 +8,7 @@ use log::{debug, error, info, warn};
 use std::ffi::{CString, c_void};
 use std::{mem, ptr};
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Texture2D};
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::core::Interface;
 
 pub const EGL_DEFAULT_DISPLAY: *mut c_void = 0 as *mut c_void;
@@ -65,7 +64,7 @@ pub const GL_TEXTURE_2D_GL: u32 = 0x0DE1;
 pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
 
 type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *mut c_void;
-
+type EGLBoolean = i32;
 type EglGetPlatformDisplayEXT = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
 type EglGetPlatformDisplay = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
 type EglInitialize = unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> bool;
@@ -74,7 +73,7 @@ type EglChooseConfig =
 type EglCreateContext =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
 type EglMakeCurrent =
-    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> bool;
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> i32;
 type EglDestroyContext = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
 type EglTerminate = unsafe extern "C" fn(*mut c_void) -> bool;
 type EglGetError = unsafe extern "C" fn() -> i32;
@@ -157,6 +156,10 @@ pub struct AngleInteropState {
     egl_destroy_context: EglDestroyContext,
     egl_terminate: EglTerminate,
     pub angle_d3d11_device: ID3D11Device,
+    config: *mut c_void,
+    egl_create_context: EglCreateContext,
+    main_thread_id: Option<std::thread::ThreadId>,
+    resource_thread_id: Option<std::thread::ThreadId>,
 }
 
 impl AngleInteropState {
@@ -165,9 +168,9 @@ impl AngleInteropState {
             info!("[AngleInterop] Initializing ANGLE and letting it create a D3D11 device...");
 
             debug!("[ANGLE DEBUG] Loading libEGL.dll and libGLESv2.dll...");
-            let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll")
-                .map_err(|e| e.to_string())?;
-            let libgles = Library::new(r"E:\nier_dev_tools\nams-rs\target\libGLESv2.dll")
+            let libegl =
+                Library::new(r"C:\Repos\nams-rs\target\libEGL.dll").map_err(|e| e.to_string())?;
+            let libgles = Library::new(r"C:\Repos\nams-rs\target\libGLESv2.dll")
                 .map_err(|e| e.to_string())?;
 
             debug!("[ANGLE DEBUG] Loading eglGetProcAddress...");
@@ -247,8 +250,6 @@ impl AngleInteropState {
                 return Err("ANGLE created a null D3D11 device.".to_string());
             }
 
-            // Safely create an ID3D11Device object from the raw pointer.
-            // The `from_raw` call correctly handles the reference count.
             let angle_d3d11_device: ID3D11Device = Interface::from_raw(d3d11_device_ptr as *mut _);
 
             let egl_choose_config: EglChooseConfig =
@@ -316,20 +317,6 @@ impl AngleInteropState {
                 return Err("eglChooseConfig failed.".to_string());
             }
 
-            let context_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
-            let context =
-                egl_create_context(display, config, EGL_NO_CONTEXT, context_attribs.as_ptr());
-            if context == EGL_NO_CONTEXT {
-                return Err("eglCreateContext (main) failed.".to_string());
-            }
-
-            let resource_context =
-                egl_create_context(display, config, context, context_attribs.as_ptr());
-            if resource_context == EGL_NO_CONTEXT {
-                egl_destroy_context(display, context);
-                return Err("eglCreateContext (resource) failed.".to_string());
-            }
-
             info!("[AngleInterop] ANGLE initialized successfully with provided device.");
             Ok(Box::new(Self {
                 libegl,
@@ -350,8 +337,8 @@ impl AngleInteropState {
                 gl_finish,
                 gl_egl_image_target_texture_2d_oes,
                 display,
-                context,
-                resource_context,
+                context: EGL_NO_CONTEXT,
+                resource_context: EGL_NO_CONTEXT,
                 fbo_id: 0,
                 gl_texture_id: 0,
                 egl_destroy_context,
@@ -359,6 +346,10 @@ impl AngleInteropState {
                 egl_image: ptr::null_mut(),
                 angle_d3d11_device,
                 egl_destroy_image_khr,
+                config,
+                egl_create_context,
+                main_thread_id: None,
+                resource_thread_id: None,
             }))
         }
     }
@@ -369,6 +360,10 @@ impl AngleInteropState {
 
     pub fn cleanup_surface_resources(&mut self) {
         unsafe {
+            info!(
+                "[AngleInterop] Cleaning up surface resources on thread {:?}.",
+                std::thread::current().id()
+            );
             (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
 
             (self.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
@@ -406,6 +401,10 @@ impl AngleInteropState {
 impl Drop for AngleInteropState {
     fn drop(&mut self) {
         unsafe {
+            info!(
+                "[AngleInterop] Dropping AngleInteropState on thread {:?}.",
+                std::thread::current().id()
+            );
             (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if self.fbo_id != 0 {
                 (self.gl_delete_framebuffers)(1, &self.fbo_id);
@@ -433,45 +432,141 @@ unsafe impl Sync for SendableAngleState {}
 
 extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
-        let overlay = &*(user_data as *mut FlutterOverlay);
-        if let Some(angle_state) = &overlay.angle_state {
-            let state = &angle_state.0;
-            return (state.egl_make_current)(
+        let overlay = &mut *(user_data as *mut FlutterOverlay);
+        if let Some(angle_state) = &mut overlay.angle_state {
+            let state = &mut angle_state.0;
+
+            if state.context == EGL_NO_CONTEXT {
+                info!(
+                    "[AngleInterop] First call on main render thread {:?}. Initializing main EGL context.",
+                    std::thread::current().id()
+                );
+                let context_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
+                state.context = (state.egl_create_context)(
+                    state.display,
+                    state.config,
+                    EGL_NO_CONTEXT,
+                    context_attribs.as_ptr(),
+                );
+
+                if state.context == EGL_NO_CONTEXT {
+                    error!("[AngleInterop] Failed to create main context.");
+                    return false;
+                }
+                state.main_thread_id = Some(std::thread::current().id());
+            }
+
+            if state.main_thread_id != Some(std::thread::current().id()) {
+                error!(
+                    "[AngleInterop] FATAL: make_current_callback on wrong thread! Expected {:?}, got {:?}.",
+                    state.main_thread_id,
+                    std::thread::current().id()
+                );
+                return false;
+            }
+
+            let result: EGLBoolean = (state.egl_make_current)(
                 state.display,
                 EGL_NO_SURFACE,
                 EGL_NO_SURFACE,
                 state.context,
-            ) == (EGL_TRUE == 1);
+            );
+
+            if result != EGL_TRUE {
+                log_egl_error("make_current_callback", line!(), state.egl_get_error);
+            }
+            return result == EGL_TRUE;
         }
         false
     }
 }
+
 extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
-        let overlay = &*(user_data as *mut FlutterOverlay);
-        if let Some(angle_state) = &overlay.angle_state {
-            let state = &angle_state.0;
-            return (state.egl_make_current)(
+        let overlay = &mut *(user_data as *mut FlutterOverlay);
+        if let Some(angle_state) = &mut overlay.angle_state {
+            let state = &mut angle_state.0;
+
+            if state.resource_context == EGL_NO_CONTEXT {
+                info!(
+                    "[AngleInterop] First call on resource thread {:?}. Initializing resource EGL context.",
+                    std::thread::current().id()
+                );
+                let context_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
+
+                state.resource_context = (state.egl_create_context)(
+                    state.display,
+                    state.config,
+                    EGL_NO_CONTEXT,
+                    context_attribs.as_ptr(),
+                );
+
+                if state.resource_context == EGL_NO_CONTEXT {
+                    error!("[AngleInterop] Failed to create resource context.");
+                    return false;
+                }
+                state.resource_thread_id = Some(std::thread::current().id());
+            }
+
+            if state.resource_thread_id != Some(std::thread::current().id()) {
+                error!(
+                    "[AngleInterop] FATAL: make_resource_current_callback on wrong thread! Expected {:?}, got {:?}.",
+                    state.resource_thread_id,
+                    std::thread::current().id()
+                );
+                return false;
+            }
+
+            let result: EGLBoolean = (state.egl_make_current)(
                 state.display,
                 EGL_NO_SURFACE,
                 EGL_NO_SURFACE,
                 state.resource_context,
-            ) == (EGL_TRUE == 1);
+            );
+
+            if result != EGL_TRUE {
+                log_egl_error(
+                    "make_resource_current_callback",
+                    line!(),
+                    state.egl_get_error,
+                );
+            }
+            return result == EGL_TRUE;
         }
         false
     }
 }
 extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
-        let overlay = &*(user_data as *mut FlutterOverlay);
-        if let Some(angle_state) = &overlay.angle_state {
-            let state = &angle_state.0;
-            return (state.egl_make_current)(
+        let overlay = &mut *(user_data as *mut FlutterOverlay);
+        if let Some(angle_state) = &mut overlay.angle_state {
+            let state = &mut angle_state.0;
+
+            if state.main_thread_id != Some(std::thread::current().id()) {
+                error!(
+                    "[AngleInterop] FATAL: clear_current_callback on wrong thread! Expected {:?}, got {:?}.",
+                    state.main_thread_id,
+                    std::thread::current().id()
+                );
+                return false;
+            }
+
+            info!(
+                "[AngleInterop] clear_current_callback called on thread {:?}.",
+                std::thread::current().id()
+            );
+            let result: EGLBoolean = (state.egl_make_current)(
                 state.display,
                 EGL_NO_SURFACE,
                 EGL_NO_SURFACE,
                 EGL_NO_CONTEXT,
-            ) == (EGL_TRUE == 1);
+            );
+
+            if result != EGL_TRUE {
+                log_egl_error("clear_current_callback", line!(), state.egl_get_error);
+            }
+
+            return result == EGL_TRUE;
         }
         false
     }
@@ -482,51 +577,67 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
-            (state.gl_finish)();
-
-            (state.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
-
-            if let Some(mutex) = &overlay.keyed_mutex {
-                let _ = mutex.ReleaseSync(1);
+            if state.main_thread_id != Some(std::thread::current().id()) {
+                error!(
+                    "[AngleInterop] FATAL: present_callback on wrong thread! Expected {:?}, got {:?}.",
+                    state.main_thread_id,
+                    std::thread::current().id()
+                );
+                return false;
             }
+
+            info!(
+                "[AngleInterop] present_callback called on thread {:?}.",
+                std::thread::current().id()
+            );
+            (state.gl_finish)();
+            (state.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
             return true;
         }
         false
     }
 }
-
 extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
-
-        if let Some(mutex) = &overlay.keyed_mutex {
-            if let Err(e) = mutex.AcquireSync(0, u32::MAX) {
-                error!(
-                    "[AngleInterop] Failed to acquire keyed mutex in fbo_callback: {}",
-                    e
-                );
-                return 0;
-            }
-        }
-
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
 
-            info!("[AngleInterop] Attempting to make EGL resource context current.");
-            if !make_resource_current_callback(user_data) {
-                error!("[AngleInterop] Failed to make EGL resource context current.");
-                if let Some(mutex) = &overlay.keyed_mutex {
-                    let _ = mutex.ReleaseSync(0);
+            if state.context == EGL_NO_CONTEXT {
+                info!(
+                    "[AngleInterop] First call on main render thread {:?}. Initializing main EGL context.",
+                    std::thread::current().id()
+                );
+                let context_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
+                state.context = (state.egl_create_context)(
+                    state.display,
+                    state.config,
+                    EGL_NO_CONTEXT,
+                    context_attribs.as_ptr(),
+                );
+
+                if state.context == EGL_NO_CONTEXT {
+                    error!("[AngleInterop] Failed to create main context in fbo_callback.");
+                    return 0;
                 }
+                state.main_thread_id = Some(std::thread::current().id());
+            }
+
+            if state.main_thread_id != Some(std::thread::current().id()) {
+                error!(
+                    "[AngleInterop] FATAL: fbo_callback on wrong thread! Expected {:?}, got {:?}.",
+                    state.main_thread_id,
+                    std::thread::current().id()
+                );
                 return 0;
             }
-            info!("[AngleInterop] EGL resource context is current.");
+
+            if !make_current_callback(user_data as *mut c_void) {
+                error!("[AngleInterop] Failed to make EGL main context current in fbo_callback.");
+                return 0;
+            }
 
             if state.fbo_id != 0 {
-                info!(
-                    "[AngleInterop] Returning existing FBO (ID: {}).",
-                    state.fbo_id
-                );
                 return state.fbo_id;
             }
 
@@ -535,46 +646,10 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
 
                 if d3d_texture_ptr.is_null() {
                     error!("[AngleInterop] d3d_texture_ptr is null!");
-                    if let Some(mutex) = &overlay.keyed_mutex {
-                        let _ = mutex.ReleaseSync(0);
-                    }
                     return 0;
                 }
-                info!("[AngleInterop] d3d_texture_ptr is valid.");
 
-                let mut texture_desc: D3D11_TEXTURE2D_DESC = std::mem::zeroed();
-                d3d_texture.GetDesc(&mut texture_desc);
-
-                // Add these checks and log the results
-                info!("[AngleInterop] Texture Description:");
-                info!("- Width: {}", texture_desc.Width);
-                info!("- Height: {}", texture_desc.Height);
-                info!("- Format: {:#X}", texture_desc.Format.0);
-                info!("- Usage: {:#X}", texture_desc.Usage.0);
-                info!("- MiscFlags: {:#X}", texture_desc.MiscFlags);
-                info!("- BindFlags: {:#X}", texture_desc.BindFlags);
-                info!("- CPUAccessFlags: {:#X}", texture_desc.CPUAccessFlags);
-
-                // Create a simple attribute list.
-                // According to the ANGLE extension docs, EGL_D3D_TEXTURE_ANGLE
-                // does not accept EGL_DXGI_KEYED_MUTEX_ANGLE as an attribute.
                 let image_attribs = [EGL_NONE as isize];
-
-                info!("-----------------------------------------------------------------");
-                info!("[AngleInterop] DEBUGGING eglCreateImageKHR CALL (Corrected)");
-                info!("- Display: {:p}", state.display);
-                info!("- Context: {:p} (should be EGL_NO_CONTEXT)", EGL_NO_CONTEXT);
-                info!(
-                    "- Target: {:#X} (EGL_D3D_TEXTURE_ANGLE)",
-                    EGL_D3D_TEXTURE_ANGLE
-                );
-                info!("- Buffer: {:p}", d3d_texture_ptr);
-                info!(
-                    "- Attribs (count: {}): {:?}",
-                    image_attribs.len(),
-                    image_attribs
-                );
-                info!("-----------------------------------------------------------------");
 
                 let egl_image = (state.egl_create_image_khr)(
                     state.display,
@@ -587,16 +662,8 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
                 if egl_image.is_null() {
                     error!("[AngleInterop] eglCreateImageKHR failed.");
                     log_egl_error("fbo_callback", line!(), state.egl_get_error);
-                    if let Some(mutex) = &overlay.keyed_mutex {
-                        let _ = mutex.ReleaseSync(0);
-                    }
                     return 0;
                 }
-
-                info!(
-                    "[AngleInterop] eglCreateImageKHR succeeded! EGL Image: {:p}",
-                    egl_image
-                );
 
                 state.egl_image = egl_image;
                 (state.gl_gen_textures)(1, &mut state.gl_texture_id);
@@ -627,11 +694,9 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
                     state.gl_texture_id = 0;
                     state.egl_image = ptr::null_mut();
 
-                    if let Some(mutex) = &overlay.keyed_mutex {
-                        let _ = mutex.ReleaseSync(0);
-                    }
                     return 0;
                 }
+
                 info!(
                     "[AngleInterop] FBO (via EGLImage) created successfully (ID: {}).",
                     state.fbo_id
@@ -640,16 +705,13 @@ extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
             }
         }
         warn!("[ANGLE DEBUG] fbo_callback executed but no angle_state or texture was present.");
-        if let Some(mutex) = &overlay.keyed_mutex {
-            let _ = mutex.ReleaseSync(0);
-        }
+
         0
     }
 }
-
 extern "C" fn gl_proc_resolver_callback(_user_data: *mut c_void, proc: *const i8) -> *mut c_void {
     unsafe {
-        let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll").unwrap();
+        let libegl = Library::new(r"C:\Repos\nams-rs\target\libEGL.dll").unwrap();
         let egl_get_proc_address: Symbol<EglGetProcAddress> =
             libegl.get(b"eglGetProcAddress").unwrap();
         egl_get_proc_address(proc)

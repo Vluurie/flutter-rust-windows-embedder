@@ -640,20 +640,6 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Releases the frame locks for all managed overlays.
-    /// This should be called at the very end of the frame's rendering logic.
-    pub fn release_all_frame_locks(&self) {
-        if let Ok(manager) = self.manager.lock() {
-            for id in &manager.overlay_order {
-                if let Some(overlay) = manager.active_instances.get(id) {
-                    overlay.release_frame_lock();
-                }
-            }
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for releasing frame locks.");
-        }
-    }
-
     /// Executes the per-frame rendering logic for all overlays.
     /// This function should be called once per frame from the host application's render loop.
     pub fn run_flutter_tick(&self) {
@@ -692,16 +678,7 @@ impl FlutterOverlayManagerHandle {
 
                     update_interactive_widget_hover_state(overlay);
 
-                    if overlay.acquire_frame_lock() {
-                        unsafe { context.Flush() };
-
-                        overlay.composite(
-                            &context,
-                            manager.screen_width,
-                            manager.screen_height,
-                            time,
-                        );
-                    }
+                    overlay.composite(&context, manager.screen_width, manager.screen_height, time);
                 }
             }
         } else {

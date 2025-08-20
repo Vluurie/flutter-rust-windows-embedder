@@ -21,7 +21,7 @@ pub const EGL_SUCCESS: i32 = 0x3000;
 pub const EGL_WIDTH: i32 = 0x3057;
 pub const EGL_HEIGHT: i32 = 0x3056;
 pub const EGL_D3D11_TEXTURE_ANGLE: i32 = 0x3484;
-pub const GL_BGRA_EXT: i32 = 0x87;
+pub const GL_BGRA_EXT: i32 = 0x87; // Note: This is a GLenum, typically u32, but using i32 for attribs
 
 pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
 pub const EGL_SURFACE_TYPE: i32 = 0x3033;
@@ -34,39 +34,23 @@ pub const EGL_BLUE_SIZE: i32 = 0x3022;
 pub const EGL_ALPHA_SIZE: i32 = 0x3021;
 pub const EGL_DEPTH_SIZE: i32 = 0x3025;
 pub const EGL_STENCIL_SIZE: i32 = 0x3026;
-pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: i32 = 0x3209;
-pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_DEBUG_ANGLE: i32 = 0x3451;
-pub const EGL_DXGI_KEYED_MUTEX_ANGLE: i32 = 0x33A2;
 
 pub const EGL_PLATFORM_ANGLE_ANGLE: i32 = 0x3202;
 pub const EGL_PLATFORM_ANGLE_TYPE_ANGLE: i32 = 0x3203;
 pub const EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE: i32 = 0x3208;
-pub const EGL_PLATFORM_ANGLE_TYPE_D3D11_WARP_ANGLE: i32 = 0x320B;
 pub const EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE: i32 = 0x320F;
-pub const EGL_PLATFORM_ANGLE_MAX_VERSION_MAJOR_ANGLE: i32 = 0x3204;
-pub const EGL_PLATFORM_ANGLE_MAX_VERSION_MINOR_ANGLE: i32 = 0x3205;
-pub const EGL_PLATFORM_ANGLE_D3D11_ANGLE: i32 = 0x3208;
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE: i32 = 0x33A4;
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE: i32 = 0x33A9;
-pub const EGL_PLATFORM_ANGLE_D3D_TEXTURE_FORMAT_ANGLE: i32 = 0x34A7;
 
 pub const EGL_DEVICE_EXT: i32 = 0x322C;
 pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
 pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
-pub const EGL_GL_COLORSPACE_KHR: i32 = 0x309D;
-pub const EGL_GL_COLORSPACE_SRGB_KHR: i32 = 0x3089;
-pub const EGL_PLATFORM_ANGLE_D3D_DEVICE_ANGLE: i32 = 0x33A1;
 pub const EGL_TEXTURE_INTERNAL_FORMAT_ANGLE: i32 = 0x345D;
 
-pub const GL_FRAMEBUFFER: u32 = 0x8D40;
-pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
-pub const GL_TEXTURE_2D_GL: u32 = 0x0DE1;
-pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
-
+// --- TYPE DEFINITIONS ---
 type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *mut c_void;
 type EGLBoolean = i32;
 type EglGetPlatformDisplayEXT = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
-type EglGetPlatformDisplay = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
 type EglInitialize = unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> bool;
 type EglChooseConfig =
     unsafe extern "C" fn(*mut c_void, *const i32, *mut *mut c_void, i32, *mut i32) -> bool;
@@ -79,21 +63,12 @@ type EglTerminate = unsafe extern "C" fn(*mut c_void) -> bool;
 type EglGetError = unsafe extern "C" fn() -> i32;
 type EglQueryDisplayAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
 type EglQueryDeviceAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
-type EglCreateImageKHR =
-    unsafe extern "C" fn(*mut c_void, *mut c_void, u32, *mut c_void, *const isize) -> *mut c_void;
-type EglDestroyImageKHR = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
-
-type GlGenFramebuffers = unsafe extern "C" fn(i32, *mut u32);
-type GlBindFramebuffer = unsafe extern "C" fn(u32, u32);
-type GlFramebufferTexture2D = unsafe extern "C" fn(u32, u32, u32, u32, i32);
-type GlCheckFramebufferStatus = unsafe extern "C" fn(u32) -> u32;
-type GlGenTextures = unsafe extern "C" fn(i32, *mut u32);
-type GlBindTexture = unsafe extern "C" fn(u32, u32);
-type GlDeleteTextures = unsafe extern "C" fn(i32, *const u32);
-type GlDeleteFramebuffers = unsafe extern "C" fn(i32, *const u32);
-type GlFlush = unsafe extern "C" fn();
 type GlFinish = unsafe extern "C" fn();
-type GlEGLImageTargetTexture2DOES = unsafe extern "C" fn(u32, *mut c_void);
+
+// --- CHANGED: Added new type definitions for the surface approach ---
+type EglCreatePbufferFromClientBuffer =
+    unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
+type EglDestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
 
 fn egl_error_to_string(error_code: i32) -> &'static str {
     match error_code {
@@ -132,32 +107,25 @@ fn log_egl_error(func: &str, line: u32, egl_get_error_fn: EglGetError) {
 pub struct AngleInteropState {
     libegl: Library,
     _libgles: Library,
+
     pub egl_make_current: EglMakeCurrent,
     egl_get_error: EglGetError,
-    pub egl_create_image_khr: EglCreateImageKHR,
-    gl_gen_framebuffers: GlGenFramebuffers,
-    gl_bind_framebuffer: GlBindFramebuffer,
-    gl_framebuffer_texture_2d: GlFramebufferTexture2D,
-    gl_check_framebuffer_status: GlCheckFramebufferStatus,
-    gl_gen_textures: GlGenTextures,
-    egl_destroy_image_khr: EglDestroyImageKHR,
-    pub egl_image: *mut c_void,
-    gl_bind_texture: GlBindTexture,
-    pub gl_delete_textures: GlDeleteTextures,
-    pub gl_delete_framebuffers: GlDeleteFramebuffers,
-    gl_flush: GlFlush,
+    egl_destroy_context: EglDestroyContext,
+    egl_terminate: EglTerminate,
+    egl_create_context: EglCreateContext,
     gl_finish: GlFinish,
-    pub gl_egl_image_target_texture_2d_oes: GlEGLImageTargetTexture2DOES,
+
+    egl_create_pbuffer_from_client_buffer: EglCreatePbufferFromClientBuffer,
+    egl_destroy_surface: EglDestroySurface,
+
     pub display: *mut c_void,
     pub context: *mut c_void,
     pub resource_context: *mut c_void,
-    pub fbo_id: u32,
-    pub gl_texture_id: u32,
-    egl_destroy_context: EglDestroyContext,
-    egl_terminate: EglTerminate,
     pub angle_d3d11_device: ID3D11Device,
     config: *mut c_void,
-    egl_create_context: EglCreateContext,
+
+    pub pbuffer_surface: *mut c_void,
+
     main_thread_id: Option<std::thread::ThreadId>,
     resource_thread_id: Option<std::thread::ThreadId>,
 }
@@ -182,6 +150,12 @@ impl AngleInteropState {
                 egl_get_proc_address(c_name.as_ptr())
             };
 
+            let get_proc_assert = |name: &str| {
+                let ptr = get_proc(name);
+                assert!(!ptr.is_null(), "Failed to load {}", name);
+                ptr
+            };
+
             let egl_get_platform_display_ext: EglGetPlatformDisplayEXT =
                 mem::transmute(get_proc("eglGetPlatformDisplayEXT"));
             if egl_get_platform_display_ext as *const c_void == ptr::null() {
@@ -190,7 +164,6 @@ impl AngleInteropState {
             let egl_initialize: EglInitialize = mem::transmute(get_proc("eglInitialize"));
             let egl_get_error: EglGetError = mem::transmute(get_proc("eglGetError"));
 
-            // Use Flutter's display attributes to ask ANGLE to create a D3D11 device.
             let display_attributes: [i32; 7] = [
                 EGL_PLATFORM_ANGLE_TYPE_ANGLE,
                 EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
@@ -218,13 +191,6 @@ impl AngleInteropState {
                 return Err("Failed to initialize EGL.".to_string());
             }
 
-            // Now that EGL is initialized, we can load all other functions.
-            let get_proc_assert = |name: &str| {
-                let ptr = get_proc(name);
-                assert!(!ptr.is_null(), "Failed to load {}", name);
-                ptr
-            };
-
             let egl_query_display_attrib_ext: EglQueryDisplayAttribEXT =
                 mem::transmute(get_proc_assert("eglQueryDisplayAttribEXT"));
             let egl_query_device_attrib_ext: EglQueryDeviceAttribEXT =
@@ -251,9 +217,9 @@ impl AngleInteropState {
             }
 
             let angle_d3d11_device: ID3D11Device = Interface::from_raw(d3d11_device_ptr as *mut _);
-
             let egl_choose_config: EglChooseConfig =
                 mem::transmute(get_proc_assert("eglChooseConfig"));
+
             let egl_create_context: EglCreateContext =
                 mem::transmute(get_proc_assert("eglCreateContext"));
             let egl_make_current: EglMakeCurrent =
@@ -261,28 +227,11 @@ impl AngleInteropState {
             let egl_destroy_context: EglDestroyContext =
                 mem::transmute(get_proc_assert("eglDestroyContext"));
             let egl_terminate: EglTerminate = mem::transmute(get_proc_assert("eglTerminate"));
-            let egl_create_image_khr: EglCreateImageKHR =
-                mem::transmute(get_proc_assert("eglCreateImageKHR"));
-            let gl_gen_framebuffers: GlGenFramebuffers =
-                mem::transmute(get_proc_assert("glGenFramebuffers"));
-            let gl_bind_framebuffer: GlBindFramebuffer =
-                mem::transmute(get_proc_assert("glBindFramebuffer"));
-            let gl_framebuffer_texture_2d: GlFramebufferTexture2D =
-                mem::transmute(get_proc_assert("glFramebufferTexture2D"));
-            let gl_check_framebuffer_status: GlCheckFramebufferStatus =
-                mem::transmute(get_proc_assert("glCheckFramebufferStatus"));
-            let gl_gen_textures: GlGenTextures = mem::transmute(get_proc_assert("glGenTextures"));
-            let gl_bind_texture: GlBindTexture = mem::transmute(get_proc_assert("glBindTexture"));
-            let gl_delete_textures: GlDeleteTextures =
-                mem::transmute(get_proc_assert("glDeleteTextures"));
-            let gl_delete_framebuffers: GlDeleteFramebuffers =
-                mem::transmute(get_proc_assert("glDeleteFramebuffers"));
-            let gl_flush: GlFlush = mem::transmute(get_proc_assert("glFlush"));
             let gl_finish: GlFinish = mem::transmute(get_proc_assert("glFinish"));
-            let gl_egl_image_target_texture_2d_oes: GlEGLImageTargetTexture2DOES =
-                mem::transmute(get_proc_assert("glEGLImageTargetTexture2DOES"));
-            let egl_destroy_image_khr: EglDestroyImageKHR =
-                mem::transmute(get_proc_assert("eglDestroyImageKHR"));
+            let egl_create_pbuffer_from_client_buffer: EglCreatePbufferFromClientBuffer =
+                mem::transmute(get_proc_assert("eglCreatePbufferFromClientBuffer"));
+            let egl_destroy_surface: EglDestroySurface =
+                mem::transmute(get_proc_assert("eglDestroySurface"));
 
             let config_attribs = [
                 EGL_RED_SIZE,
@@ -323,31 +272,18 @@ impl AngleInteropState {
                 _libgles: libgles,
                 egl_make_current,
                 egl_get_error,
-                egl_create_image_khr,
-                gl_gen_framebuffers,
-                gl_bind_framebuffer,
-                gl_framebuffer_texture_2d,
-                gl_check_framebuffer_status,
-                gl_gen_textures,
-
-                gl_bind_texture,
-                gl_delete_textures,
-                gl_delete_framebuffers,
-                gl_flush,
+                egl_destroy_context,
+                egl_terminate,
+                egl_create_context,
                 gl_finish,
-                gl_egl_image_target_texture_2d_oes,
+                egl_create_pbuffer_from_client_buffer,
+                egl_destroy_surface,
                 display,
                 context: EGL_NO_CONTEXT,
                 resource_context: EGL_NO_CONTEXT,
-                fbo_id: 0,
-                gl_texture_id: 0,
-                egl_destroy_context,
-                egl_terminate,
-                egl_image: ptr::null_mut(),
                 angle_d3d11_device,
-                egl_destroy_image_khr,
                 config,
-                egl_create_context,
+                pbuffer_surface: EGL_NO_SURFACE,
                 main_thread_id: None,
                 resource_thread_id: None,
             }))
@@ -360,29 +296,18 @@ impl AngleInteropState {
 
     pub fn cleanup_surface_resources(&mut self) {
         unsafe {
-            info!(
-                "[AngleInterop] Cleaning up surface resources on thread {:?}.",
-                std::thread::current().id()
-            );
-            (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, self.context);
+            if self.pbuffer_surface != EGL_NO_SURFACE {
+                info!("[AngleInterop] Cleaning up EGLSurface.");
 
-            (self.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
-
-            if self.fbo_id != 0 {
-                (self.gl_delete_framebuffers)(1, &self.fbo_id);
-                self.fbo_id = 0;
+                (self.egl_make_current)(
+                    self.display,
+                    EGL_NO_SURFACE,
+                    EGL_NO_SURFACE,
+                    EGL_NO_CONTEXT,
+                );
+                (self.egl_destroy_surface)(self.display, self.pbuffer_surface);
+                self.pbuffer_surface = EGL_NO_SURFACE;
             }
-            if self.gl_texture_id != 0 {
-                (self.gl_delete_textures)(1, &self.gl_texture_id);
-                self.gl_texture_id = 0;
-            }
-
-            if !self.egl_image.is_null() {
-                (self.egl_destroy_image_khr)(self.display, self.egl_image);
-                self.egl_image = ptr::null_mut();
-            }
-
-            (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
     }
 
@@ -394,10 +319,37 @@ impl AngleInteropState {
         self.cleanup_surface_resources();
         let angle_device = self.get_d3d_device()?;
 
-        create_shared_texture_and_get_handle(&angle_device, width, height)
-            .map_err(|e| e.to_string())
+        let (d3d_texture, handle) =
+            create_shared_texture_and_get_handle(&angle_device, width, height)
+                .map_err(|e| e.to_string())?;
+
+        unsafe {
+            let pbuffer_attribs = [EGL_WIDTH, width as i32, EGL_HEIGHT, height as i32, EGL_NONE];
+
+            let d3d_texture_ptr = d3d_texture.as_raw();
+            self.pbuffer_surface = (self.egl_create_pbuffer_from_client_buffer)(
+                self.display,
+                EGL_D3D_TEXTURE_ANGLE as u32,
+                d3d_texture_ptr as *mut c_void,
+                self.config,
+                pbuffer_attribs.as_ptr(),
+            );
+
+            if self.pbuffer_surface == EGL_NO_SURFACE {
+                log_egl_error(
+                    "eglCreatePbufferFromClientBuffer",
+                    line!(),
+                    self.egl_get_error,
+                );
+                return Err("Failed to create pbuffer surface.".to_string());
+            }
+
+            info!("[AngleInterop] New EGLSurface created successfully for texture.");
+        }
+        Ok((d3d_texture, handle))
     }
 }
+
 impl Drop for AngleInteropState {
     fn drop(&mut self) {
         unsafe {
@@ -405,13 +357,8 @@ impl Drop for AngleInteropState {
                 "[AngleInterop] Dropping AngleInteropState on thread {:?}.",
                 std::thread::current().id()
             );
+            self.cleanup_surface_resources(); // Cleanup surface before contexts
             (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-            if self.fbo_id != 0 {
-                (self.gl_delete_framebuffers)(1, &self.fbo_id);
-            }
-            if self.gl_texture_id != 0 {
-                (self.gl_delete_textures)(1, &self.gl_texture_id);
-            }
             if self.context != EGL_NO_CONTEXT {
                 (self.egl_destroy_context)(self.display, self.context);
             }
@@ -445,10 +392,9 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                 state.context = (state.egl_create_context)(
                     state.display,
                     state.config,
-                    EGL_NO_CONTEXT,
+                    state.resource_context, // Share with resource context
                     context_attribs.as_ptr(),
                 );
-
                 if state.context == EGL_NO_CONTEXT {
                     error!("[AngleInterop] Failed to create main context.");
                     return false;
@@ -457,18 +403,14 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
             }
 
             if state.main_thread_id != Some(std::thread::current().id()) {
-                error!(
-                    "[AngleInterop] FATAL: make_current_callback on wrong thread! Expected {:?}, got {:?}.",
-                    state.main_thread_id,
-                    std::thread::current().id()
-                );
+                error!("FATAL: make_current_callback on wrong thread!");
                 return false;
             }
 
             let result: EGLBoolean = (state.egl_make_current)(
                 state.display,
-                EGL_NO_SURFACE,
-                EGL_NO_SURFACE,
+                state.pbuffer_surface, // Make our new surface current for drawing
+                state.pbuffer_surface, // and for reading
                 state.context,
             );
 
@@ -486,7 +428,6 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
-
             if state.resource_context == EGL_NO_CONTEXT {
                 info!(
                     "[AngleInterop] First call on resource thread {:?}. Initializing resource EGL context.",
@@ -497,7 +438,7 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 state.resource_context = (state.egl_create_context)(
                     state.display,
                     state.config,
-                    EGL_NO_CONTEXT,
+                    EGL_NO_CONTEXT, // Resource context doesn't share
                     context_attribs.as_ptr(),
                 );
 
@@ -509,11 +450,7 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
             }
 
             if state.resource_thread_id != Some(std::thread::current().id()) {
-                error!(
-                    "[AngleInterop] FATAL: make_resource_current_callback on wrong thread! Expected {:?}, got {:?}.",
-                    state.resource_thread_id,
-                    std::thread::current().id()
-                );
+                error!("FATAL: make_resource_current_callback on wrong thread!");
                 return false;
             }
 
@@ -523,7 +460,6 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 EGL_NO_SURFACE,
                 state.resource_context,
             );
-
             if result != EGL_TRUE {
                 log_egl_error(
                     "make_resource_current_callback",
@@ -536,180 +472,47 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
         false
     }
 }
+
 extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
-
-            if state.main_thread_id != Some(std::thread::current().id()) {
-                error!(
-                    "[AngleInterop] FATAL: clear_current_callback on wrong thread! Expected {:?}, got {:?}.",
-                    state.main_thread_id,
-                    std::thread::current().id()
-                );
-                return false;
-            }
-
-            info!(
-                "[AngleInterop] clear_current_callback called on thread {:?}.",
-                std::thread::current().id()
-            );
-            let result: EGLBoolean = (state.egl_make_current)(
+            (state.egl_make_current)(
                 state.display,
                 EGL_NO_SURFACE,
                 EGL_NO_SURFACE,
                 EGL_NO_CONTEXT,
-            );
-
-            if result != EGL_TRUE {
-                log_egl_error("clear_current_callback", line!(), state.egl_get_error);
-            }
-
-            return result == EGL_TRUE;
+            ) == EGL_TRUE
+        } else {
+            false
         }
-        false
     }
 }
+
 extern "C" fn present_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &*(user_data as *mut FlutterOverlay);
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
-            if state.main_thread_id != Some(std::thread::current().id()) {
-                error!(
-                    "[AngleInterop] FATAL: present_callback on wrong thread! Expected {:?}, got {:?}.",
-                    state.main_thread_id,
-                    std::thread::current().id()
-                );
-                return false;
-            }
-
-            info!(
-                "[AngleInterop] present_callback called on thread {:?}.",
-                std::thread::current().id()
-            );
             (state.gl_finish)();
-            (state.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
             return true;
         }
         false
     }
 }
-extern "C" fn fbo_callback(user_data: *mut c_void) -> u32 {
-    unsafe {
-        let overlay = &mut *(user_data as *mut FlutterOverlay);
-        if let Some(angle_state) = &mut overlay.angle_state {
-            let state = &mut angle_state.0;
 
-            if state.context == EGL_NO_CONTEXT {
-                info!(
-                    "[AngleInterop] First call on main render thread {:?}. Initializing main EGL context.",
-                    std::thread::current().id()
-                );
-                let context_attribs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
-                state.context = (state.egl_create_context)(
-                    state.display,
-                    state.config,
-                    EGL_NO_CONTEXT,
-                    context_attribs.as_ptr(),
-                );
-
-                if state.context == EGL_NO_CONTEXT {
-                    error!("[AngleInterop] Failed to create main context in fbo_callback.");
-                    return 0;
-                }
-                state.main_thread_id = Some(std::thread::current().id());
-            }
-
-            if state.main_thread_id != Some(std::thread::current().id()) {
-                error!(
-                    "[AngleInterop] FATAL: fbo_callback on wrong thread! Expected {:?}, got {:?}.",
-                    state.main_thread_id,
-                    std::thread::current().id()
-                );
-                return 0;
-            }
-
-            if !make_current_callback(user_data as *mut c_void) {
-                error!("[AngleInterop] Failed to make EGL main context current in fbo_callback.");
-                return 0;
-            }
-
-            if state.fbo_id != 0 {
-                return state.fbo_id;
-            }
-
-            if let Some(d3d_texture) = &overlay.gl_internal_linear_texture {
-                let d3d_texture_ptr = d3d_texture.as_raw();
-
-                if d3d_texture_ptr.is_null() {
-                    error!("[AngleInterop] d3d_texture_ptr is null!");
-                    return 0;
-                }
-
-                let image_attribs = [EGL_NONE as isize];
-
-                let egl_image = (state.egl_create_image_khr)(
-                    state.display,
-                    EGL_NO_CONTEXT,
-                    EGL_D3D_TEXTURE_ANGLE as u32,
-                    d3d_texture_ptr as *mut c_void,
-                    image_attribs.as_ptr() as *const isize,
-                );
-
-                if egl_image.is_null() {
-                    error!("[AngleInterop] eglCreateImageKHR failed.");
-                    log_egl_error("fbo_callback", line!(), state.egl_get_error);
-                    return 0;
-                }
-
-                state.egl_image = egl_image;
-                (state.gl_gen_textures)(1, &mut state.gl_texture_id);
-                (state.gl_bind_texture)(GL_TEXTURE_2D_GL, state.gl_texture_id);
-                (state.gl_egl_image_target_texture_2d_oes)(GL_TEXTURE_2D_GL, egl_image);
-                (state.gl_gen_framebuffers)(1, &mut state.fbo_id);
-                (state.gl_bind_framebuffer)(GL_FRAMEBUFFER, state.fbo_id);
-                (state.gl_framebuffer_texture_2d)(
-                    GL_FRAMEBUFFER,
-                    GL_COLOR_ATTACHMENT0,
-                    GL_TEXTURE_2D_GL,
-                    state.gl_texture_id,
-                    0,
-                );
-
-                let status = (state.gl_check_framebuffer_status)(GL_FRAMEBUFFER);
-                if status != GL_FRAMEBUFFER_COMPLETE {
-                    error!(
-                        "[AngleInterop] Framebuffer is not complete. Status: {:#X}",
-                        status
-                    );
-
-                    (state.gl_bind_framebuffer)(GL_FRAMEBUFFER, 0);
-                    (state.gl_delete_framebuffers)(1, &state.fbo_id);
-                    (state.gl_delete_textures)(1, &state.gl_texture_id);
-                    (state.egl_destroy_image_khr)(state.display, state.egl_image);
-                    state.fbo_id = 0;
-                    state.gl_texture_id = 0;
-                    state.egl_image = ptr::null_mut();
-
-                    return 0;
-                }
-
-                info!(
-                    "[AngleInterop] FBO (via EGLImage) created successfully (ID: {}).",
-                    state.fbo_id
-                );
-                return state.fbo_id;
-            }
-        }
-        warn!("[ANGLE DEBUG] fbo_callback executed but no angle_state or texture was present.");
-
-        0
-    }
+extern "C" fn fbo_callback(_user_data: *mut c_void) -> u32 {
+    // Return 0 to tell Flutter to use the default framebuffer
+    // of the currently bound EGLSurface.
+    0
 }
+
 extern "C" fn gl_proc_resolver_callback(_user_data: *mut c_void, proc: *const i8) -> *mut c_void {
+    // TODO: This should be made more efficient as discussed,
+    // using lazy_static or once_cell to avoid reloading the library on every call.
+    // Leaving it as-is to match your original structure for now.
     unsafe {
         let libegl = Library::new(r"C:\Repos\nams-rs\target\libEGL.dll").unwrap();
         let egl_get_proc_address: Symbol<EglGetProcAddress> =

@@ -139,14 +139,13 @@ pub(crate) fn init_overlay(
             RendererType::OpenGL => {
                 info!("[InitOverlay] Using two-texture interop model");
 
-                let angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
-                let angle_d3d_device = angle_state.get_d3d_device().unwrap();
+                let mut angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
 
-                let (texture_for_angle, shared_handle) =
-                    create_shared_texture_and_get_handle(&angle_d3d_device, width, height)
-                        .expect("Failed to create shared ANGLE texture");
+                let (angle_texture_on_angle_device, shared_handle) = angle_state
+                    .recreate_resources(width, height)
+                    .expect("Failed to create shared resources and EGL surface");
 
-                gl_internal_linear_texture_for_struct = Some(texture_for_angle);
+                gl_internal_linear_texture_for_struct = Some(angle_texture_on_angle_device);
 
                 let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
                     let mut opt = None;
@@ -160,9 +159,7 @@ pub(crate) fn init_overlay(
 
                 let local_texture_on_game_device =
                     create_compositing_texture(game_device, width, height);
-
                 texture_for_struct = local_texture_on_game_device;
-
                 srv_for_struct = create_srv(game_device, &texture_for_struct);
 
                 angle_state_for_struct = Some(SendableAngleState(angle_state));

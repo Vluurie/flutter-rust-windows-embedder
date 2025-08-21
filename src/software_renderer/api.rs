@@ -223,9 +223,53 @@ impl FlutterOverlay {
         start_task_runner(self);
     }
 
-    /// Performs per-frame updates, primarily uploading the pixel buffer to the GPU texture.
+    /// Performs per-frame updates, preparing the GPU texture with the latest Flutter content.
+    /// - For `Software` mode, it uploads pixel data from the CPU.
+    /// - For `OpenGL` mode, it copies the frame from the shared ANGLE texture.
     pub fn tick(&self, context: &ID3D11DeviceContext) {
-        tick(self, context);
+        if !self.visible || self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        match self.renderer_type {
+            RendererType::Software => {
+                tick(self, context);
+            }
+            RendererType::OpenGL => {
+                if let Some(angle_texture) = &self.angle_shared_texture {
+                    unsafe {
+                        context.CopyResource(&self.texture, angle_texture);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Composites (draws) the overlay's texture onto the screen.
+    /// This function ONLY draws. It assumes `tick()` has already been called.
+    pub fn composite(
+        &self,
+        context: &ID3D11DeviceContext,
+        screen_width: u32,
+        screen_height: u32,
+        time: f32,
+    ) {
+        if !self.visible || self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        self.compositor.render_texture(
+            context,
+            &self.srv,
+            &self.effect_config,
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            screen_width as f32,
+            screen_height as f32,
+            time,
+        );
     }
 
     /// Processes a Windows keyboard message for this overlay.
@@ -281,42 +325,6 @@ impl FlutterOverlay {
         }
     }
 
-    /// Composites (renders) the Flutter overlay onto the Direct3D device context.
-    ///
-    /// IMPORTANT: This function assumes the caller has already successfully acquired
-    /// the frame lock. It does not perform any synchronization itself.
-    pub fn composite(
-        &self,
-        context: &ID3D11DeviceContext,
-        screen_width: u32,
-        screen_height: u32,
-        time: f32,
-    ) {
-        if !self.visible || self.width == 0 || self.height == 0 {
-            return;
-        }
-
-        if let Some(angle_texture) = &self.angle_shared_texture {
-            // Perform a GPU-side copy from the shared ANGLE texture to our local game texture.
-            unsafe {
-                context.CopyResource(&self.texture, angle_texture);
-            }
-        }
-
-        // Now, render using our local texture and SRV, which is guaranteed to be safe.
-        self.compositor.render_texture(
-            context,
-            &self.srv,
-            &self.effect_config,
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            screen_width as f32,
-            screen_height as f32,
-            time,
-        );
-    }
     /// Retrieves the D3D11 Shader Resource View (SRV) for this overlay's texture.
     /// Used by the host application to render the Flutter UI.
     /// This clones the SRV (calls AddRef). The caller must Release it.

@@ -5,6 +5,7 @@ use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 use libloading::{Library, Symbol};
 use log::{debug, error, info, warn};
+use once_cell::sync::Lazy;
 use std::ffi::{CString, c_void};
 use std::{mem, ptr};
 use windows::Win32::Foundation::HANDLE;
@@ -21,7 +22,7 @@ pub const EGL_SUCCESS: i32 = 0x3000;
 pub const EGL_WIDTH: i32 = 0x3057;
 pub const EGL_HEIGHT: i32 = 0x3056;
 pub const EGL_D3D11_TEXTURE_ANGLE: i32 = 0x3484;
-pub const GL_BGRA_EXT: i32 = 0x87; // Note: This is a GLenum, typically u32, but using i32 for attribs
+pub const GL_BGRA_EXT: i32 = 0x87;
 
 pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
 pub const EGL_SURFACE_TYPE: i32 = 0x3033;
@@ -47,7 +48,6 @@ pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
 pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
 pub const EGL_TEXTURE_INTERNAL_FORMAT_ANGLE: i32 = 0x345D;
 
-// --- TYPE DEFINITIONS ---
 type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *mut c_void;
 type EGLBoolean = i32;
 type EglGetPlatformDisplayEXT = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
@@ -65,7 +65,6 @@ type EglQueryDisplayAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isiz
 type EglQueryDeviceAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
 type GlFinish = unsafe extern "C" fn();
 
-// --- CHANGED: Added new type definitions for the surface approach ---
 type EglCreatePbufferFromClientBuffer =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
 type EglDestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
@@ -136,9 +135,9 @@ impl AngleInteropState {
             info!("[AngleInterop] Initializing ANGLE and letting it create a D3D11 device...");
 
             debug!("[ANGLE DEBUG] Loading libEGL.dll and libGLESv2.dll...");
-            let libegl =
-                Library::new(r"C:\Repos\nams-rs\target\libEGL.dll").map_err(|e| e.to_string())?;
-            let libgles = Library::new(r"C:\Repos\nams-rs\target\libGLESv2.dll")
+            let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll")
+                .map_err(|e| e.to_string())?;
+            let libgles = Library::new(r"E:\nier_dev_tools\nams-rs\target\libGLESv2.dll")
                 .map_err(|e| e.to_string())?;
 
             debug!("[ANGLE DEBUG] Loading eglGetProcAddress...");
@@ -357,7 +356,7 @@ impl Drop for AngleInteropState {
                 "[AngleInterop] Dropping AngleInteropState on thread {:?}.",
                 std::thread::current().id()
             );
-            self.cleanup_surface_resources(); // Cleanup surface before contexts
+            self.cleanup_surface_resources();
             (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if self.context != EGL_NO_CONTEXT {
                 (self.egl_destroy_context)(self.display, self.context);
@@ -392,7 +391,7 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                 state.context = (state.egl_create_context)(
                     state.display,
                     state.config,
-                    state.resource_context, // Share with resource context
+                    state.resource_context,
                     context_attribs.as_ptr(),
                 );
                 if state.context == EGL_NO_CONTEXT {
@@ -409,8 +408,8 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
 
             let result: EGLBoolean = (state.egl_make_current)(
                 state.display,
-                state.pbuffer_surface, // Make our new surface current for drawing
-                state.pbuffer_surface, // and for reading
+                state.pbuffer_surface,
+                state.pbuffer_surface,
                 state.context,
             );
 
@@ -438,7 +437,7 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 state.resource_context = (state.egl_create_context)(
                     state.display,
                     state.config,
-                    EGL_NO_CONTEXT, // Resource context doesn't share
+                    EGL_NO_CONTEXT,
                     context_attribs.as_ptr(),
                 );
 
@@ -504,21 +503,26 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
 }
 
 extern "C" fn fbo_callback(_user_data: *mut c_void) -> u32 {
-    // Return 0 to tell Flutter to use the default framebuffer
-    // of the currently bound EGLSurface.
     0
 }
 
+static EGL_GET_PROC_ADDRESS: Lazy<(Library, EglGetProcAddress)> = Lazy::new(|| unsafe {
+    let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll")
+        .expect("Failed to load libEGL.dll for gl_proc_resolver_callback");
+
+    let egl_get_proc_address_symbol: Symbol<EglGetProcAddress> = libegl
+        .get(b"eglGetProcAddress")
+        .expect("Failed to find eglGetProcAddress in libEGL.dll");
+
+    let egl_get_proc_address_fn: EglGetProcAddress = mem::transmute(egl_get_proc_address_symbol);
+
+    (libegl, egl_get_proc_address_fn)
+});
+
 extern "C" fn gl_proc_resolver_callback(_user_data: *mut c_void, proc: *const i8) -> *mut c_void {
-    // TODO: This should be made more efficient as discussed,
-    // using lazy_static or once_cell to avoid reloading the library on every call.
-    // Leaving it as-is to match your original structure for now.
-    unsafe {
-        let libegl = Library::new(r"C:\Repos\nams-rs\target\libEGL.dll").unwrap();
-        let egl_get_proc_address: Symbol<EglGetProcAddress> =
-            libegl.get(b"eglGetProcAddress").unwrap();
-        egl_get_proc_address(proc)
-    }
+    let (_lib, get_proc_fn) = &*EGL_GET_PROC_ADDRESS;
+
+    unsafe { get_proc_fn(proc) }
 }
 
 pub fn build_opengl_renderer_config() -> embedder::FlutterRendererConfig {

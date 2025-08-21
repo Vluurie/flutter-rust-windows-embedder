@@ -36,6 +36,7 @@ use crate::software_renderer::ticker::task_scheduler::{
 use log::{error, info};
 use std::collections::HashMap;
 use std::ffi::c_char;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
@@ -88,7 +89,6 @@ pub(crate) fn init_overlay(
         let hwnd = swap_chain_desc.OutputWindow;
         let game_device: &ID3D11Device = device;
 
-        // This block attempts to initialize the renderer, falling back to software if OpenGL fails.
         let (
             rdr_cfg,
             texture_for_struct,
@@ -102,7 +102,6 @@ pub(crate) fn init_overlay(
         ) = {
             info!("[InitOverlay] Attempting to initialize with OpenGL renderer...");
 
-            // The entire OpenGL initialization sequence is a chain of fallible operations.
             let opengl_init_result =
                 AngleInteropState::new(data_dir.as_deref()).and_then(|mut state| {
                     state
@@ -143,8 +142,13 @@ pub(crate) fn init_overlay(
                 }
                 Err(e) => {
                     error!(
-                        "[InitOverlay] OpenGL initialization failed: {}. Falling back to Software renderer.",
-                        e
+                        "OpenGL initialization failed: {}. Falling back to the software renderer. \
+                        TIP: For hardware acceleration, ensure 'libEGL.dll' and 'libGLESv2.dll' are placed \
+                        next to 'flutter_engine.dll' in the directory: {:?}",
+                        e,
+                        data_dir
+                            .as_deref()
+                            .unwrap_or(Path::new("<directory not specified>"))
                     );
 
                     let texture = create_texture(game_device, width, height);

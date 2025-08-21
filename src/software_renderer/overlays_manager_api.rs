@@ -596,24 +596,41 @@ impl OverlayManager {
 impl FlutterOverlayManagerHandle {
     /// Creates and initializes a new Flutter overlay instance and adds it to the manager.
     ///
-    /// This function is the entry point for creating a new Flutter UI surface. It handles
-    /// loading the Flutter engine, preparing rendering resources, and running the Dart
-    /// isolate. If an overlay with the same `identifier` exists, it is shut down and
-    /// replaced by the new instance.
+    /// This function is the primary entry point for creating a new Flutter UI surface. It
+    /// handles loading the Flutter engine, preparing rendering resources, and running the
+    /// Dart isolate. If an overlay with the same `identifier` already exists, it is
+    /// shut down and replaced by the new instance.
+    ///
+    /// # Renderer Selection
+    ///
+    /// This function automatically determines the best available renderer. It will first
+    /// attempt to initialize a hardware-accelerated **OpenGL** renderer via ANGLE.
+    ///
+    /// If OpenGL initialization fails for any reason (e.g., `libEGL.dll` or `libGLESv2.dll`
+    /// are not found, or a graphics driver issue occurs), it will log an error and
+    /// automatically fall back to a **Software** renderer. This ensures that the overlay
+    /// can be displayed even on systems without proper OpenGL support.
     ///
     /// # Arguments
+    ///
     /// * `swap_chain`: A reference to the host application's `IDXGISwapChain`.
-    /// * `flutter_asset_build_dir`: The file path to the Flutter project's assets directory,
-    ///   which is `Debug or Release` in the Flutter app's build output of windows or others..
-    ///   The Debug or Release dir needs to contain the flutter_engine.dll/lib JIT or AOT build since it get's loaded dynamically.
-    /// * `identifier`: A unique string like "flutter_{any name}" that identifies this overlay instance for all
-    ///   subsequent API calls.
+    /// * `flutter_asset_build_dir`: Path to the Flutter application's build output
+    ///   directory (e.g., `build/windows/runner/Release`). This directory must contain
+    ///   the necessary Flutter assets (`flutter_assets`), `icudtl.dat`, the compiled
+    ///   Dart code, and the `flutter_engine.dll`.
+    ///   - For **OpenGL** support, this directory must also contain `libEGL.dll` and `libGLESv2.dll`.
+    /// * `identifier`: A unique string that identifies this overlay instance for all
+    ///   subsequent API calls (e.g., "main_menu_ui").
     /// * `dart_args`: Optional. A vector of string arguments for the Dart `main()` function.
-    /// * `engine_args`: Optional. A vector of command-line switches for the Flutter Engine used in Debug JIT.
+    /// * `engine_args`: Optional. A vector of command-line switches for the Flutter Engine,
+    ///   typically used in debug builds.
     ///
     /// # Returns
-    /// Returns `true` if the overlay was initialized successfully. Returns `false` if an
-    /// error occurred, which will be logged internally.
+    ///
+    /// Returns `true` if the overlay was initialized successfully using either the OpenGL
+    /// or Software renderer. Returns `false` if a critical error occurred and initialization
+    /// failed completely. Errors are logged internally.
+    ///
     pub fn init_instance(
         &self,
         swap_chain: &IDXGISwapChain,

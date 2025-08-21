@@ -39,9 +39,7 @@ use std::ffi::c_char;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
-use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
-};
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
@@ -59,7 +57,6 @@ pub(crate) fn init_overlay(
     y: i32,
     dart_args_opt: Option<&[String]>,
     engine_args_opt: Option<&[String]>,
-    renderer_type: RendererType,
 ) -> Box<FlutterOverlay> {
     unsafe {
         let engine_dll_load_dir = data_dir.as_deref();
@@ -89,60 +86,88 @@ pub(crate) fn init_overlay(
 
         let swap_chain_desc: DXGI_SWAP_CHAIN_DESC = swap_chain.GetDesc().unwrap();
         let hwnd = swap_chain_desc.OutputWindow;
-
-        let rdr_cfg: embedder::FlutterRendererConfig;
-        let texture_for_struct: ID3D11Texture2D;
-        let srv_for_struct: ID3D11ShaderResourceView;
-        let mut gl_internal_linear_texture_for_struct: Option<ID3D11Texture2D> = None;
-        let mut pixel_buffer_for_struct: Option<Vec<u8>> = None;
-        let mut angle_state_for_struct: Option<SendableAngleState> = None;
-        let d3d11_shared_handle_for_struct: Option<SendableHandle> = None;
-        let mut angle_shared_texture_for_struct: Option<ID3D11Texture2D> = None;
-
         let game_device: &ID3D11Device = device;
 
-        match renderer_type {
-            RendererType::Software => {
-                info!("[InitOverlay] Using Software Renderer");
-                texture_for_struct = create_texture(game_device, width, height);
-                srv_for_struct = create_srv(game_device, &texture_for_struct);
-                pixel_buffer_for_struct = Some(vec![0; (width * height * 4) as usize]);
-                rdr_cfg = build_software_renderer_config();
+        // This block attempts to initialize the renderer, falling back to software if OpenGL fails.
+        let (
+            rdr_cfg,
+            texture_for_struct,
+            srv_for_struct,
+            gl_internal_linear_texture_for_struct,
+            pixel_buffer_for_struct,
+            angle_state_for_struct,
+            d3d11_shared_handle_for_struct,
+            angle_shared_texture_for_struct,
+            final_renderer_type,
+        ) = {
+            info!("[InitOverlay] Attempting to initialize with OpenGL renderer...");
+
+            // The entire OpenGL initialization sequence is a chain of fallible operations.
+            let opengl_init_result =
+                AngleInteropState::new(data_dir.as_deref()).and_then(|mut state| {
+                    state
+                        .recreate_resources(width, height)
+                        .map(|(texture, handle)| (state, texture, handle))
+                });
+
+            match opengl_init_result {
+                Ok((angle_state, angle_texture_on_angle_device, shared_handle)) => {
+                    info!("[InitOverlay] OpenGL renderer initialized successfully.");
+
+                    let angle_texture_on_game_device: ID3D11Texture2D = {
+                        let mut opt = None;
+                        game_device
+                            .OpenSharedResource(shared_handle, &mut opt)
+                            .unwrap();
+                        opt.unwrap()
+                    };
+
+                    let local_texture_on_game_device =
+                        create_compositing_texture(game_device, width, height);
+                    let texture = local_texture_on_game_device;
+                    let srv = create_srv(game_device, &texture);
+                    let angle_state = Some(SendableAngleState(angle_state));
+                    let rdr_cfg = build_opengl_renderer_config();
+
+                    (
+                        rdr_cfg,
+                        texture,
+                        srv,
+                        Some(angle_texture_on_angle_device),
+                        None,
+                        angle_state,
+                        Some(SendableHandle(shared_handle)),
+                        Some(angle_texture_on_game_device),
+                        RendererType::OpenGL,
+                    )
+                }
+                Err(e) => {
+                    error!(
+                        "[InitOverlay] OpenGL initialization failed: {}. Falling back to Software renderer.",
+                        e
+                    );
+
+                    let texture = create_texture(game_device, width, height);
+                    let srv = create_srv(game_device, &texture);
+                    let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
+                    let rdr_cfg = build_software_renderer_config();
+
+                    (
+                        rdr_cfg,
+                        texture,
+                        srv,
+                        None,
+                        pixel_buffer,
+                        None,
+                        None,
+                        None,
+                        RendererType::Software,
+                    )
+                }
             }
+        };
 
-            RendererType::OpenGL => {
-                info!("[InitOverlay] Using two-texture interop model");
-
-                let mut angle_state = AngleInteropState::new(data_dir.as_deref())
-                    .expect("Failed to initialize ANGLE");
-
-                let (angle_texture_on_angle_device, shared_handle) = angle_state
-                    .recreate_resources(width, height)
-                    .expect("Failed to create shared resources and EGL surface");
-
-                gl_internal_linear_texture_for_struct = Some(angle_texture_on_angle_device);
-
-                let angle_texture_on_game_device: ID3D11Texture2D = {
-                    let mut opt = None;
-                    game_device
-                        .OpenSharedResource(shared_handle, &mut opt)
-                        .unwrap();
-                    opt.unwrap()
-                };
-
-                angle_shared_texture_for_struct = Some(angle_texture_on_game_device.clone());
-
-                let local_texture_on_game_device =
-                    create_compositing_texture(game_device, width, height);
-                texture_for_struct = local_texture_on_game_device;
-                srv_for_struct = create_srv(game_device, &texture_for_struct);
-
-                angle_state_for_struct = Some(SendableAngleState(angle_state));
-                rdr_cfg = build_opengl_renderer_config();
-            }
-        }
         let compositor = D3D11Compositor::new(device);
-
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
 
@@ -187,7 +212,7 @@ pub(crate) fn init_overlay(
             is_debug_build: initial_is_debug,
             angle_shared_texture: angle_shared_texture_for_struct,
             dart_send_port: Arc::new(AtomicI64::new(0)),
-            renderer_type,
+            renderer_type: final_renderer_type,
             angle_state: angle_state_for_struct,
             d3d11_shared_handle: d3d11_shared_handle_for_struct,
         });

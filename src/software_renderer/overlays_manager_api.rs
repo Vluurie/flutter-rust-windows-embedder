@@ -282,7 +282,6 @@ impl OverlayManager {
         identifier: &str,
         dart_args_for_this_instance: Option<Vec<String>>,
         engine_args_opt: Option<Vec<String>>,
-        renderer_type: RendererType,
     ) -> bool {
         if self.active_instances.contains_key(identifier) {
             self.bring_to_front(identifier);
@@ -351,7 +350,6 @@ impl OverlayManager {
             flutter_asset_dir.clone(),
             dart_args_for_this_instance,
             engine_args_opt,
-            renderer_type,
         ) {
             Ok(overlay_box) => {
                 self.add_overlay_instance(identifier.to_string(), overlay_box);
@@ -623,7 +621,6 @@ impl FlutterOverlayManagerHandle {
         identifier: &str,
         dart_args: Option<Vec<String>>,
         engine_args: Option<Vec<String>>,
-        renderer_type: RendererType,
     ) -> bool {
         if let Ok(mut manager) = self.manager.lock() {
             manager.init(
@@ -632,7 +629,6 @@ impl FlutterOverlayManagerHandle {
                 identifier,
                 dart_args,
                 engine_args,
-                renderer_type,
             )
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for init_instance.");

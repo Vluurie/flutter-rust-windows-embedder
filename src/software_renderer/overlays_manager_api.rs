@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::init_logging;
-use crate::software_renderer::api::{FlutterEmbedderError, RendererType};
+use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
@@ -385,27 +385,6 @@ impl OverlayManager {
         }
     }
 
-    /// Runs the per-frame logic for all active overlays.
-    fn run(&mut self) {
-        if self.active_instances.is_empty() {
-            return;
-        }
-
-        for id in &self.overlay_order {
-            if let Some(overlay) = self.active_instances.get(id) {
-                if !overlay.is_visible() {
-                    continue;
-                }
-
-                overlay.request_frame().ok();
-
-                if overlay.renderer_type == RendererType::OpenGL {
-                    // TODO: Handle opengl renderer
-                }
-            }
-        }
-    }
-
     /// Handles input events, routing them based on Z-order and focus.
     fn handle_input_event(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
         if self.active_instances.is_empty() {
@@ -653,52 +632,63 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Schedules a new frame request for all visible Flutter overlays.
-    /// This should be called at the beginning of a frame or end of the previous one
-    /// to give Flutter maximum time to render.
-    pub fn schedule_flutter_frames(&self) {
+    /// Tick and composite all visible overlays.
+    pub fn run_flutter_tick(&self) {
         if let Ok(manager) = self.manager.lock() {
-            for id in &manager.overlay_order {
-                if let Some(overlay) = manager.active_instances.get(id) {
-                    if overlay.is_visible() {
-                        // This just tells the engine to start working on a new frame.
-                        overlay.request_frame().ok();
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                let time = manager.start_time.elapsed().as_secs_f32();
+
+                for id in &manager.overlay_order {
+                    if let Some(overlay) = manager.active_instances.get(id) {
+                        if overlay.is_visible() {
+                            overlay.tick(&context);
+                            update_interactive_widget_hover_state(overlay);
+                            overlay.composite(
+                                &context,
+                                manager.screen_width,
+                                manager.screen_height,
+                                time,
+                            );
+                        }
                     }
                 }
             }
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for schedule_flutter_frames.");
         }
     }
 
-    /// Ticks and composites all visible overlays onto the screen.
-    /// This should be called late in the frame, just before Present.
-    pub fn composite_flutter_overlays(&self) {
+    /// Ticks all overlays to update their texture content for the current frame.
+    /// This should be called before any state changes or drawing.
+    pub fn tick_overlays(&self) {
         if let Ok(manager) = self.manager.lock() {
-            let context = match manager.shared_d3d_context.clone() {
-                Some(ctx) => ctx,
-                None => return,
-            };
-            let time = manager.start_time.elapsed().as_secs_f32();
-
-            for id in &manager.overlay_order {
-                if let Some(overlay) = manager.active_instances.get(id) {
-                    if !overlay.is_visible() {
-                        continue;
-                    }
-
-                    if overlay.renderer_type == RendererType::Software {
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                for overlay in manager.active_instances.values() {
+                    if overlay.is_visible() {
                         overlay.tick(&context);
                     }
-
-                    update_interactive_widget_hover_state(overlay);
-
-                    // This draws the most recently completed frame from Flutter.
-                    overlay.composite(&context, manager.screen_width, manager.screen_height, time);
                 }
             }
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for tick compositing.");
+        }
+    }
+
+    /// Composites (draws) all overlays. This should be called after `tick_overlays`.
+    pub fn composite_overlays(&self) {
+        if let Ok(manager) = self.manager.lock() {
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                let time = manager.start_time.elapsed().as_secs_f32();
+                for id in &manager.overlay_order {
+                    if let Some(overlay) = manager.active_instances.get(id) {
+                        if overlay.is_visible() {
+                            update_interactive_widget_hover_state(overlay);
+                            overlay.composite(
+                                &context,
+                                manager.screen_width,
+                                manager.screen_height,
+                                time,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 

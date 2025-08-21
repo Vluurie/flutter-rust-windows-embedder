@@ -85,7 +85,6 @@ impl FlutterOverlay {
         flutter_data_dir: PathBuf,
         dart_entrypoint_args: Option<Vec<String>>,
         engine_args_opt: Option<Vec<String>>,
-        renderer_type: RendererType,
     ) -> Result<Box<Self>, FlutterEmbedderError> {
         info!(
             "[FlutterOverlay::create] Initializing Flutter Overlay '{}'. Data dir: {:?}",
@@ -103,7 +102,6 @@ impl FlutterOverlay {
             initial_y_pos,
             dart_entrypoint_args.as_deref(),
             engine_args_opt.as_deref(),
-            renderer_type,
         );
 
         if overlay_box.engine.0.is_null() {

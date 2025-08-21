@@ -1,13 +1,7 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
-use crate::software_renderer::gl_renderer::angle_interop::{
-    AngleInteropState, EGL_NO_SURFACE, SendableAngleState,
-};
-use crate::software_renderer::overlay::d3d::{
-    create_d3d_device_on_same_adapter, create_shared_texture_and_get_handle, create_srv,
-    create_texture,
-};
+use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
@@ -18,19 +12,16 @@ use crate::software_renderer::overlay::platform_message_callback::send_platform_
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
 use log::{error, info, warn};
-use std::ffi::{CString, c_void};
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread;
-use std::time::Duration;
+
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC, ID3D11Device,
-    ID3D11Device1, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
-use windows::core::Interface;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RendererType {

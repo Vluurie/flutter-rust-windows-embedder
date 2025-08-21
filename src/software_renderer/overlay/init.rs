@@ -8,9 +8,7 @@ use crate::software_renderer::gl_renderer::angle_interop::{
     AngleInteropState, SendableAngleState, build_opengl_renderer_config,
 };
 use crate::software_renderer::overlay::d3d::{
-    create_compositing_texture, create_shared_texture_and_get_handle, create_srv, create_texture,
-    log_device_adapter_info, log_device_creation_flags, log_device_feature_level,
-    log_texture_properties,
+    create_compositing_texture, create_srv, create_texture,
 };
 use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
 use crate::software_renderer::overlay::overlay_impl::{
@@ -34,7 +32,6 @@ use crate::software_renderer::ticker::task_scheduler::{
     TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
     runs_task_on_current_thread_callback,
 };
-use windows::core::Interface;
 
 use log::{error, info};
 use std::collections::HashMap;
@@ -43,9 +40,9 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11Device1, ID3D11ShaderResourceView, ID3D11Texture2D,
+    ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIKeyedMutex, IDXGISwapChain};
+use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
 
@@ -65,28 +62,6 @@ pub(crate) fn init_overlay(
     renderer_type: RendererType,
 ) -> Box<FlutterOverlay> {
     unsafe {
-        if let Ok(device_from_swapchain) = swap_chain.GetDevice::<ID3D11Device>() {
-            println!(
-                "\n--- Running Device Diagnostics for Overlay '{}' ---",
-                name
-            );
-            log_device_adapter_info(&device_from_swapchain);
-            log_device_feature_level(&device_from_swapchain);
-            let creation_flags = device_from_swapchain.GetCreationFlags();
-            log_device_creation_flags(
-                windows::Win32::Graphics::Direct3D11::D3D11_CREATE_DEVICE_FLAG(creation_flags),
-            );
-            if let Ok(back_buffer_texture) = swap_chain.GetBuffer::<ID3D11Texture2D>(0) {
-                log_texture_properties(&back_buffer_texture);
-            } else {
-                println!(
-                    "[DXGI TEXTURE PROBE]   -> ERROR: Failed to get back buffer texture from swap chain."
-                );
-            }
-
-            println!("--- Device Diagnostics Complete ---\n");
-        }
-
         let engine_dll_load_dir = data_dir.as_deref();
         let engine_dll_arc = FlutterEngineDll::get_for(engine_dll_load_dir).unwrap_or_else(|e| {
             error!(
@@ -122,7 +97,6 @@ pub(crate) fn init_overlay(
         let mut pixel_buffer_for_struct: Option<Vec<u8>> = None;
         let mut angle_state_for_struct: Option<SendableAngleState> = None;
         let d3d11_shared_handle_for_struct: Option<SendableHandle> = None;
-        let mut keyed_mutex_for_struct: Option<IDXGIKeyedMutex> = None;
         let mut angle_shared_texture_for_struct: Option<ID3D11Texture2D> = None;
 
         let game_device: &ID3D11Device = device;
@@ -139,7 +113,8 @@ pub(crate) fn init_overlay(
             RendererType::OpenGL => {
                 info!("[InitOverlay] Using two-texture interop model");
 
-                let mut angle_state = AngleInteropState::new().expect("Failed to initialize ANGLE");
+                let mut angle_state = AngleInteropState::new(data_dir.as_deref())
+                    .expect("Failed to initialize ANGLE");
 
                 let (angle_texture_on_angle_device, shared_handle) = angle_state
                     .recreate_resources(width, height)
@@ -147,7 +122,7 @@ pub(crate) fn init_overlay(
 
                 gl_internal_linear_texture_for_struct = Some(angle_texture_on_angle_device);
 
-                let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
+                let angle_texture_on_game_device: ID3D11Texture2D = {
                     let mut opt = None;
                     game_device
                         .OpenSharedResource(shared_handle, &mut opt)

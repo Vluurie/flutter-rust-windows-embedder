@@ -10,10 +10,7 @@ use std::{
 
 use windows::Win32::{
     Foundation::{HANDLE, HWND},
-    Graphics::{
-        Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
-        Dxgi::IDXGIKeyedMutex,
-    },
+    Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
 use crate::{

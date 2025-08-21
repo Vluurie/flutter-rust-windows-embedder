@@ -1,11 +1,5 @@
 use std::ptr;
 
-use windows::Win32::Foundation::HMODULE;
-use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_DEBUG, D3D11_SDK_VERSION,
-    D3D11CreateDevice, ID3D11Device,
-};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_PRIMITIVE_TOPOLOGY, D3D_PRIMITIVE_TOPOLOGY_UNDEFINED},
     Direct3D11::{
@@ -18,7 +12,7 @@ use windows::Win32::Graphics::{
         ID3D11ShaderResourceView, ID3D11VertexShader,
     },
 };
-use windows::core::Result;
+
 pub struct D3D11StateBackup<'a> {
     context: &'a ID3D11DeviceContext,
     num_viewports: u32,

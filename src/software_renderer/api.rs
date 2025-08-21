@@ -180,48 +180,39 @@ impl FlutterOverlay {
                 }
             }
             RendererType::OpenGL => {
-                // --- The "Nuke and Pave" Logic ---
+                if let Some(angle_state) = self.angle_state.as_mut() {
+                    info!("[handle_window_resize] Recreating ANGLE surface resources...");
+                    match angle_state.0.recreate_resources(self.width, self.height) {
+                        Ok((new_angle_texture, new_shared_handle)) => {
+                            let new_game_texture: ID3D11Texture2D = unsafe {
+                                let mut opened_resource_option: Option<ID3D11Texture2D> = None;
+                                game_device
+                                .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
+                                .expect("Failed to open new shared texture on game device after resize");
+                                opened_resource_option
+                                    .expect("Opened shared resource was null after resize")
+                            };
 
-                // 1. Drop the old ANGLE state to trigger a full eglTerminate.
-                if let Some(old_state) = self.angle_state.take() {
-                    info!("[handle_window_resize] Tearing down old ANGLE instance...");
-                    drop(old_state);
+                            self.texture = new_game_texture;
+                            self.srv = create_srv(&game_device, &self.texture);
+                            self.gl_internal_linear_texture = Some(new_angle_texture);
+                            self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+                            info!(
+                                "[handle_window_resize] ANGLE surface resources recreated successfully."
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "[handle_window_resize] Failed to recreate ANGLE resources: {}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "[handle_window_resize] ANGLE state not found for OpenGL renderer during resize."
+                    );
                 }
-
-                // 2. Re-initialize ANGLE from scratch. This now creates the device internally.
-                let new_angle_state = AngleInteropState::new()
-                    .expect("Failed to create new ANGLE instance on resize");
-
-                // 3. Get the D3D device that ANGLE just created.
-                let angle_d3d_device = new_angle_state
-                    .get_d3d_device()
-                    .expect("Failed to get D3D device from new ANGLE state");
-
-                // 4. Create the new shared texture on ANGLE's device.
-                let (new_angle_texture, new_shared_handle) = create_shared_texture_and_get_handle(
-                    &angle_d3d_device,
-                    self.width,
-                    self.height,
-                )
-                .expect("Failed to create new shared texture on resize");
-
-                // 5. Open that new texture on the game's device.
-                let new_game_texture: ID3D11Texture2D = unsafe {
-                    let mut opened_resource_option: Option<ID3D11Texture2D> = None;
-                    game_device
-                        .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
-                        .expect("Failed to open new shared texture on game device after resize");
-                    opened_resource_option.expect("Opened shared resource was null after resize")
-                };
-
-                // 6. Update all overlay fields with the new, valid resources.
-                self.texture = new_game_texture;
-                self.srv = create_srv(&game_device, &self.texture);
-                self.gl_internal_linear_texture = Some(new_angle_texture);
-                self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
-
-                // 7. Store the new ANGLE state.
-                self.angle_state = Some(SendableAngleState(new_angle_state));
             }
         }
 

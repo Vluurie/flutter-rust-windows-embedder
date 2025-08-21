@@ -4,7 +4,7 @@ use crate::software_renderer::overlay::d3d::create_shared_texture_and_get_handle
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 use libloading::{Library, Symbol};
-use log::{debug, error, info};
+use log::{error, info};
 use once_cell::sync::OnceCell;
 use std::ffi::{CString, c_void};
 use std::path::{Path, PathBuf};
@@ -15,61 +15,152 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::core::Interface;
 
 // EGL and OpenGL constants used for ANGLE configuration and operation.
+
+/// Represents the platform's default display connection. Pass this to `eglGetDisplay`
+/// to get a handle to the primary display device available to the system.
 pub const EGL_DEFAULT_DISPLAY: *mut c_void = 0 as *mut c_void;
+/// A null handle for an EGL rendering context. It is used with `eglMakeCurrent`
+/// to detach the current rendering context from a thread without attaching a new one.
 pub const EGL_NO_CONTEXT: *mut c_void = 0 as *mut c_void;
+/// A null handle for an EGL display connection. Functions that return an `EGLDisplay`
+/// will return this value on failure, for instance, if the requested display is not available.
 pub const EGL_NO_DISPLAY: *mut c_void = 0 as *mut c_void;
+/// A null handle for an EGL drawing surface. Functions that create a window, pbuffer,
+/// or pixmap surface will return this value if the surface cannot be created.
 pub const EGL_NO_SURFACE: *mut c_void = 0 as *mut c_void;
+/// The boolean `true` value for EGL operations. EGL functions returning a boolean
+/// success status will return this value.
 pub const EGL_TRUE: i32 = 1;
+/// A special token used to terminate attribute lists that are passed to functions like
+/// `eglChooseConfig` and `eglCreateContext`. It signals the end of the list of key-value pairs.
 pub const EGL_NONE: i32 = 0x3038;
+/// The value returned by `eglGetError` when the most recently called EGL function
+/// completed without any errors.
 pub const EGL_SUCCESS: i32 = 0x3000;
+
+/// An attribute key used to specify or query the width of a drawing surface in pixels.
+/// Used when creating pbuffer surfaces or querying any surface's dimensions.
 pub const EGL_WIDTH: i32 = 0x3057;
+/// An attribute key used to specify or query the height of a drawing surface in pixels.
+/// Used when creating pbuffer surfaces or querying any surface's dimensions.
 pub const EGL_HEIGHT: i32 = 0x3056;
+/// An ANGLE-specific extension attribute used for operations involving Direct3D 11 textures.
 pub const EGL_D3D11_TEXTURE_ANGLE: i32 = 0x3484;
+/// An OpenGL extension token for a pixel format where color components are ordered
+/// Blue, Green, Red, and Alpha. This is a common texture format on Windows.
 pub const GL_BGRA_EXT: i32 = 0x87;
 
+/// An attribute for `eglCreateContext` that specifies the desired version of the client API.
+/// For example, setting this to `2` requests an OpenGL ES 2.x context.
 pub const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
+/// An attribute of an `EGLConfig` that specifies which types of drawing surfaces (window,
+/// pbuffer, or pixmap) can be created with it. The value is a bitmask.
 pub const EGL_SURFACE_TYPE: i32 = 0x3033;
+/// A bit for the `EGL_SURFACE_TYPE` attribute, indicating that an `EGLConfig`
+/// supports creating offscreen pixel buffer (pbuffer) surfaces.
 pub const EGL_PBUFFER_BIT: i32 = 0x0001;
+/// An attribute of an `EGLConfig` that specifies which client APIs (like OpenGL ES or OpenVG)
+/// can render to surfaces created with it. The value is a bitmask.
 pub const EGL_RENDERABLE_TYPE: i32 = 0x3040;
+/// A bit for the `EGL_RENDERABLE_TYPE` attribute, indicating that an `EGLConfig`
+/// supports rendering with the OpenGL ES 2.x API.
 pub const EGL_OPENGL_ES2_BIT: i32 = 0x0004;
+/// An attribute specifying the number of bits for the red color channel.
 pub const EGL_RED_SIZE: i32 = 0x3024;
+/// An attribute specifying the number of bits for the green color channel.
 pub const EGL_GREEN_SIZE: i32 = 0x3023;
+/// An attribute specifying the number of bits for the blue color channel.
 pub const EGL_BLUE_SIZE: i32 = 0x3022;
+/// An attribute specifying the number of bits for the alpha (transparency) channel.
 pub const EGL_ALPHA_SIZE: i32 = 0x3021;
+/// An attribute specifying the number of bits for the depth (Z-buffer).
 pub const EGL_DEPTH_SIZE: i32 = 0x3025;
+/// An attribute specifying the number of bits for the stencil buffer.
 pub const EGL_STENCIL_SIZE: i32 = 0x3026;
 
+/// A token identifying the ANGLE platform for use with `eglGetPlatformDisplay`.
 pub const EGL_PLATFORM_ANGLE_ANGLE: i32 = 0x3202;
+/// An attribute key used to select the underlying rendering backend for ANGLE
+/// (e.g., D3D11, D3D9, OpenGL).
 pub const EGL_PLATFORM_ANGLE_TYPE_ANGLE: i32 = 0x3203;
+/// A value for `EGL_PLATFORM_ANGLE_TYPE_ANGLE` that explicitly selects the
+/// Direct3D 11 rendering backend.
 pub const EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE: i32 = 0x3208;
+/// A boolean attribute that, when enabled, allows ANGLE's D3D11 backend to
+/// automatically release and reallocate its internal texture cache to save memory.
 pub const EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE: i32 = 0x320F;
+/// An experimental ANGLE attribute to control the presentation path for swap chains,
+/// allowing for optimizations like bypassing the DWM compositor.
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE: i32 = 0x33A4;
+/// A value for `EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE` that requests a fast,
+/// low-latency presentation path, often used for applications like games.
 pub const EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE: i32 = 0x33A9;
 
+// --- ANGLE Device and Texture Extensions ---
+
+/// An attribute for `eglQueryDisplayAttribEXT` that retrieves the EGL device
+/// associated with an EGL display.
 pub const EGL_DEVICE_EXT: i32 = 0x322C;
+/// An attribute for `eglQueryDeviceAttribEXT` that retrieves the underlying
+/// `ID3D11Device` pointer from an EGL device when using the D3D11 backend.
 pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
+/// A buffer type for `eglCreatePbufferFromClientBuffer` that indicates the client
+/// buffer is a Direct3D texture.
 pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
+/// An attribute to query the internal format of an EGL surface created from a
+/// client buffer, used for format verification.
 pub const EGL_TEXTURE_INTERNAL_FORMAT_ANGLE: i32 = 0x345D;
 
-// Type aliases for EGL/GL function pointers for FFI.
+/// Defines the signature for the `eglGetProcAddress` function, which is the core
+/// mechanism for dynamically resolving pointers to all other EGL and GL extension functions.
 type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *mut c_void;
+/// A type alias for the integer type used by EGL to represent boolean values,
+/// where `EGL_TRUE` (1) and `EGL_FALSE` (0) are the standard values.
 type EGLBoolean = i32;
+/// Defines the signature for `eglGetPlatformDisplay`, used to obtain an `EGLDisplay`
+/// handle for a specific platform (like ANGLE) with custom initialization attributes.
 type EglGetPlatformDisplayEXT = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
+/// Defines the signature for `eglInitialize`, which must be called to initialize the
+/// EGL implementation for a given `EGLDisplay` before other operations can be performed.
 type EglInitialize = unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> bool;
+/// Defines the signature for `eglChooseConfig`, which queries the EGL implementation
+/// for an `EGLConfig` that matches a set of specified requirements (e.g., color depth, API support).
 type EglChooseConfig =
     unsafe extern "C" fn(*mut c_void, *const i32, *mut *mut c_void, i32, *mut i32) -> bool;
+/// Defines the signature for `eglCreateContext`, which creates a rendering context
+/// for a specific client API (e.g., OpenGL ES 2) that can be used for drawing operations.
 type EglCreateContext =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
+/// Defines the signature for `eglMakeCurrent`, which binds a rendering context to the
+/// current thread and associates it with drawing and reading surfaces. This is a prerequisite
+/// for issuing any rendering commands.
 type EglMakeCurrent =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) -> i32;
+/// Defines the signature for `eglDestroyContext`, used to release all resources
+/// associated with a rendering context once it is no longer needed.
 type EglDestroyContext = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
+/// Defines the signature for `eglTerminate`, which releases all resources associated
+/// with a specific EGL display connection. This is the counterpart to `eglInitialize`.
 type EglTerminate = unsafe extern "C" fn(*mut c_void) -> bool;
+/// Defines the signature for `eglGetError`, which returns the error code for the
+/// last EGL operation that failed on the current thread, allowing for detailed error handling.
 type EglGetError = unsafe extern "C" fn() -> i32;
+/// Defines the signature for the `eglQueryDisplayAttribEXT` extension function, which
+/// retrieves specific attributes about an EGL display, such as the underlying native device.
 type EglQueryDisplayAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
+/// Defines the signature for the `eglQueryDeviceAttribEXT` extension function, which
+/// retrieves attributes about an EGL device, such as the `ID3D11Device` pointer.
 type EglQueryDeviceAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
+/// Defines the signature for `glFinish`, an OpenGL command that blocks the calling
+/// thread until all previously submitted rendering commands have been fully completed by the GPU.
 type GlFinish = unsafe extern "C" fn();
+/// Defines the signature for `eglCreatePbufferFromClientBuffer`, used to create an
+/// EGL pbuffer surface that wraps an existing native graphics resource, such as a Direct3D texture.
+/// This is a key function for GPU-level interoperability.
 type EglCreatePbufferFromClientBuffer =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
+/// Defines the signature for `eglDestroySurface`, which releases all resources
+/// associated with an EGL surface (window, pbuffer, or pixmap).
 type EglDestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
 
 ///
@@ -131,28 +222,88 @@ struct SharedEglState {
     egl_get_proc_address: EglGetProcAddress,
 }
 
+/// Manages the state of an ANGLE EGL environment for Direct3D 11 interoperability.
 ///
-/// Manages the EGL context, display, surfaces, and the ANGLE-created D3D11 device
-/// for a single Flutter overlay instance. It relies on a globally shared `SharedEglState`
-/// for the underlying library handles and function pointers.
-///
+/// This struct encapsulates all resources required to render an OpenGL ES client (like Flutter)
+/// into an offscreen Direct3D 11 texture. It orchestrates the initialization of ANGLE with a
+/// D3D11 backend, creates and manages the EGL contexts and surfaces, and provides the
+/// fundamental synchronization and interoperability needed for the host application to consume
+/// the rendered frames.
 #[derive(Debug)]
 pub struct AngleInteropState {
+    /// Function pointer to `eglMakeCurrent`, used by the engine's callbacks to activate the
+    /// appropriate context (`context` or `resource_context`) on the correct thread before
+    /// rendering or resource operations can begin.
     pub egl_make_current: EglMakeCurrent,
+
+    /// Function pointer to `eglGetError`, serving as the internal mechanism for turning
+    /// numerical EGL error codes into human-readable logs, which is crucial for debugging
+    /// the complex interop setup.
     egl_get_error: EglGetError,
+
+    /// Function pointer to `eglDestroyContext`, utilized during the `drop` process to clean up
+    /// both the main and resource contexts, ensuring no GPU resources are leaked.
     egl_destroy_context: EglDestroyContext,
+
+    /// Function pointer to `eglTerminate`, which performs the final cleanup step in the `drop`
+    /// implementation by severing the connection to the ANGLE EGL driver and releasing all
+    /// associated memory.
     egl_terminate: EglTerminate,
+
+    /// Function pointer to `eglCreateContext`, used during initialization to create the two
+    /// EGL rendering contexts managed by this state: the main `context` for rendering and
+    /// the shared `resource_context` for background asset loading.
     egl_create_context: EglCreateContext,
+
+    /// Function pointer to `glFinish`, called by the `present_callback` to create a crucial
+    /// synchronization point. It ensures that all rendering commands from the GL client
+    /// are fully executed on the GPU before the host application uses the backing D3D11 texture.
     gl_finish: GlFinish,
+
+    /// Function pointer to `eglCreatePbufferFromClientBuffer`, the most critical function
+    /// for this interoperability. It is used to create the `pbuffer_surface` by wrapping a
+    /// native D3D11 texture handle, which directs the EGL client's rendering output into a D3D object.
     egl_create_pbuffer_from_client_buffer: EglCreatePbufferFromClientBuffer,
+
+    /// Function pointer to `eglDestroySurface`, used to destroy the `pbuffer_surface` when
+    /// resources are recreated (e.g., on resize) and during final cleanup in `drop`.
     egl_destroy_surface: EglDestroySurface,
+
+    /// The handle to the ANGLE EGL implementation (`EGLDisplay`), configured specifically to
+    /// use the D3D11 backend. It is the root object for all other state managed by this struct.
     pub display: *mut c_void,
+
+    /// The main rendering context (`EGLContext`) that Flutter's raster thread will use.
+    /// All drawing commands from the Flutter engine are executed within this context.
     pub context: *mut c_void,
+
+    /// A secondary, resource-loading context (`EGLContext`) that shares its resource
+    /// namespace (textures, shaders) with the main `context`. It is intended for use on a
+    /// background thread to allow asynchronous asset compilation without stalling the renderer.
     pub resource_context: *mut c_void,
+
+    /// A handle to the underlying `ID3D11Device` that ANGLE created. This is a key
+    /// "output" of the initialization, as this device is used by the host application to create
+    /// the shared texture that this struct will render into.
     pub angle_d3d11_device: ID3D11Device,
+
+    /// The framebuffer configuration (`EGLConfig`) chosen during setup. It serves as a
+    /// blueprint that guarantees the contexts and the pbuffer surface are all compatible and
+    /// meet the necessary rendering requirements (e.g., 8-bit RGBA channels).
     config: *mut c_void,
+
+    /// The handle to the EGL pbuffer surface which acts as the "bridge" between the
+    /// GL and D3D worlds. While it is a valid `EGLSurface` for the GL client to target, its
+    /// backing store is a D3D11 texture, making the rendering results immediately available to the host.
     pub pbuffer_surface: *mut c_void,
+
+    /// A runtime safety check that stores the ID of the thread where the main `context`
+    /// was first made current. This is used to assert that the non-thread-safe context is
+    /// only ever accessed from its designated raster thread.
     main_thread_id: Option<std::thread::ThreadId>,
+
+    /// A runtime safety check for the `resource_context`. It ensures that all operations
+    /// on the resource context are confined to its designated background thread.
     resource_thread_id: Option<std::thread::ThreadId>,
 }
 
@@ -213,7 +364,6 @@ impl AngleInteropState {
                 EGL_NONE,
             ];
 
-            debug!("[ANGLE DEBUG] Getting EGL display and creating device...");
             let display = egl_get_platform_display_ext(
                 EGL_PLATFORM_ANGLE_ANGLE,
                 EGL_DEFAULT_DISPLAY,

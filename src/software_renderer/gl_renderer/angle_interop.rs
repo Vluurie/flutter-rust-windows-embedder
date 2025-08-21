@@ -4,14 +4,17 @@ use crate::software_renderer::overlay::d3d::create_shared_texture_and_get_handle
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 use libloading::{Library, Symbol};
-use log::{debug, error, info, warn};
-use once_cell::sync::Lazy;
+use log::{debug, error, info};
+use once_cell::sync::OnceCell;
 use std::ffi::{CString, c_void};
+use std::path::{Path, PathBuf};
+use std::thread::current;
 use std::{mem, ptr};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::core::Interface;
 
+// EGL and OpenGL constants used for ANGLE configuration and operation.
 pub const EGL_DEFAULT_DISPLAY: *mut c_void = 0 as *mut c_void;
 pub const EGL_NO_CONTEXT: *mut c_void = 0 as *mut c_void;
 pub const EGL_NO_DISPLAY: *mut c_void = 0 as *mut c_void;
@@ -48,6 +51,7 @@ pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
 pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
 pub const EGL_TEXTURE_INTERNAL_FORMAT_ANGLE: i32 = 0x345D;
 
+// Type aliases for EGL/GL function pointers for FFI.
 type EglGetProcAddress = unsafe extern "C" fn(*const i8) -> *mut c_void;
 type EGLBoolean = i32;
 type EglGetPlatformDisplayEXT = unsafe extern "C" fn(i32, *mut c_void, *const i32) -> *mut c_void;
@@ -64,11 +68,13 @@ type EglGetError = unsafe extern "C" fn() -> i32;
 type EglQueryDisplayAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
 type EglQueryDeviceAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize) -> bool;
 type GlFinish = unsafe extern "C" fn();
-
 type EglCreatePbufferFromClientBuffer =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void, *const i32) -> *mut c_void;
 type EglDestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
 
+///
+/// Converts a raw EGL error code into a human-readable string literal.
+///
 fn egl_error_to_string(error_code: i32) -> &'static str {
     match error_code {
         0x3000 => "EGL_SUCCESS",
@@ -89,6 +95,11 @@ fn egl_error_to_string(error_code: i32) -> &'static str {
         _ => "Unknown EGL error",
     }
 }
+
+///
+/// Retrieves the last EGL error using the provided function pointer and logs it
+/// to the error channel if an error has occurred.
+///
 fn log_egl_error(func: &str, line: u32, egl_get_error_fn: EglGetError) {
     let code = unsafe { egl_get_error_fn() };
     if code != EGL_SUCCESS {
@@ -102,51 +113,78 @@ fn log_egl_error(func: &str, line: u32, egl_get_error_fn: EglGetError) {
     }
 }
 
-#[derive(Debug)]
-pub struct AngleInteropState {
+///
+/// Global, thread-safe, lazily-initialized container for the shared EGL state.
+/// This ensures that ANGLE libraries are loaded exactly once per process.
+///
+static SHARED_EGL: OnceCell<SharedEglState> = OnceCell::new();
+
+///
+/// Holds the process-wide, shared handles to the loaded ANGLE libraries (`libEGL.dll`,
+/// `libGLESv2.dll`) and the core `eglGetProcAddress` function pointer.
+/// This struct is initialized once by `get_or_init_shared_egl` and then shared
+/// across all `AngleInteropState` instances to ensure consistency.
+///
+struct SharedEglState {
     libegl: Library,
     _libgles: Library,
+    egl_get_proc_address: EglGetProcAddress,
+}
 
+///
+/// Manages the EGL context, display, surfaces, and the ANGLE-created D3D11 device
+/// for a single Flutter overlay instance. It relies on a globally shared `SharedEglState`
+/// for the underlying library handles and function pointers.
+///
+#[derive(Debug)]
+pub struct AngleInteropState {
     pub egl_make_current: EglMakeCurrent,
     egl_get_error: EglGetError,
     egl_destroy_context: EglDestroyContext,
     egl_terminate: EglTerminate,
     egl_create_context: EglCreateContext,
     gl_finish: GlFinish,
-
     egl_create_pbuffer_from_client_buffer: EglCreatePbufferFromClientBuffer,
     egl_destroy_surface: EglDestroySurface,
-
     pub display: *mut c_void,
     pub context: *mut c_void,
     pub resource_context: *mut c_void,
     pub angle_d3d11_device: ID3D11Device,
     config: *mut c_void,
-
     pub pbuffer_surface: *mut c_void,
-
     main_thread_id: Option<std::thread::ThreadId>,
     resource_thread_id: Option<std::thread::ThreadId>,
 }
 
 impl AngleInteropState {
-    pub fn new() -> Result<Box<Self>, String> {
+    ///
+    /// Creates and initializes a new ANGLE interop context for a Flutter overlay.
+    ///
+    /// This function orchestrates the entire ANGLE setup, including obtaining the shared
+    /// EGL state, creating an EGL display, initializing EGL, querying for a D3D11
+    /// device created by ANGLE, and preparing EGL contexts and configurations.
+    ///
+    /// # Arguments
+    ///
+    /// * `engine_dir`: An optional path to the directory containing `libEGL.dll` and
+    ///   `libGLESv2.dll`. This path is only used during the very first initialization
+    ///   of the shared EGL state within the process. Subsequent calls will ignore this
+    ///   parameter and reuse the existing shared state.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing the fully initialized `AngleInteropState` on success,
+    /// or an error string on failure.
+    ///
+    pub fn new(engine_dir: Option<&Path>) -> Result<Box<Self>, String> {
         unsafe {
             info!("[AngleInterop] Initializing ANGLE and letting it create a D3D11 device...");
 
-            debug!("[ANGLE DEBUG] Loading libEGL.dll and libGLESv2.dll...");
-            let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll")
-                .map_err(|e| e.to_string())?;
-            let libgles = Library::new(r"E:\nier_dev_tools\nams-rs\target\libGLESv2.dll")
-                .map_err(|e| e.to_string())?;
+            let shared_egl = get_or_init_shared_egl(engine_dir)?;
 
-            debug!("[ANGLE DEBUG] Loading eglGetProcAddress...");
-            let egl_get_proc_address: Symbol<EglGetProcAddress> = libegl
-                .get(b"eglGetProcAddress")
-                .map_err(|e| e.to_string())?;
             let get_proc = |name: &str| -> *mut c_void {
                 let c_name = CString::new(name).unwrap();
-                egl_get_proc_address(c_name.as_ptr())
+                (shared_egl.egl_get_proc_address)(c_name.as_ptr())
             };
 
             let get_proc_assert = |name: &str| {
@@ -155,11 +193,13 @@ impl AngleInteropState {
                 ptr
             };
 
-            let egl_get_platform_display_ext: EglGetPlatformDisplayEXT =
-                mem::transmute(get_proc("eglGetPlatformDisplayEXT"));
-            if egl_get_platform_display_ext as *const c_void == ptr::null() {
+            let proc_ptr = get_proc("eglGetPlatformDisplayEXT");
+
+            if proc_ptr.is_null() {
                 return Err("eglGetPlatformDisplayEXT not available".to_string());
             }
+
+            let egl_get_platform_display_ext: EglGetPlatformDisplayEXT = mem::transmute(proc_ptr);
             let egl_initialize: EglInitialize = mem::transmute(get_proc("eglInitialize"));
             let egl_get_error: EglGetError = mem::transmute(get_proc("eglGetError"));
 
@@ -267,8 +307,6 @@ impl AngleInteropState {
 
             info!("[AngleInterop] ANGLE initialized successfully with provided device.");
             Ok(Box::new(Self {
-                libegl,
-                _libgles: libgles,
                 egl_make_current,
                 egl_get_error,
                 egl_destroy_context,
@@ -289,10 +327,17 @@ impl AngleInteropState {
         }
     }
 
+    ///
+    /// Returns a cloned handle to the D3D11 device that was created and is managed by ANGLE.
+    ///
     pub fn get_d3d_device(&self) -> Result<ID3D11Device, String> {
         Ok(self.angle_d3d11_device.clone())
     }
 
+    ///
+    /// Destroys the current EGL pbuffer surface and detaches the EGL context from the current thread.
+    /// This is typically called before recreating resources for a new size.
+    ///
     pub fn cleanup_surface_resources(&mut self) {
         unsafe {
             if self.pbuffer_surface != EGL_NO_SURFACE {
@@ -310,6 +355,20 @@ impl AngleInteropState {
         }
     }
 
+    ///
+    /// Recreates the underlying shared D3D11 texture and the associated EGL pbuffer surface.
+    /// This is necessary when the overlay is resized.
+    ///
+    /// # Arguments
+    ///
+    /// * `width`: The new width of the texture and surface.
+    /// * `height`: The new height of the texture and surface.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a tuple of the new `ID3D11Texture2D` and its `HANDLE` for
+    /// cross-device sharing, or an error string on failure.
+    ///
     pub fn recreate_resources(
         &mut self,
         width: u32,
@@ -349,6 +408,10 @@ impl AngleInteropState {
     }
 }
 
+///
+/// Handles the complete teardown of the EGL context, display, and associated resources
+/// when the `AngleInteropState` instance is dropped.
+///
 impl Drop for AngleInteropState {
     fn drop(&mut self) {
         unsafe {
@@ -371,11 +434,31 @@ impl Drop for AngleInteropState {
     }
 }
 
+///
+/// A newtype wrapper around `Box<AngleInteropState>` to mark it as `Send` and `Sync`.
+///
+/// # Safety
+///
+/// This implementation is marked `unsafe` because the underlying EGL/OpenGL contexts
+/// are not inherently thread-safe. The caller must guarantee that methods on `AngleInteropState`
+/// are only called on the correct thread (e.g., the main render thread or resource loading thread
+/// as established during context creation).
+///
 #[derive(Debug)]
 pub struct SendableAngleState(pub Box<AngleInteropState>);
 unsafe impl Send for SendableAngleState {}
 unsafe impl Sync for SendableAngleState {}
 
+///
+/// FFI callback for the Flutter engine to make the main EGL rendering context current.
+///
+/// This function is called by Flutter on its rendering thread. It also handles the
+/// lazy initialization of the main EGL context on the first call.
+///
+/// # Arguments
+///
+/// * `user_data`: A raw pointer to the `FlutterOverlay` instance associated with this engine.
+///
 extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
@@ -401,7 +484,7 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                 state.main_thread_id = Some(std::thread::current().id());
             }
 
-            if state.main_thread_id != Some(std::thread::current().id()) {
+            if state.main_thread_id != Some(current().id()) {
                 error!("FATAL: make_current_callback on wrong thread!");
                 return false;
             }
@@ -422,6 +505,16 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     }
 }
 
+///
+/// FFI callback for the Flutter engine to make the resource-loading EGL context current.
+///
+/// This function is called by Flutter on its resource loading thread. It handles the
+/// lazy initialization of the shared resource EGL context on the first call.
+///
+/// # Arguments
+///
+/// * `user_data`: A raw pointer to the `FlutterOverlay` instance associated with this engine.
+///
 extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
@@ -448,7 +541,7 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 state.resource_thread_id = Some(std::thread::current().id());
             }
 
-            if state.resource_thread_id != Some(std::thread::current().id()) {
+            if state.resource_thread_id != Some(current().id()) {
                 error!("FATAL: make_resource_current_callback on wrong thread!");
                 return false;
             }
@@ -472,6 +565,13 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
     }
 }
 
+///
+/// FFI callback for the Flutter engine to clear the current EGL context.
+///
+/// # Arguments
+///
+/// * `user_data`: A raw pointer to the `FlutterOverlay` instance associated with this engine.
+///
 extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
@@ -489,6 +589,14 @@ extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
     }
 }
 
+///
+/// FFI callback for the Flutter engine to signal that a frame should be presented.
+/// For offscreen rendering, this typically just ensures all GL commands are flushed.
+///
+/// # Arguments
+///
+/// * `user_data`: A raw pointer to the `FlutterOverlay` instance associated with this engine.
+///
 extern "C" fn present_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &*(user_data as *mut FlutterOverlay);
@@ -502,29 +610,95 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
     }
 }
 
+///
+/// FFI callback for the Flutter engine to get the framebuffer object ID.
+/// Returns 0 to indicate that Flutter should render to the default framebuffer of the current surface.
+///
 extern "C" fn fbo_callback(_user_data: *mut c_void) -> u32 {
     0
 }
 
-static EGL_GET_PROC_ADDRESS: Lazy<(Library, EglGetProcAddress)> = Lazy::new(|| unsafe {
-    let libegl = Library::new(r"E:\nier_dev_tools\nams-rs\target\libEGL.dll")
-        .expect("Failed to load libEGL.dll for gl_proc_resolver_callback");
-
-    let egl_get_proc_address_symbol: Symbol<EglGetProcAddress> = libegl
-        .get(b"eglGetProcAddress")
-        .expect("Failed to find eglGetProcAddress in libEGL.dll");
-
-    let egl_get_proc_address_fn: EglGetProcAddress = mem::transmute(egl_get_proc_address_symbol);
-
-    (libegl, egl_get_proc_address_fn)
-});
-
+///
+/// FFI callback for the Flutter engine to resolve GL/EGL function pointers.
+///
+/// This function is the central resolver for the engine. It queries the globally shared
+/// `eglGetProcAddress` function, which was loaded when the first `AngleInteropState`
+/// was initialized. The `user_data` parameter is not used by the Flutter engine for this callback.
+///
 extern "C" fn gl_proc_resolver_callback(_user_data: *mut c_void, proc: *const i8) -> *mut c_void {
-    let (_lib, get_proc_fn) = &*EGL_GET_PROC_ADDRESS;
-
-    unsafe { get_proc_fn(proc) }
+    if let Some(shared_egl) = SHARED_EGL.get() {
+        unsafe { (shared_egl.egl_get_proc_address)(proc) }
+    } else {
+        error!("[gl_proc_resolver] SHARED_EGL was not initialized before use!");
+        ptr::null_mut()
+    }
 }
 
+///
+/// Retrieves the singleton `SharedEglState`, initializing it if necessary.
+///
+/// On the first call within the process, this function uses the provided `engine_dir`
+/// to load `libEGL.dll` and `libGLESv2.dll` and caches the library handles and the
+/// `eglGetProcAddress` function pointer. On all subsequent calls, it returns the
+/// already-initialized state and ignores the `engine_dir` parameter.
+///
+/// # Arguments
+///
+/// * `engine_dir`: An optional path to the directory containing ANGLE libraries. Only used on the first call.
+///
+/// # Returns
+///
+/// A `Result` containing a static reference to the `SharedEglState` on success,
+/// or an error string on failure.
+///
+fn get_or_init_shared_egl(engine_dir: Option<&Path>) -> Result<&'static SharedEglState, String> {
+    SHARED_EGL.get_or_try_init(|| {
+        let libegl_path = engine_dir
+            .map(|d| d.join("libEGL.dll"))
+            .unwrap_or_else(|| PathBuf::from("libEGL.dll"));
+        let libgles_path = engine_dir
+            .map(|d| d.join("libGLESv2.dll"))
+            .unwrap_or_else(|| PathBuf::from("libGLESv2.dll"));
+
+        info!(
+            "[SharedEGL] Initializing for the first time with paths: {:?}, {:?}",
+            libegl_path, libgles_path
+        );
+
+        let libegl = unsafe {
+            Library::new(&libegl_path)
+                .map_err(|e| format!("Failed to load libEGL.dll from {:?}: {}", libegl_path, e))
+        }?;
+        let libgles = unsafe {
+            Library::new(&libgles_path).map_err(|e| {
+                format!(
+                    "Failed to load libGLESv2.dll from {:?}: {}",
+                    libgles_path, e
+                )
+            })
+        }?;
+
+        let egl_get_proc_address_symbol: Symbol<EglGetProcAddress> =
+            unsafe { libegl.get(b"eglGetProcAddress") }.map_err(|e| e.to_string())?;
+
+        let egl_get_proc_address = *egl_get_proc_address_symbol;
+
+        Ok(SharedEglState {
+            libegl,
+            _libgles: libgles,
+            egl_get_proc_address,
+        })
+    })
+}
+
+///
+/// Constructs the `FlutterRendererConfig` struct required by the Flutter Engine
+/// for an OpenGL-based renderer.
+///
+/// This function populates the configuration struct with the necessary C-ABI compatible
+/// callback functions that bridge the engine's rendering lifecycle events with the
+/// custom ANGLE implementation.
+///
 pub fn build_opengl_renderer_config() -> embedder::FlutterRendererConfig {
     embedder::FlutterRendererConfig {
         type_: embedder::FlutterRendererType_kOpenGL,

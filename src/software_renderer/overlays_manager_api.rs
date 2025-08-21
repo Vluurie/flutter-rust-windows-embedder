@@ -640,25 +640,27 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Executes the per-frame rendering logic for all overlays.
-    /// This function should be called once per frame from the host application's render loop.
-    pub fn run_flutter_tick(&self) {
-        // First, request a frame from all visible overlays to start the rendering process.
+    /// Schedules a new frame request for all visible Flutter overlays.
+    /// This should be called at the beginning of a frame or end of the previous one
+    /// to give Flutter maximum time to render.
+    pub fn schedule_flutter_frames(&self) {
         if let Ok(manager) = self.manager.lock() {
             for id in &manager.overlay_order {
                 if let Some(overlay) = manager.active_instances.get(id) {
-                    if !overlay.is_visible() {
-                        continue;
+                    if overlay.is_visible() {
+                        // This just tells the engine to start working on a new frame.
+                        overlay.request_frame().ok();
                     }
-                    overlay.request_frame().ok();
                 }
             }
         } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for tick preparation.");
-            return;
+            error!("[OverlayManagerHandle] Failed to lock manager for schedule_flutter_frames.");
         }
+    }
 
-        // Second, perform the tick and composite step.
+    /// Ticks and composites all visible overlays onto the screen.
+    /// This should be called late in the frame, just before Present.
+    pub fn composite_flutter_overlays(&self) {
         if let Ok(manager) = self.manager.lock() {
             let context = match manager.shared_d3d_context.clone() {
                 Some(ctx) => ctx,
@@ -678,6 +680,7 @@ impl FlutterOverlayManagerHandle {
 
                     update_interactive_widget_hover_state(overlay);
 
+                    // This draws the most recently completed frame from Flutter.
                     overlay.composite(&context, manager.screen_width, manager.screen_height, time);
                 }
             }

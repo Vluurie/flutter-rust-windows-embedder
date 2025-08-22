@@ -21,6 +21,7 @@ use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
+
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
 
@@ -336,17 +337,14 @@ impl OverlayManager {
         self.screen_width = width;
         self.screen_height = height;
 
-        let initial_x = 0;
-        let initial_y = 0;
-
         init_logging();
 
         match FlutterOverlay::create(
             identifier.to_string(),
             &device,
             swap_chain,
-            initial_x,
-            initial_y,
+            0,
+            0,
             width,
             height,
             flutter_asset_dir.clone(),
@@ -384,40 +382,6 @@ impl OverlayManager {
         if self.active_instances.contains_key(identifier) {
             self.focused_overlay_id = Some(identifier.to_string());
             self.bring_to_front(identifier);
-        }
-    }
-
-    /// Runs the per-frame logic for all active overlays.
-    fn run(&mut self) {
-        if self.active_instances.is_empty() {
-            return;
-        }
-
-        let context = match self.get_d3d_context() {
-            Some(ctx) => ctx,
-            None => return,
-        };
-
-        let time = if self.is_paused {
-            self.time_at_pause
-        } else {
-            let now = self.start_time.elapsed().as_secs_f32();
-            self.time_at_pause = now;
-            now
-        };
-
-        for id in &self.overlay_order {
-            if let Some(overlay_instance) = self.active_instances.get(id) {
-                overlay_instance.request_frame().ok();
-                update_interactive_widget_hover_state(&overlay_instance);
-                overlay_instance.composite(&context, self.screen_width, self.screen_height, time);
-            }
-        }
-
-        for overlay_instance in self.active_instances.values() {
-            if overlay_instance.is_visible() {
-                overlay_instance.tick(&context);
-            }
         }
     }
 
@@ -522,19 +486,10 @@ impl OverlayManager {
         if self.active_instances.is_empty() {
             return;
         }
-        let device = match unsafe { swap_chain.GetDevice::<ID3D11Device>() } {
-            Ok(d) => d,
-            Err(e) => {
-                error!(
-                    "[OverlayManager] Failed to get D3DDevice for resize: {:?}",
-                    e
-                );
-                return;
-            }
-        };
+
         for (id, overlay_instance) in self.active_instances.iter_mut() {
             if !overlay_instance.engine.0.is_null() {
-                overlay_instance.handle_window_resize(x_pos, y_pos, width, height, &device);
+                overlay_instance.handle_window_resize(x_pos, y_pos, width, height, &swap_chain);
             } else {
                 warn!(
                     "[OverlayManager:{}] Engine handle is null, cannot resize.",
@@ -620,24 +575,41 @@ impl OverlayManager {
 impl FlutterOverlayManagerHandle {
     /// Creates and initializes a new Flutter overlay instance and adds it to the manager.
     ///
-    /// This function is the entry point for creating a new Flutter UI surface. It handles
-    /// loading the Flutter engine, preparing rendering resources, and running the Dart
-    /// isolate. If an overlay with the same `identifier` exists, it is shut down and
-    /// replaced by the new instance.
+    /// This function is the primary entry point for creating a new Flutter UI surface. It
+    /// handles loading the Flutter engine, preparing rendering resources, and running the
+    /// Dart isolate. If an overlay with the same `identifier` already exists, it is
+    /// shut down and replaced by the new instance.
+    ///
+    /// # Renderer Selection
+    ///
+    /// This function automatically determines the best available renderer. It will first
+    /// attempt to initialize a hardware-accelerated **OpenGL** renderer via ANGLE.
+    ///
+    /// If OpenGL initialization fails for any reason (e.g., `libEGL.dll` or `libGLESv2.dll`
+    /// are not found, or a graphics driver issue occurs), it will log an error and
+    /// automatically fall back to a **Software** renderer. This ensures that the overlay
+    /// can be displayed even on systems without proper OpenGL support.
     ///
     /// # Arguments
+    ///
     /// * `swap_chain`: A reference to the host application's `IDXGISwapChain`.
-    /// * `flutter_asset_build_dir`: The file path to the Flutter project's assets directory,
-    ///   which is `Debug or Release` in the Flutter app's build output of windows or others..
-    ///   The Debug or Release dir needs to contain the flutter_engine.dll/lib JIT or AOT build since it get's loaded dynamically.
-    /// * `identifier`: A unique string like "flutter_{any name}" that identifies this overlay instance for all
-    ///   subsequent API calls.
+    /// * `flutter_asset_build_dir`: Path to the Flutter application's build output
+    ///   directory (e.g., `build/windows/runner/Release`). This directory must contain
+    ///   the necessary Flutter assets (`flutter_assets`), `icudtl.dat`, the compiled
+    ///   Dart code, and the `flutter_engine.dll`.
+    ///   - For **OpenGL** support, this directory must also contain `libEGL.dll` and `libGLESv2.dll`.
+    /// * `identifier`: A unique string that identifies this overlay instance for all
+    ///   subsequent API calls (e.g., "main_menu_ui").
     /// * `dart_args`: Optional. A vector of string arguments for the Dart `main()` function.
-    /// * `engine_args`: Optional. A vector of command-line switches for the Flutter Engine used in Debug JIT.
+    /// * `engine_args`: Optional. A vector of command-line switches for the Flutter Engine,
+    ///   typically used in debug builds.
     ///
     /// # Returns
-    /// Returns `true` if the overlay was initialized successfully. Returns `false` if an
-    /// error occurred, which will be logged internally.
+    ///
+    /// Returns `true` if the overlay was initialized successfully using either the OpenGL
+    /// or Software renderer. Returns `false` if a critical error occurred and initialization
+    /// failed completely. Errors are logged internally.
+    ///
     pub fn init_instance(
         &self,
         swap_chain: &IDXGISwapChain,
@@ -660,13 +632,63 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Executes the per-frame rendering logic for all overlays.
-    /// This function should be called once per frame from the host application's render loop.
+    /// Tick and composite all visible overlays.
     pub fn run_flutter_tick(&self) {
-        if let Ok(mut manager) = self.manager.lock() {
-            manager.run();
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for run_flutter_tick.");
+        if let Ok(manager) = self.manager.lock() {
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                let time = manager.start_time.elapsed().as_secs_f32();
+
+                for id in &manager.overlay_order {
+                    if let Some(overlay) = manager.active_instances.get(id) {
+                        if overlay.is_visible() {
+                            overlay.tick(&context);
+                            update_interactive_widget_hover_state(overlay);
+                            overlay.composite(
+                                &context,
+                                manager.screen_width,
+                                manager.screen_height,
+                                time,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ticks all overlays to update their texture content for the current frame.
+    /// This should be called before any state changes or drawing.
+    pub fn tick_overlays(&self) {
+        if let Ok(manager) = self.manager.lock() {
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                for overlay in manager.active_instances.values() {
+                    if overlay.is_visible() {
+                        overlay.tick(&context);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Composites (draws) all overlays. This should be called after `tick_overlays`.
+    pub fn composite_overlays(&self) {
+        if let Ok(manager) = self.manager.lock() {
+            if let Some(context) = manager.shared_d3d_context.clone() {
+                let time = manager.start_time.elapsed().as_secs_f32();
+                for id in &manager.overlay_order {
+                    if let Some(overlay) = manager.active_instances.get(id) {
+                        if overlay.is_visible() {
+                            update_interactive_widget_hover_state(overlay);
+                            overlay.composite(
+                                &context,
+                                manager.screen_width,
+                                manager.screen_height,
+                                time,
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 

@@ -3,11 +3,11 @@ use crate::bindings::embedder::{
 };
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
-use crate::software_renderer::overlay::init as internal_embedder_init;
+use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+use crate::software_renderer::overlay::overlay_impl::{FlutterOverlay, SendableHandle};
 use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
@@ -16,12 +16,18 @@ use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
+    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RendererType {
+    Software,
+    OpenGL,
+}
 #[derive(Debug)]
 pub enum FlutterEmbedderError {
     InitializationFailed(String),
@@ -116,25 +122,89 @@ impl FlutterOverlay {
         self.engine.0
     }
 
-    /// Handles resizing of the overlay. Updates dimensions, GPU resources,
-    /// and informs the Flutter engine.
     pub fn handle_window_resize(
         &mut self,
         new_x: i32,
         new_y: i32,
         new_width: u32,
         new_height: u32,
-        device: &ID3D11Device,
+        swap_chain: &IDXGISwapChain,
     ) {
-        if self.width == new_width && self.height == new_height {}
+        if self.width == new_width
+            && self.height == new_height
+            && self.x == new_x
+            && self.y == new_y
+        {
+            return;
+        }
+
+        info!(
+            "[handle_window_resize] Resizing overlay '{}' to {}x{}",
+            self.name, new_width, new_height
+        );
+
         self.width = new_width;
         self.height = new_height;
         self.x = new_x;
         self.y = new_y;
-        self.texture = create_texture(device, self.width, self.height);
-        self.srv = create_srv(device, &self.texture);
-        let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
-        self.pixel_buffer.resize(new_buffer_size, 0);
+
+        let game_device = match unsafe { swap_chain.GetDevice::<ID3D11Device>() } {
+            Ok(d) => d,
+            Err(e) => {
+                error!(
+                    "[handle_window_resize] Failed to get device from swap chain: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+        match self.renderer_type {
+            RendererType::Software => {
+                if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
+                    self.texture = create_texture(&game_device, self.width, self.height);
+                    self.srv = create_srv(&game_device, &self.texture);
+                    let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
+                    pixel_buffer.resize(new_buffer_size, 0);
+                }
+            }
+            RendererType::OpenGL => {
+                if let Some(angle_state) = self.angle_state.as_mut() {
+                    info!("[handle_window_resize] Recreating ANGLE surface resources...");
+                    match angle_state.0.recreate_resources(self.width, self.height) {
+                        Ok((new_angle_texture, new_shared_handle)) => {
+                            let new_game_texture: ID3D11Texture2D = unsafe {
+                                let mut opened_resource_option: Option<ID3D11Texture2D> = None;
+                                game_device
+                                .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
+                                .expect("Failed to open new shared texture on game device after resize");
+                                opened_resource_option
+                                    .expect("Opened shared resource was null after resize")
+                            };
+
+                            self.texture = new_game_texture;
+                            self.srv = create_srv(&game_device, &self.texture);
+                            self.gl_internal_linear_texture = Some(new_angle_texture);
+                            self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+                            info!(
+                                "[handle_window_resize] ANGLE surface resources recreated successfully."
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "[handle_window_resize] Failed to recreate ANGLE resources: {}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "[handle_window_resize] ANGLE state not found for OpenGL renderer during resize."
+                    );
+                }
+            }
+        }
+
         if !self.engine.0.is_null() {
             update_flutter_window_metrics(
                 self.engine.0,
@@ -153,9 +223,53 @@ impl FlutterOverlay {
         start_task_runner(self);
     }
 
-    /// Performs per-frame updates, primarily uploading the pixel buffer to the GPU texture.
+    /// Performs per-frame updates, preparing the GPU texture with the latest Flutter content.
+    /// - For `Software` mode, it uploads pixel data from the CPU.
+    /// - For `OpenGL` mode, it copies the frame from the shared ANGLE texture.
     pub fn tick(&self, context: &ID3D11DeviceContext) {
-        tick(self, context);
+        if !self.visible || self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        match self.renderer_type {
+            RendererType::Software => {
+                tick(self, context);
+            }
+            RendererType::OpenGL => {
+                if let Some(angle_texture) = &self.angle_shared_texture {
+                    unsafe {
+                        context.CopyResource(&self.texture, angle_texture);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Composites (draws) the overlay's texture onto the screen.
+    /// This function ONLY draws. It assumes `tick()` has already been called.
+    pub fn composite(
+        &self,
+        context: &ID3D11DeviceContext,
+        screen_width: u32,
+        screen_height: u32,
+        time: f32,
+    ) {
+        if !self.visible || self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        self.compositor.render_texture(
+            context,
+            &self.srv,
+            &self.effect_config,
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            screen_width as f32,
+            screen_height as f32,
+            time,
+        );
     }
 
     /// Processes a Windows keyboard message for this overlay.
@@ -209,36 +323,6 @@ impl FlutterOverlay {
                 Err(FlutterEmbedderError::OperationFailed(err_msg))
             }
         }
-    }
-
-    /// Composites (renders) the Flutter overlay onto the Direct3D device context.
-    ///
-    /// Renders the overlay's content to the screen. Rendering only occurs
-    /// if the overlay is **visible** and has **valid dimensions** (width and height are
-    /// greater than zero).
-    pub fn composite(
-        &self,
-        context: &ID3D11DeviceContext,
-        screen_width: u32,
-        screen_height: u32,
-        time: f32,
-    ) {
-        if !self.visible || self.width == 0 || self.height == 0 {
-            return;
-        }
-
-        self.compositor.render_texture(
-            context,
-            &self.srv,
-            &self.effect_config,
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            screen_width as f32,
-            screen_height as f32,
-            time,
-        );
     }
 
     /// Retrieves the D3D11 Shader Resource View (SRV) for this overlay's texture.

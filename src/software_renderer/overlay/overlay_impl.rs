@@ -9,15 +9,17 @@ use std::{
 };
 
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HANDLE, HWND},
     Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
 use crate::{
     bindings::embedder::{self, FlutterEngine},
     software_renderer::{
+        api::RendererType,
         d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
+        gl_renderer::angle_interop::SendableAngleState,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
         ticker::task_scheduler::{
             SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
@@ -25,6 +27,9 @@ use crate::{
         },
     },
 };
+
+// TODO: We need the angel here as new param
+// TODO: All must be sendable send sync always if raw type for angle
 
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
@@ -57,6 +62,11 @@ pub struct SendHwnd(pub HWND);
 unsafe impl Send for SendHwnd {}
 unsafe impl Sync for SendHwnd {}
 
+#[derive(Clone, Copy, Debug)]
+pub struct SendableHandle(pub HANDLE);
+unsafe impl Send for SendableHandle {}
+unsafe impl Sync for SendableHandle {}
+
 /// Represents a single Flutter overlay instance, managing its engine, rendering,
 /// and various UI-related states.
 /// Initialization is handled by `init_overlay`, which is responsible for correctly
@@ -72,6 +82,11 @@ pub struct FlutterOverlay {
     /// Used by shaders to sample from the overlay texture during rendering.
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
+
+    pub(crate) angle_state: Option<SendableAngleState>,
+    pub(crate) d3d11_shared_handle: Option<SendableHandle>,
+    pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
+    pub angle_shared_texture: Option<ID3D11Texture2D>,
 
     /// Current width of the overlay in pixels.
     /// Can be read by other parts of the crate for layout purposes.
@@ -107,6 +122,7 @@ pub struct FlutterOverlay {
     /// A user-defined name for this overlay instance. Useful for identification,
     /// logging, or debugging purposes by any part of the crate.
     pub name: String,
+    pub renderer_type: RendererType,
 
     /// Atomic boolean indicating if the mouse cursor is currently hovering over an
     /// interactive widget (e.g., button, text field) within this overlay's semantics tree.
@@ -129,7 +145,7 @@ pub struct FlutterOverlay {
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
     /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
-    pub(crate) pixel_buffer: Vec<u8>,
+    pub(crate) pixel_buffer: Option<Vec<u8>>,
 
     /// The current cursor style requested by Flutter. Managed internally by `handle_set_cursor`
     /// and platform message callbacks.
@@ -183,6 +199,7 @@ impl Clone for FlutterOverlay {
             pixel_buffer: self.pixel_buffer.clone(),
             width: self.width,
             height: self.height,
+            renderer_type: self.renderer_type.clone(),
             visible: true,
             effect_config: self.effect_config,
             x: self.x,
@@ -190,6 +207,15 @@ impl Clone for FlutterOverlay {
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             compositor: self.compositor.clone(),
+            angle_state: None,
+            d3d11_shared_handle: None,
+            gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
+            angle_shared_texture: self.angle_shared_texture.clone(),
+
+            _platform_runner_context: None,
+            _platform_runner_description: None,
+            _custom_task_runners_struct: None,
+            task_runner_thread: None,
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
             dart_send_port: self.dart_send_port.clone(),
@@ -198,12 +224,9 @@ impl Clone for FlutterOverlay {
             _engine_argv_cs: self._engine_argv_cs.clone(),
             _dart_argv_cs: self._dart_argv_cs.clone(),
             _aot_c: self._aot_c.clone(),
-            _platform_runner_context: self._platform_runner_context.clone(),
-            _platform_runner_description: self._platform_runner_description.clone(),
-            _custom_task_runners_struct: self._custom_task_runners_struct.clone(),
             engine_dll: self.engine_dll.clone(),
             task_queue_state: self.task_queue_state.clone(),
-            task_runner_thread: None,
+
             text_input_state: self.text_input_state.clone(),
             mouse_buttons_state: AtomicI32::new(0),
             is_mouse_added: AtomicBool::new(false),

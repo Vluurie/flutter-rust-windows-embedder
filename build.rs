@@ -1,4 +1,3 @@
-
 #[allow(unused_imports)]
 use std::{env, path::PathBuf};
 
@@ -11,12 +10,15 @@ mod regenerate_assets {
     use std::{env, path::PathBuf};
 
     pub fn run() {
-        println!("cargo:warning=Feature 'regenerate-bindings' is active. Regenerating all assets...");
+        println!(
+            "cargo:warning=Feature 'regenerate-bindings' is active. Regenerating all assets..."
+        );
 
         let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let bindings_out_path = manifest_dir.join("src").join("bindings");
         if !bindings_out_path.exists() {
-            std::fs::create_dir_all(&bindings_out_path).expect("Could not create bindings directory");
+            std::fs::create_dir_all(&bindings_out_path)
+                .expect("Could not create bindings directory");
         }
 
         let keyboard_map_out_path = bindings_out_path.join("keyboard_layout.rs");
@@ -24,7 +26,10 @@ mod regenerate_assets {
             eprintln!("Error generating keyboard map: {}", e);
             std::process::exit(1);
         }
-        println!("cargo:warning=Keyboard map has been regenerated into {}.", keyboard_map_out_path.display());
+        println!(
+            "cargo:warning=Keyboard map has been regenerated into {}.",
+            keyboard_map_out_path.display()
+        );
 
         let artifacts_dir = manifest_dir.join("flutter_artifacts");
         let include_dir = artifacts_dir.join("include");
@@ -33,7 +38,7 @@ mod regenerate_assets {
 
         assert!(header_windows.is_file(), "flutter_windows.h not found");
         assert!(header_embedder.is_file(), "flutter_embedder.h not found");
-        
+
         let bindings_windows = bindgen::Builder::default()
             .header(header_windows.to_str().unwrap())
             .clang_arg(format!("-I{}", include_dir.display()))
@@ -115,13 +120,21 @@ mod regenerate_assets {
             .allowlist_type("FlutterEngineDartPort")
             .allowlist_type("FlutterEngineDartBuffer")
             .allowlist_type("FlutterEngineDartObjectType")
+            .allowlist_type("FlutterOpenGLRendererConfig")
+            .allowlist_type("FlutterOpenGLTexture")
+            .allowlist_type("FlutterOpenGLFramebuffer")
+            .allowlist_type("FlutterOpenGLSurface")
+            .allowlist_type("FlutterOpenGLTargetType")
+            .allowlist_type("BoolCallback")
+            .allowlist_type("UIntCallback")
+            .allowlist_type("ProcResolver")
             .generate()
             .expect("Unable to generate flutter_embedder bindings");
 
         bindings_embedder
             .write_to_file(bindings_out_path.join("flutter_embedder_bindings.rs"))
             .expect("Couldn't write flutter_embedder bindings");
-        
+
         println!("cargo:warning=Bindings have been regenerated in src/bindings/.");
 
         println!("cargo:rerun-if-changed=build.rs");

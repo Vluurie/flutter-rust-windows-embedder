@@ -36,16 +36,20 @@ use crate::software_renderer::ticker::task_scheduler::{
 use log::{error, info};
 use std::collections::HashMap;
 use std::ffi::c_char;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
-use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
+use windows::Win32::Graphics::Direct3D11::{
+    ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
+};
 use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
 
 const FLUTTER_ENGINE_VERSION: usize = 1;
+///  global flag tracks if a hardware-accelerated (OpenGL) context has already been created. Currently support only 1 overlay with it.
+/// other fallback to software renderer
+static OPENGL_CONTEXT_CREATED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn init_overlay(
     name: String,
@@ -100,77 +104,69 @@ pub(crate) fn init_overlay(
             angle_shared_texture_for_struct,
             final_renderer_type,
         ) = {
-            info!("[InitOverlay] Attempting to initialize with OpenGL renderer...");
+            if OPENGL_CONTEXT_CREATED
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let opengl_init_result =
+                    AngleInteropState::new(data_dir.as_deref()).and_then(|mut state| {
+                        state
+                            .recreate_resources(width, height)
+                            .map(|(texture, handle)| (state, texture, handle))
+                    });
 
-            let opengl_init_result =
-                AngleInteropState::new(data_dir.as_deref()).and_then(|mut state| {
-                    state
-                        .recreate_resources(width, height)
-                        .map(|(texture, handle)| (state, texture, handle))
-                });
+                match opengl_init_result {
+                    Ok((angle_state, angle_texture_on_angle_device, shared_handle)) => {
+                        info!(
+                            "[InitOverlay] OpenGL renderer initialized successfully for '{}'.",
+                            name
+                        );
 
-            match opengl_init_result {
-                Ok((angle_state, angle_texture_on_angle_device, shared_handle)) => {
-                    info!("[InitOverlay] OpenGL renderer initialized successfully.");
+                        let angle_texture_on_game_device: ID3D11Texture2D = {
+                            let mut opt = None;
+                            game_device
+                                .OpenSharedResource(shared_handle, &mut opt)
+                                .unwrap();
+                            opt.unwrap()
+                        };
 
-                    let angle_texture_on_game_device: ID3D11Texture2D = {
-                        let mut opt = None;
-                        game_device
-                            .OpenSharedResource(shared_handle, &mut opt)
-                            .unwrap();
-                        opt.unwrap()
-                    };
+                        let local_texture_on_game_device =
+                            create_compositing_texture(game_device, width, height);
+                        let texture = local_texture_on_game_device;
+                        let srv = create_srv(game_device, &texture);
+                        let angle_state = Some(SendableAngleState(angle_state));
+                        let rdr_cfg = build_opengl_renderer_config();
 
-                    let local_texture_on_game_device =
-                        create_compositing_texture(game_device, width, height);
-                    let texture = local_texture_on_game_device;
-                    let srv = create_srv(game_device, &texture);
-                    let angle_state = Some(SendableAngleState(angle_state));
-                    let rdr_cfg = build_opengl_renderer_config();
-
-                    (
-                        rdr_cfg,
-                        texture,
-                        srv,
-                        Some(angle_texture_on_angle_device),
-                        None,
-                        angle_state,
-                        Some(SendableHandle(shared_handle)),
-                        Some(angle_texture_on_game_device),
-                        RendererType::OpenGL,
-                    )
+                        (
+                            rdr_cfg,
+                            texture,
+                            srv,
+                            Some(angle_texture_on_angle_device),
+                            None,
+                            angle_state,
+                            Some(SendableHandle(shared_handle)),
+                            Some(angle_texture_on_game_device),
+                            RendererType::OpenGL,
+                        )
+                    }
+                    Err(e) => {
+                        // If even the first attempt fails, reset the flag and fall back.
+                        error!(
+                            "OpenGL initialization failed for overlay: {}. Falling back to software.",
+                            e
+                        );
+                        OPENGL_CONTEXT_CREATED.store(false, Ordering::SeqCst);
+                        build_software_renderer_config_tuple(game_device, width, height)
+                    }
                 }
-                Err(e) => {
-                    error!(
-                        "OpenGL initialization failed: {}. Falling back to the software renderer. \
-                        TIP: For hardware acceleration, ensure 'libEGL.dll' and 'libGLESv2.dll' are placed \
-                        next to 'flutter_engine.dll' in the directory: {:?}",
-                        e,
-                        data_dir
-                            .as_deref()
-                            .unwrap_or(Path::new("<directory not specified>"))
-                    );
-
-                    let texture = create_texture(game_device, width, height);
-                    let srv = create_srv(game_device, &texture);
-                    let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
-                    let rdr_cfg = build_software_renderer_config();
-
-                    (
-                        rdr_cfg,
-                        texture,
-                        srv,
-                        None,
-                        pixel_buffer,
-                        None,
-                        None,
-                        None,
-                        RendererType::Software,
-                    )
-                }
+            } else {
+                info!(
+                    "[InitOverlay] Active OpenGL context exists. Forcing software renderer for '{}'.",
+                    name
+                );
+                build_software_renderer_config_tuple(game_device, width, height)
             }
         };
-
         let compositor = D3D11Compositor::new(device);
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
@@ -385,4 +381,37 @@ pub(crate) fn init_overlay(
         );
         overlay_box
     }
+}
+
+fn build_software_renderer_config_tuple(
+    game_device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> (
+    embedder::FlutterRendererConfig,
+    ID3D11Texture2D,
+    ID3D11ShaderResourceView,
+    Option<ID3D11Texture2D>,
+    Option<Vec<u8>>,
+    Option<SendableAngleState>,
+    Option<SendableHandle>,
+    Option<ID3D11Texture2D>,
+    RendererType,
+) {
+    let texture = create_texture(game_device, width, height);
+    let srv = create_srv(game_device, &texture);
+    let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
+    let rdr_cfg = build_software_renderer_config();
+
+    (
+        rdr_cfg,
+        texture,
+        srv,
+        None,
+        pixel_buffer,
+        None,
+        None,
+        None,
+        RendererType::Software,
+    )
 }

@@ -23,9 +23,7 @@ use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
 
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
-    PrimitiveRendererStates, Vertex3D,
-};
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
 use crate::software_renderer::d3d11_compositor::scoped_render_state::ScopedRenderState;
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
@@ -898,19 +896,26 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Queues a slice of 3D vertices to be rendered by a specific overlay instance.
+    /// Queues slices of opaque and transparent 3D vertices for rendering.
     ///
-    /// This is the primary, high-level method for pushing debug or 3D UI data
-    /// from the host application to the overlay system for rendering.
+    /// This is the primary method for pushing 3D geometry to the overlay system. It separates
+    /// vertices into two categories to allow for correct two-pass rendering of complex
+    /// transparent objects.
     ///
     /// # Arguments
     /// * `identifier`: The unique name of the target overlay. If `None`, it targets the
     ///   single active overlay, if one exists.
-    /// * `vertices`: A slice of `Vertex3D` to be rendered as a triangle list.
-    pub fn queue_3d_triangles(&self, identifier: Option<&str>, vertices: &[Vertex3D]) {
+    /// * `opaque_vertices`: A slice of `Vertex3D` that should be rendered as solid objects.
+    /// * `transparent_vertices`: A slice of `Vertex3D` that should be alpha-blended.
+    pub fn queue_3d_triangles(
+        &self,
+        identifier: Option<&str>,
+        opaque_vertices: &[Vertex3D],
+        transparent_vertices: &[Vertex3D],
+    ) {
         if let Ok(mut manager) = self.manager.lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.queue_3d_triangles(vertices);
+                overlay.queue_3d_triangles(opaque_vertices, transparent_vertices);
             }
         }
     }
@@ -943,45 +948,6 @@ impl FlutterOverlayManagerHandle {
         if let Ok(mut manager) = self.manager.lock() {
             manager.latch_all_queued_primitives();
         }
-    }
-
-    /// Retrieves the pre-configured DirectX render states required for drawing 3D primitives.
-    ///
-    /// This function solves two critical rendering issues:
-    ///
-    /// 1.  **Z-Fighting:** It provides the `depth_stencil_state`, which is configured to disable depth testing.
-    ///     This ensures the 3D highlights are always drawn on top of the game's geometry without flickering.
-    /// 2.  **State Conflicts:** It provides the `blend_state` for correct transparency. By fetching these states
-    ///     and setting them in the main `new_present` hook, we centralize state management. This prevents
-    ///     conflicts that arise when different parts of the code try to manage the same DirectX states,
-    ///     leading to a more stable and predictable render pipeline.
-    ///
-    /// ## Usage
-    /// Call this inside your `new_present` hook, right before you call `run_flutter_tick`.
-    ///
-    /// ```rust
-    /// // in dxgi_present_hook.rs
-    /// // ... inside the block where you render the overlay
-    /// if let Some(om) = get_flutter_overlay_manager_handle() {
-    ///     // Get the custom states.
-    ///     if let Some(renderer_states) = om.get_primitive_renderer_states() {
-    ///         // Apply the states to the DirectX context.
-    ///         context.OMSetBlendState(&renderer_states.blend_state, Some(&[0.0, 0.0, 0.0, 0.0]), 0xffffffff);
-    ///         context.OMSetDepthStencilState(&renderer_states.depth_stencil_state, 1);
-    ///     }
-    ///
-    ///     // Now, run the overlay tick, which will draw with these states active.
-    ///     om.run_flutter_tick(&final_matrix, Some(&clip_rect));
-    /// }
-    /// // Your hook's existing state restoration will clean up automatically.
-    /// ```
-    pub fn get_primitive_renderer_states(&self) -> Option<PrimitiveRendererStates> {
-        let manager = self.manager.lock().ok()?;
-        let overlay = manager.active_instances.values().next()?;
-        Some(PrimitiveRendererStates {
-            blend_state: overlay.primitive_renderer.blend_state.clone(),
-            depth_stencil_state: overlay.primitive_renderer.depth_stencil_state.clone(),
-        })
     }
 
     /// Resumes all shader animations for all overlays.

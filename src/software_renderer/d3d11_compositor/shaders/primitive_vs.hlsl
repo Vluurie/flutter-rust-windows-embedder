@@ -1,6 +1,6 @@
 cbuffer SceneConstants : register(b0)
 {
-    matrix viewProjection;
+     matrix viewProjection;
 };
 
 struct VS_INPUT
@@ -18,7 +18,7 @@ struct PS_INPUT
 PS_INPUT VSMain(VS_INPUT input)
 {
     PS_INPUT output;
-    output.position = mul(viewProjection, float4(input.position, 1.0f));
+    output.position = mul(float4(input.position, 1.0f), viewProjection);
     output.color = input.color;
     return output;
 }

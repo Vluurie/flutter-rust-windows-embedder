@@ -246,13 +246,14 @@ impl FlutterOverlay {
         }
     }
 
-    /// Accepts a slice of 3D vertices from the host application (the game)
-    /// and queues them for rendering by the Primitive3DRenderer.
-    ///
-    /// This is the primary way to draw debug shapes or other 3D elements
-    /// through the overlay system.
-    pub fn queue_3d_triangles(&mut self, vertices: &[Vertex3D]) {
-        self.primitive_renderer.submit_triangles(vertices);
+    /// Accepts slices of 3D vertices and queues them for rendering.
+    pub fn queue_3d_triangles(
+        &mut self,
+        opaque_vertices: &[Vertex3D],
+        transparent_vertices: &[Vertex3D],
+    ) {
+        self.primitive_renderer
+            .submit_triangles(opaque_vertices, transparent_vertices);
     }
 
     pub fn latch_queued_primitives(&mut self) {

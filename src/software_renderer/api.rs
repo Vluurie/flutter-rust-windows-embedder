@@ -252,7 +252,11 @@ impl FlutterOverlay {
     /// This is the primary way to draw debug shapes or other 3D elements
     /// through the overlay system.
     pub fn queue_3d_triangles(&mut self, vertices: &[Vertex3D]) {
-        self.primitive_renderer.queue_triangles(vertices);
+        self.primitive_renderer.submit_triangles(vertices);
+    }
+
+    pub fn latch_queued_primitives(&mut self) {
+        self.primitive_renderer.latch_buffers();
     }
 
     /// Processes a Windows keyboard message for this overlay.

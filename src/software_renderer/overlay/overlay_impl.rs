@@ -28,9 +28,6 @@ use crate::{
     },
 };
 
-// TODO: We need the angel here as new param
-// TODO: All must be sendable send sync always if raw type for angle
-
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
 
@@ -82,11 +79,6 @@ pub struct FlutterOverlay {
     /// Used by shaders to sample from the overlay texture during rendering.
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
-
-    pub(crate) angle_state: Option<SendableAngleState>,
-    pub(crate) d3d11_shared_handle: Option<SendableHandle>,
-    pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
-    pub angle_shared_texture: Option<ID3D11Texture2D>,
 
     /// Current width of the overlay in pixels.
     /// Can be read by other parts of the crate for layout purposes.
@@ -142,6 +134,17 @@ pub struct FlutterOverlay {
     /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
     pub compositor: D3D11Compositor,
 
+    // Crate-Internal API - Fields used within the embedder logic.
+    // Not intended for modification by the end-user.
+    //
+    /// A map of channel names to callback functions for handling incoming platform messages from Dart.
+    /// This is populated via the public `register_channel_handler` method.
+    pub(crate) message_handlers:
+        Arc<Mutex<HashMap<String, Box<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>>>,
+
+    /// A reusable buffer for crafting platform channel responses, avoiding allocations on the hot path.
+    pub(crate) response_buffer: Arc<Mutex<Vec<u8>>>,
+    /// An atomically accessible pointer to the Flutter Engine. Used for safe access from multiple threads.
     pub(crate) engine_atomic_ptr: Arc<AtomicPtr<embedder::_FlutterEngine>>,
 
     /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
@@ -179,8 +182,19 @@ pub struct FlutterOverlay {
     /// The Dart port used for sending messages directly to the Dart isolate.
     pub(crate) dart_send_port: Arc<AtomicI64>,
 
-    // --- Crate-internal fields for FFI setup, primarily managed by `init_overlay`
-    // and `build_project_args_and_strings`. These are implementation details.
+    // --- ANGLE (OpenGL) specific fields ---
+    /// Manages the state for ANGLE's EGL context and surfaces for OpenGL rendering.
+    pub(crate) angle_state: Option<SendableAngleState>,
+    /// The shared handle for the D3D11 texture created by ANGLE.
+    pub(crate) d3d11_shared_handle: Option<SendableHandle>,
+    /// The internal texture that Flutter (via ANGLE) renders into.
+    pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
+    /// A D3D11 texture on the host device that shares the resource created by ANGLE.
+    pub(crate) angle_shared_texture: Option<ID3D11Texture2D>,
+
+    // --- FFI argument storage ---
+    // These fields hold C-compatible strings and argument structures for the lifetime
+    // of the engine, as the engine may read from this memory at any time.
     pub(crate) _assets_c: CString,
     pub(crate) _icu_c: CString,
     pub(crate) _engine_argv_cs: Vec<CString>,
@@ -192,52 +206,80 @@ pub struct FlutterOverlay {
 }
 
 impl Clone for FlutterOverlay {
+    /// Clones the `FlutterOverlay`.
+    ///
+    /// # Warning
+    ///
+    /// This is a **shallow clone**. It creates a new `FlutterOverlay` struct but shares
+    /// ownership of the underlying engine, task queues, and other thread-safe resources (`Arc<T>`).
+    /// It does **not** create a new, independent Flutter instance.
+    ///
+    /// This is primarily useful for passing overlay state information around without transferring
+    /// ownership. Critical resources like the task runner thread handle are **not** cloned
+    /// and are set to `None`.
     fn clone(&self) -> Self {
         Self {
+            // --- Shallow copy of shared resources ---
             engine: self.engine,
             engine_atomic_ptr: self.engine_atomic_ptr.clone(),
-            pixel_buffer: self.pixel_buffer.clone(),
-            width: self.width,
-            height: self.height,
-            renderer_type: self.renderer_type.clone(),
-            visible: true,
-            effect_config: self.effect_config,
-            x: self.x,
-            y: self.y,
             texture: self.texture.clone(),
             srv: self.srv.clone(),
             compositor: self.compositor.clone(),
-            angle_state: None,
-            d3d11_shared_handle: None,
-            gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
-            angle_shared_texture: self.angle_shared_texture.clone(),
-
-            _platform_runner_context: None,
-            _platform_runner_description: None,
-            _custom_task_runners_struct: None,
-            task_runner_thread: None,
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
             dart_send_port: self.dart_send_port.clone(),
+            engine_dll: self.engine_dll.clone(),
+            task_queue_state: self.task_queue_state.clone(),
+            text_input_state: self.text_input_state.clone(),
+            semantics_tree_data: self.semantics_tree_data.clone(),
+            message_handlers: self.message_handlers.clone(),
+            response_buffer: self.response_buffer.clone(),
+
+            width: self.width,
+            height: self.height,
+            renderer_type: self.renderer_type.clone(),
+            visible: self.visible,
+            effect_config: self.effect_config,
+            x: self.x,
+            y: self.y,
+            windows_handler: self.windows_handler,
+            is_debug_build: self.is_debug_build,
+            pixel_buffer: self.pixel_buffer.clone(),
+
+            mouse_buttons_state: AtomicI32::new(
+                self.mouse_buttons_state
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            is_mouse_added: AtomicBool::new(
+                self.is_mouse_added
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            is_interactive_widget_hovered: AtomicBool::new(
+                self.is_interactive_widget_hovered
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+
+            task_runner_thread: None,
+            _platform_runner_context: None,
+            _platform_runner_description: None,
+            _custom_task_runners_struct: None,
+            angle_state: None,
+            d3d11_shared_handle: None,
+
             _assets_c: self._assets_c.clone(),
             _icu_c: self._icu_c.clone(),
             _engine_argv_cs: self._engine_argv_cs.clone(),
             _dart_argv_cs: self._dart_argv_cs.clone(),
             _aot_c: self._aot_c.clone(),
-            engine_dll: self.engine_dll.clone(),
-            task_queue_state: self.task_queue_state.clone(),
 
-            text_input_state: self.text_input_state.clone(),
-            mouse_buttons_state: AtomicI32::new(0),
-            is_mouse_added: AtomicBool::new(false),
-            semantics_tree_data: self.semantics_tree_data.clone(),
-            is_interactive_widget_hovered: AtomicBool::new(false),
-            windows_handler: self.windows_handler,
-            is_debug_build: self.is_debug_build,
+            gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
+            angle_shared_texture: self.angle_shared_texture.clone(),
         }
     }
 }
 
+/// A C-compatible callback function that the Flutter engine invokes when a new frame
+/// is ready for presentation in **software rendering mode**.
 pub(crate) extern "C" fn on_present(
     user_data: *mut std::ffi::c_void,
     allocation: *const std::ffi::c_void,

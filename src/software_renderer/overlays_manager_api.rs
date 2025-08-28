@@ -43,18 +43,6 @@ pub fn get_flutter_overlay_manager_handle() -> Option<FlutterOverlayManagerHandl
 static OVERLAY_MANAGER: Once = Once::new();
 static mut GLOBAL_OVERLAY_MANAGER: Option<Mutex<OverlayManager>> = None;
 
-pub trait FlutterPainter {
-    /// Paint the given Flutter texture with the main scene.
-    fn paint_texture(
-        &mut self,
-        texture_srv: &ID3D11ShaderResourceView,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    );
-}
-
 /// Provides access to the global `OverlayManager` singleton.
 fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
     unsafe {
@@ -101,10 +89,52 @@ impl OverlayManager {
             time_at_pause: 0.0,
         }
     }
-    /// Checks if the overlay identified by `identifier` currently has keyboard focus.
-    pub fn is_focused(&self, identifier: &str) -> bool {
-        self.focused_overlay_id.as_deref() == Some(identifier)
+
+    /// Gets an immutable reference to a target overlay.
+    ///
+    /// If `identifier` is `None`, it attempts to get the single active instance.
+    fn get_instance(&self, identifier: Option<&str>) -> Result<&Box<FlutterOverlay>, String> {
+        match identifier {
+            Some(id) => self
+                .active_instances
+                .get(id)
+                .ok_or_else(|| format!("No overlay with identifier '{}' found.", id)),
+            None => {
+                if self.active_instances.len() == 1 {
+                    Ok(self.active_instances.values().next().unwrap())
+                } else if self.active_instances.is_empty() {
+                    Err("No active overlay instance found.".to_string())
+                } else {
+                    Err("Multiple overlays exist; an identifier is required.".to_string())
+                }
+            }
+        }
     }
+
+    /// Gets a mutable reference to a target overlay.
+    ///
+    /// If `identifier` is `None`, it attempts to get the single active instance.
+    fn get_instance_mut(
+        &mut self,
+        identifier: Option<&str>,
+    ) -> Result<&mut Box<FlutterOverlay>, String> {
+        match identifier {
+            Some(id) => self
+                .active_instances
+                .get_mut(id)
+                .ok_or_else(|| format!("No overlay with identifier '{}' found.", id)),
+            None => {
+                if self.active_instances.len() == 1 {
+                    Ok(self.active_instances.values_mut().next().unwrap())
+                } else if self.active_instances.is_empty() {
+                    Err("No active overlay instance found.".to_string())
+                } else {
+                    Err("Multiple overlays exist; an identifier is required.".to_string())
+                }
+            }
+        }
+    }
+
     /// Retrieves the dimensions (width, height) for all active overlays.
     ///
     /// # Returns
@@ -116,114 +146,6 @@ impl OverlayManager {
             .iter()
             .map(|(id, overlay)| (id.clone(), overlay.get_dimensions()))
             .collect()
-    }
-    /// Sets the visibility of a specific overlay instance.
-    ///
-    /// If the overlay with the given `identifier` does not exist, a warning is logged.
-    ///
-    /// # Arguments
-    ///
-    /// * `identifier` - The unique identifier of the overlay.
-    /// * `is_visible` - A boolean indicating whether the overlay should be visible (`true`)
-    ///                  or hidden (`false`).
-    pub fn set_overlay_visibility(&mut self, identifier: &str, is_visible: bool) {
-        if let Some(overlay) = self.active_instances.get_mut(identifier) {
-            overlay.set_visibility(is_visible);
-        } else {
-            warn!(
-                "[OverlayManager] Attempted to set visibility for unknown overlay '{}'.",
-                identifier
-            );
-        }
-    }
-
-    /// Registers a Dart port for a specific overlay instance.
-    pub fn register_dart_port(&self, identifier: &str, port: i64) {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.register_dart_port(port);
-        } else {
-            warn!(
-                "[OverlayManager] Attempted to register port for unknown overlay '{}'.",
-                identifier
-            );
-        }
-    }
-
-    /// Posts a boolean message to a specific overlay instance.
-    pub fn post_bool_to_overlay(
-        &self,
-        identifier: &str,
-        value: bool,
-    ) -> Result<(), FlutterEmbedderError> {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.post_bool(value)
-        } else {
-            Err(FlutterEmbedderError::InvalidHandle)
-        }
-    }
-
-    /// Posts an i64 message to a specific overlay instance.
-    pub fn post_i64_to_overlay(
-        &self,
-        identifier: &str,
-        value: i64,
-    ) -> Result<(), FlutterEmbedderError> {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.post_i64(value)
-        } else {
-            Err(FlutterEmbedderError::InvalidHandle)
-        }
-    }
-
-    /// Posts an f64 message to a specific overlay instance.
-    pub fn post_f64_to_overlay(
-        &self,
-        identifier: &str,
-        value: f64,
-    ) -> Result<(), FlutterEmbedderError> {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.post_f64(value)
-        } else {
-            Err(FlutterEmbedderError::InvalidHandle)
-        }
-    }
-
-    /// Posts a string message to a specific overlay instance.
-    pub fn post_string_to_overlay(
-        &self,
-        identifier: &str,
-        value: &str,
-    ) -> Result<(), FlutterEmbedderError> {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.post_string(value)
-        } else {
-            Err(FlutterEmbedderError::InvalidHandle)
-        }
-    }
-
-    /// Posts a byte buffer to a specific overlay instance.
-    pub fn post_buffer_to_overlay(
-        &self,
-        identifier: &str,
-        buffer: &[u8],
-    ) -> Result<(), FlutterEmbedderError> {
-        if let Some(overlay) = self.active_instances.get(identifier) {
-            overlay.post_buffer(buffer)
-        } else {
-            Err(FlutterEmbedderError::InvalidHandle)
-        }
-    }
-
-    /// Sets the screen-space position for a specific overlay.
-    pub fn set_overlay_position(&mut self, identifier: &str, x: i32, y: i32) {
-        if let Some(overlay) = self.active_instances.get_mut(identifier) {
-            overlay.set_position(x, y);
-        } else {
-            warn!(
-                "[OverlayManager] Attempted to set position for unknown overlay '{}'.",
-                identifier
-            );
-        }
     }
 
     /// Finds the topmost, visible overlay that contains the given screen coordinates.
@@ -284,7 +206,7 @@ impl OverlayManager {
         engine_args_opt: Option<Vec<String>>,
     ) -> bool {
         if self.active_instances.contains_key(identifier) {
-            self.bring_to_front(identifier);
+            self.bring_to_front(Some(identifier));
             // self.set_keyboard_focus(identifier);
             return true;
         }
@@ -369,22 +291,6 @@ impl OverlayManager {
         }
     }
 
-    /// Brings the specified overlay to the top of the Z-order.
-    pub fn bring_to_front(&mut self, identifier: &str) {
-        if self.active_instances.contains_key(identifier) {
-            self.overlay_order.retain(|id| id != identifier);
-            self.overlay_order.push(identifier.to_string());
-        }
-    }
-
-    /// Sets keyboard focus to the specified overlay and brings it to the front.
-    pub fn set_keyboard_focus(&mut self, identifier: &str) {
-        if self.active_instances.contains_key(identifier) {
-            self.focused_overlay_id = Some(identifier.to_string());
-            self.bring_to_front(identifier);
-        }
-    }
-
     /// Handles input events, routing them based on Z-order and focus.
     fn handle_input_event(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
         if self.active_instances.is_empty() {
@@ -424,7 +330,7 @@ impl OverlayManager {
                         .is_interactive_widget_hovered
                         .load(Ordering::SeqCst)
                     {
-                        self.bring_to_front(identifier);
+                        self.bring_to_front(Some(identifier));
                         return true;
                     }
                 }
@@ -570,6 +476,150 @@ impl OverlayManager {
 
         textures
     }
+
+    /// Checks if the specified overlay currently has keyboard focus.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    pub fn is_focused(&self, identifier: Option<&str>) -> bool {
+        if let Ok(overlay) = self.get_instance(identifier) {
+            self.focused_overlay_id.as_deref() == Some(overlay.name.as_str())
+        } else {
+            false
+        }
+    }
+
+    /// Sets the visibility of a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `is_visible` - A boolean indicating whether the overlay should be visible (`true`) or hidden (`false`).
+    pub fn set_overlay_visibility(&mut self, identifier: Option<&str>, is_visible: bool) {
+        match self.get_instance_mut(identifier) {
+            Ok(overlay) => overlay.set_visibility(is_visible),
+            Err(e) => warn!("[OverlayManager] set_overlay_visibility failed: {}", e),
+        }
+    }
+
+    /// Registers a Dart port for a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    pub fn register_dart_port(&self, identifier: Option<&str>, port: i64) {
+        match self.get_instance(identifier) {
+            Ok(overlay) => overlay.register_dart_port(port),
+            Err(e) => warn!("[OverlayManager] register_dart_port failed: {}", e),
+        }
+    }
+
+    /// Posts a boolean message to a specific overlay instance.
+    pub fn post_bool_to_overlay(
+        &self,
+        identifier: Option<&str>,
+        value: bool,
+    ) -> Result<(), FlutterEmbedderError> {
+        self.get_instance(identifier)
+            .and_then(|overlay| overlay.post_bool(value).map_err(|e| e.to_string()))
+            .map_err(|e| {
+                warn!("[OverlayManager] post_bool_to_overlay failed: {}", e);
+                FlutterEmbedderError::InvalidHandle
+            })
+    }
+
+    /// Posts an i64 message to a specific overlay instance.
+    pub fn post_i64_to_overlay(
+        &self,
+        identifier: Option<&str>,
+        value: i64,
+    ) -> Result<(), FlutterEmbedderError> {
+        self.get_instance(identifier)
+            .and_then(|overlay| overlay.post_i64(value).map_err(|e| e.to_string()))
+            .map_err(|e| {
+                warn!("[OverlayManager] post_i64_to_overlay failed: {}", e);
+                FlutterEmbedderError::InvalidHandle
+            })
+    }
+
+    /// Posts an f64 message to a specific overlay instance.
+    pub fn post_f64_to_overlay(
+        &self,
+        identifier: Option<&str>,
+        value: f64,
+    ) -> Result<(), FlutterEmbedderError> {
+        self.get_instance(identifier)
+            .and_then(|overlay| overlay.post_f64(value).map_err(|e| e.to_string()))
+            .map_err(|e| {
+                warn!("[OverlayManager] post_f64_to_overlay failed: {}", e);
+                FlutterEmbedderError::InvalidHandle
+            })
+    }
+
+    /// Posts a string message to a specific overlay instance.
+    pub fn post_string_to_overlay(
+        &self,
+        identifier: Option<&str>,
+        value: &str,
+    ) -> Result<(), FlutterEmbedderError> {
+        self.get_instance(identifier)
+            .and_then(|overlay| overlay.post_string(value).map_err(|e| e.to_string()))
+            .map_err(|e| {
+                warn!("[OverlayManager] post_string_to_overlay failed: {}", e);
+                FlutterEmbedderError::InvalidHandle
+            })
+    }
+
+    /// Posts a byte buffer to a specific overlay instance.
+    pub fn post_buffer_to_overlay(
+        &self,
+        identifier: Option<&str>,
+        buffer: &[u8],
+    ) -> Result<(), FlutterEmbedderError> {
+        self.get_instance(identifier)
+            .and_then(|overlay| overlay.post_buffer(buffer).map_err(|e| e.to_string()))
+            .map_err(|e| {
+                warn!("[OverlayManager] post_buffer_to_overlay failed: {}", e);
+                FlutterEmbedderError::InvalidHandle
+            })
+    }
+
+    /// Sets the screen-space position for a specific overlay.
+    pub fn set_overlay_position(&mut self, identifier: Option<&str>, x: i32, y: i32) {
+        match self.get_instance_mut(identifier) {
+            Ok(overlay) => overlay.set_position(x, y),
+            Err(e) => warn!("[OverlayManager] set_overlay_position failed: {}", e),
+        }
+    }
+
+    /// Registers a custom channel handler for a specific overlay instance.
+    pub fn register_channel_handler_for_instance<F>(
+        &mut self,
+        identifier: Option<&str>,
+        channel: &str,
+        handler: F,
+    ) where
+        F: Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static,
+    {
+        match self.get_instance_mut(identifier) {
+            Ok(overlay) => overlay.register_channel_handler(channel, handler),
+            Err(e) => warn!("[OverlayManager] register_channel_handler failed: {}", e),
+        }
+    }
+
+    /// Brings the specified overlay to the top of the Z-order.
+    pub fn bring_to_front(&mut self, identifier: Option<&str>) {
+        if let Ok(id_str) = self.get_instance(identifier).map(|ov| ov.name.clone()) {
+            self.overlay_order.retain(|id| id != &id_str);
+            self.overlay_order.push(id_str);
+        }
+    }
+
+    /// Sets keyboard focus to the specified overlay and brings it to the front.
+    pub fn set_keyboard_focus(&mut self, identifier: Option<&str>) {
+        if let Ok(id_str) = self.get_instance(identifier).map(|ov| ov.name.clone()) {
+            self.focused_overlay_id = Some(id_str.clone());
+            self.bring_to_front(Some(&id_str));
+        }
+    }
 }
 
 impl FlutterOverlayManagerHandle {
@@ -579,6 +629,10 @@ impl FlutterOverlayManagerHandle {
     /// handles loading the Flutter engine, preparing rendering resources, and running the
     /// Dart isolate. If an overlay with the same `identifier` already exists, it is
     /// shut down and replaced by the new instance.
+    ///
+    /// # What it solves
+    /// This is the foundational step to get any Flutter UI running. It abstracts away the
+    /// complexities of engine startup, renderer configuration, and asset loading.
     ///
     /// # Renderer Selection
     ///
@@ -594,9 +648,15 @@ impl FlutterOverlayManagerHandle {
     ///
     /// * `swap_chain`: A reference to the host application's `IDXGISwapChain`.
     /// * `flutter_asset_build_dir`: Path to the Flutter application's build output
-    ///   directory (e.g., `build/windows/runner/Release`). This directory must contain
-    ///   the necessary Flutter assets (`flutter_assets`), `icudtl.dat`, the compiled
-    ///   Dart code, and the `flutter_engine.dll`.
+    ///   directory. This can be the output of a standard `flutter build windows` command
+    ///   (e.g., `build/windows/runner/Release`) or the output of a `flutter assemble`
+    ///   command. An example `assemble` command is:
+    ///   ```bash
+    ///   flutter assemble --output=build -dTargetPlatform=windows-x64 -dBuildMode={build_mode} {build_mode}_bundle_windows-x64_assets
+    ///   ```
+    ///   Regardless of the method used, this directory must contain the necessary Flutter
+    ///   assets (`flutter_assets`), `icudtl.dat`, the compiled Dart code, and the
+    ///   `flutter_engine.dll`.
     ///   - For **OpenGL** support, this directory must also contain `libEGL.dll` and `libGLESv2.dll`.
     /// * `identifier`: A unique string that identifies this overlay instance for all
     ///   subsequent API calls (e.g., "main_menu_ui").
@@ -610,6 +670,18 @@ impl FlutterOverlayManagerHandle {
     /// or Software renderer. Returns `false` if a critical error occurred and initialization
     /// failed completely. Errors are logged internally.
     ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let assets_path = PathBuf::from("./flutter_build");
+    /// manager.init_instance(
+    ///     &my_swap_chain,
+    ///     &assets_path,
+    ///     "main_hud",
+    ///     None, // No special Dart arguments
+    ///     None, // No special engine arguments
+    /// );
+    /// ```
     pub fn init_instance(
         &self,
         swap_chain: &IDXGISwapChain,
@@ -632,13 +704,29 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Tick and composite all visible overlays.
+    /// Ticks all overlays to update their texture content and then composites them.
+    ///
+    /// # What it solves
+    /// This is a convenience method for simple rendering loops. It combines `tick_overlays`
+    /// and `composite_overlays` into a single function, which is often all that's
+    /// needed if the host application doesn't need to render anything between the UI
+    /// update and its final presentation.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // In a simple main loop
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// loop {
+    ///     manager.run_flutter_tick();
+    ///     // present swap chain...
+    /// }
+    /// ```
     pub fn run_flutter_tick(&self) {
         if let Ok(manager) = self.manager.lock() {
             if let Some(context) = manager.shared_d3d_context.clone() {
                 let time = manager.start_time.elapsed().as_secs_f32();
 
-                for id in &manager.overlay_order {
+                for id in &manager.overlay_order.clone() {
                     if let Some(overlay) = manager.active_instances.get(id) {
                         if overlay.is_visible() {
                             overlay.tick(&context);
@@ -657,7 +745,22 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Ticks all overlays to update their texture content for the current frame.
-    /// This should be called before any state changes or drawing.
+    ///
+    /// # What it solves
+    /// This function drives all Flutter animations and state updates. It processes
+    /// scheduled tasks and renders a new frame into each overlay's texture if needed.
+    /// This should be called once per frame *before* any compositing. For advanced
+    /// render pipelines, this gives you a chance to work with the updated texture
+    /// before it's drawn to the screen.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // In your main game loop
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.tick_overlays();
+    /// // ... do other game logic or rendering ...
+    /// manager.composite_overlays();
+    /// ```
     pub fn tick_overlays(&self) {
         if let Ok(manager) = self.manager.lock() {
             if let Some(context) = manager.shared_d3d_context.clone() {
@@ -670,12 +773,26 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Composites (draws) all overlays. This should be called after `tick_overlays`.
+    /// Composites (draws) all visible overlays onto the screen in their specified Z-order.
+    ///
+    /// # What it solves
+    /// This function handles the final drawing of the user interfaces. It should be
+    /// called once per frame after `tick_overlays` and after your main 3D scene has
+    /// been rendered, to ensure the UI appears on top.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // In your main game loop
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.tick_overlays();
+    /// render_my_3d_world();
+    /// manager.composite_overlays(); // Draws the UI on top of the world
+    /// ```
     pub fn composite_overlays(&self) {
         if let Ok(manager) = self.manager.lock() {
             if let Some(context) = manager.shared_d3d_context.clone() {
                 let time = manager.start_time.elapsed().as_secs_f32();
-                for id in &manager.overlay_order {
+                for id in &manager.overlay_order.clone() {
                     if let Some(overlay) = manager.active_instances.get(id) {
                         if overlay.is_visible() {
                             update_interactive_widget_hover_state(overlay);
@@ -693,7 +810,12 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Updates the screen dimensions used by the overlays.
-    /// This must be called when the main window is resized.
+    /// # Example
+    /// ```rust, no_run
+    /// // In your WndProc, when you receive a WM_SIZE message
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.update_screen_size(new_width, new_height);
+    /// ```
     pub fn update_screen_size(&self, width: u32, height: u32) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.screen_width = width;
@@ -702,6 +824,16 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Pauses all shader animations for all overlays.
+    ///
+    /// Freezes the `time` uniform sent to any custom shaders, effectively pausing
+    /// time-based visual effects. This does not pause the Flutter UI's internal animations.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // When the game is paused:
+    /// manager.pause_animations();
+    /// ```
     pub fn pause_animations(&self) {
         if let Ok(mut manager) = self.manager.lock() {
             if !manager.is_paused {
@@ -712,6 +844,16 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Resumes all shader animations for all overlays.
+    ///
+    /// Unfreezes the `time` uniform sent to custom shaders, allowing visual effects
+    /// to resume from where they left off.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // When the game is unpaused:
+    /// manager.resume_animations();
+    /// ```
     pub fn resume_animations(&self) {
         if let Ok(mut manager) = self.manager.lock() {
             if manager.is_paused {
@@ -723,30 +865,59 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Sets a post-processing effect for the **entire** overlay.
-    pub fn set_fullscreen_effect(&self, identifier: &str, effect: PostEffect) {
+    ///
+    /// Applies a full-screen shader effect to an overlay's texture, allowing for
+    /// dynamic visual styles like holograms, warp fields, or color grading,
+    /// controlled directly from your Rust code.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect` - The `PostEffect` enum variant to apply.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Make the main menu look like a hologram
+    /// manager.set_fullscreen_effect(Some("main_menu"), PostEffect::Hologram);
+    /// ```
+    pub fn set_fullscreen_effect(&self, identifier: Option<&str>, effect: PostEffect) {
         if let Ok(mut manager) = self.manager.lock() {
-            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
                 overlay.effect_config.params = match effect {
                     PostEffect::Passthrough => EffectParams::None,
                     PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
                     PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
-                    //...
                 };
                 overlay.effect_config.target = EffectTarget::Fullscreen;
             }
         }
     }
 
-    // TODO: Make it not by widget - make it by widgets []
     /// Applies a post-processing effect to a **specific area** of an overlay.
-    pub fn set_widget_effect(&self, identifier: &str, effect: PostEffect, bounds: [f32; 4]) {
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect` - The `PostEffect` enum variant to apply.
+    /// * `bounds` - An array `[x, y, width, height]` defining the target rectangle in logical pixels.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Make a specific button on the HUD glow with a warp effect
+    /// let button_bounds = [100.0, 200.0, 150.0, 50.0];
+    /// manager.set_widget_effect(Some("main_hud"), PostEffect::WarpField, button_bounds);
+    /// ```
+    pub fn set_widget_effect(
+        &self,
+        identifier: Option<&str>,
+        effect: PostEffect,
+        bounds: [f32; 4],
+    ) {
         if let Ok(mut manager) = self.manager.lock() {
-            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
                 overlay.effect_config.params = match effect {
                     PostEffect::Passthrough => EffectParams::None,
                     PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
                     PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
-                    //...
                 };
                 overlay.effect_config.target = EffectTarget::Widget(bounds);
             }
@@ -754,24 +925,39 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Removes any active effect from an overlay, reverting it to the default passthrough shader.
-    pub fn clear_effect(&self, identifier: &str) {
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.clear_effect(Some("main_menu"));
+    /// ```
+    pub fn clear_effect(&self, identifier: Option<&str>) {
         if let Ok(mut manager) = self.manager.lock() {
-            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
                 overlay.effect_config = EffectConfig::default();
             }
         }
     }
 
     /// Updates the entire effect configuration for a specific overlay.
-    /// This is the single, powerful entry point for controlling an overlay's visual style.
-    ///
     /// # Arguments
-    /// * `identifier`: The unique name of the overlay to configure.
-    /// * `config`: The complete `EffectConfig` struct defining the target area
-    ///   and the specific effect parameters to apply.
-    pub fn update_effect_config(&self, identifier: &str, config: EffectConfig) {
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `config`: The complete `EffectConfig` struct.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let config = EffectConfig {
+    ///     target: EffectTarget::Fullscreen,
+    ///     params: EffectParams::Hologram(HologramParams { intensity: 0.8, ..Default::default() }),
+    /// };
+    /// manager.update_effect_config(Some("main_menu"), config);
+    /// ```
+    pub fn update_effect_config(&self, identifier: Option<&str>, config: EffectConfig) {
         if let Ok(mut manager) = self.manager.lock() {
-            if let Some(overlay) = manager.active_instances.get_mut(identifier) {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
                 overlay.effect_config = config;
             }
         }
@@ -779,17 +965,25 @@ impl FlutterOverlayManagerHandle {
 
     /// Forwards a raw Windows message to the manager for input processing.
     ///
-    /// The manager routes the event to the appropriate overlay based on Z-order for
-    /// pointer events and keyboard focus for key events. This function is the primary
-    /// mechanism for delivering user input to the Flutter UIs.
-    ///
-    /// # Usage
-    /// This function must be called from the host application's `WndProc` for all
-    /// relevant input messages (e.g., `WM_MOUSEMOVE`, `WM_KEYDOWN`, `WM_CHAR`).
+    /// This is the critical function for making UIs interactive. It translates Windows
+    /// input messages (mouse moves, clicks, key presses) into events that Flutter
+    /// can understand and deliver to the appropriate widgets. Without this, your
+    /// UI will be visible but completely non-interactive.
     ///
     /// # Returns
-    /// Returns `true` if a Flutter overlay consumed the event. The host application can
-    /// use this to suppress further processing of the input. Returns `false` otherwise.
+    /// `true` if a Flutter overlay consumed the event. The host application can
+    /// use this to suppress further processing of the input (e.g., stop the game
+    /// camera from moving when the mouse is over a UI button).
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // Inside your application's WndProc
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// if manager.forward_input_to_flutter(hwnd, msg, wparam, lparam) {
+    ///     return LRESULT(0); // Flutter handled it, so we stop processing.
+    /// }
+    /// // ... continue with normal message processing for the game ...
+    /// ```
     pub fn forward_input_to_flutter(
         &self,
         hwnd: HWND,
@@ -806,15 +1000,27 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Requests that the topmost active overlay under the cursor set the mouse cursor style.
+    /// Call this from your `WndProc` when handling `WM_SETCURSOR`.
     ///
-    /// # Usage
-    /// This function must be called from the host application's `WndProc` when handling
-    /// the `WM_SETCURSOR` message.
+    /// Allows the Flutter UI to control the appearance of the mouse cursor, for example,
+    /// changing it from an arrow to a text-input I-beam when hovering over a text field,
+    /// or to a hand pointer over a button. This provides essential visual feedback to the user.
     ///
     /// # Returns
-    /// * `Some(LRESULT(1))` if a Flutter overlay handled the cursor request. The `WndProc`
-    ///   should return this value to prevent default Windows cursor handling.
+    /// * `Some(LRESULT(1))` if a Flutter overlay handled the cursor request.
     /// * `None` if no overlay handled the request.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // In your WndProc
+    /// // case WM_SETCURSOR:
+    /// if let Some(manager) = get_flutter_overlay_manager_handle() {
+    ///     if let Some(result) = manager.set_flutter_cursor(hwnd, lparam, original_hwnd) {
+    ///         return result; // Flutter handled the cursor
+    ///     }
+    /// }
+    /// // Default handling...
+    /// ```
     pub fn set_flutter_cursor(
         &self,
         hwnd_for_setcursor_message: HWND,
@@ -831,11 +1037,15 @@ impl FlutterOverlayManagerHandle {
 
     /// Notifies all active overlays of a window or render area resize.
     ///
-    /// This call updates the logical and physical dimensions for each Flutter instance
-    /// and regenerates its underlying GPU texture to match the new size.
+    /// Informs all Flutter instances about the new size of the window, allowing them
+    /// to recalculate layouts and adapt to the new resolution. It also ensures the
+    /// underlying GPU textures are resized correctly to prevent stretching or clipping.
     ///
-    /// # Usage
-    /// Call this function when the main window is resized or the D3D11 swap chain is recreated.
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.resize_flutter_overlays(&my_swap_chain, 0, 0, new_width, new_height);
+    /// ```
     pub fn resize_flutter_overlays(
         &self,
         swap_chain: &IDXGISwapChain,
@@ -852,7 +1062,8 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Shuts down a specific Flutter overlay instance, releasing all its resources.
-    /// The overlay identified by the `identifier` can no longer be used after this call.
+    /// # Arguments
+    /// * `identifier`: The unique identifier of the overlay to shut down.
     pub fn shutdown_instance(&self, identifier: &str) {
         if let Ok(mut manager) = self.manager.lock() {
             if let Err(e) = manager.shutdown_instance(identifier) {
@@ -867,6 +1078,13 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Shuts down all currently active Flutter overlay instances.
+    /// # Example
+    /// ```rust, no_run
+    /// // In your application's exit/cleanup logic:
+    /// if let Some(manager) = get_flutter_overlay_manager_handle() {
+    ///     manager.shutdown_all_instances();
+    /// }
+    /// ```
     pub fn shutdown_all_instances(&self) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.shutdown_all_instances();
@@ -876,21 +1094,28 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Brings the specified overlay to the top of the rendering order (Z-order).
-    /// The identified overlay will be drawn on top of all other overlays.
-    pub fn bring_to_front(&self, identifier: &str) {
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // When a popup is shown
+    /// manager.bring_to_front(Some("popup_dialog"));
+    /// ```
+    pub fn bring_to_front(&self, identifier: Option<&str>) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.bring_to_front(identifier);
-            manager.set_keyboard_focus(identifier);
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for bring_to_front.");
         }
     }
 
-    /// Sets keyboard focus to the specified overlay.
-    ///
-    /// The focused overlay will receive all subsequent keyboard input. This action also
-    /// brings the overlay to the front of the rendering order.
-    pub fn set_focus(&self, identifier: &str) {
+    /// Sets keyboard focus to the specified overlay, which also brings it to the front.
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // When the user clicks on the chat input field
+    /// manager.set_focus(Some("chat_ui"));
+    /// ```
+    pub fn set_focus(&self, identifier: Option<&str>) {
         if let Ok(mut manager) = self.manager.lock() {
             manager.set_keyboard_focus(identifier);
         } else {
@@ -898,37 +1123,72 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Checks if the overlay with the given identifier currently has keyboard focus.
-    pub fn is_focused(&self, identifier: &str) -> bool {
-        self.manager
-            .lock()
-            .map_or(false, |manager| manager.is_focused(identifier))
+    /// Checks if the specified overlay currently has keyboard focus.
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// if manager.is_focused(Some("chat_ui")) {
+    ///     // Don't process game movement keys
+    /// }
+    /// ```
+    pub fn is_focused(&self, identifier: Option<&str>) -> bool {
+        if let Ok(manager) = self.manager.lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return manager.focused_overlay_id.as_deref() == Some(overlay.name.as_str());
+            }
+        }
+        false
     }
 
-    /// Sets the visibility of a specific Flutter overlay.
-    /// An invisible overlay is not rendered and does not receive input.
-    pub fn set_visibility(&self, identifier: &str, is_visible: bool) {
+    /// Sets the visibility of a Flutter overlay. An invisible overlay is not rendered and does not receive input.
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `is_visible` - Whether the overlay should be visible.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // When the player presses the escape key:
+    /// manager.set_visibility(Some("pause_menu"), true);
+    /// ```
+    pub fn set_visibility(&self, identifier: Option<&str>, is_visible: bool) {
         if let Ok(mut manager) = self.manager.lock() {
-            manager.set_overlay_visibility(identifier, is_visible);
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_visibility(is_visible);
+            }
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for set_visibility.");
         }
     }
 
     /// Sets the screen-space position of an overlay's top-left corner.
-    pub fn set_position(&self, identifier: &str, x: i32, y: i32) {
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `x`, `y` - The new screen-space coordinates.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Move the health bar to follow the player
+    /// manager.set_position(Some("player_health_bar"), player.x + 10, player.y - 50);
+    /// ```
+    pub fn set_position(&self, identifier: Option<&str>, x: i32, y: i32) {
         if let Ok(mut manager) = self.manager.lock() {
-            manager.set_overlay_position(identifier, x, y);
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_position(x, y);
+            }
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for set_position.");
         }
     }
 
     /// Sends a platform message to all visible overlays.
-    ///
-    /// # Note
-    /// For new development, prefer the `post_*` methods for high-performance,
-    /// one-way messaging.
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Notify all UIs that the game is saving
+    /// manager.broadcast_message("game/events", "saving".as_bytes());
+    /// ```
     pub fn broadcast_message(&self, channel: &str, message: &[u8]) {
         if let Ok(manager) = self.manager.lock() {
             manager.broadcast_platform_message(channel, message);
@@ -937,7 +1197,48 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
+    /// Registers a custom message handler for a specific channel on an overlay.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `channel` - The name of the channel the handler will listen to (e.g., "game/settings").
+    /// * `handler` - A closure that processes an incoming `Vec<u8>` and returns a `Vec<u8>` response.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.register_channel_handler(Some("settings_menu"), "settings/setVolume", |payload| {
+    ///     if let Some(volume_byte) = payload.get(0) {
+    ///         let volume = *volume_byte as f32 / 255.0;
+    ///         println!("Game volume set to {}", volume);
+    ///     }
+    ///     vec![1] // Return a success code as a Vec<u8>
+    /// });
+    /// ```
+    pub fn register_channel_handler<F>(&self, identifier: Option<&str>, channel: &str, handler: F)
+    where
+        F: Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static,
+    {
+        if let Ok(mut manager) = self.manager.lock() {
+            manager.register_channel_handler_for_instance(identifier, channel, handler);
+        } else {
+            error!("[OverlayManagerHandle] Failed to lock manager for register_channel_handler.");
+        }
+    }
+
     /// Gets the dimensions (width, height) of all active overlays.
+    ///
+    /// Allows the host application to get the size of all UIs, which can be useful
+    /// for layout calculations, screen captures, or debugging.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let all_sizes = manager.get_all_dimensions();
+    /// for (id, (width, height)) in all_sizes {
+    ///     println!("Overlay '{}' is {}x{}", id, width, height);
+    /// }
+    /// ```
     pub fn get_all_dimensions(&self) -> HashMap<String, (u32, u32)> {
         self.manager.lock().map_or(HashMap::new(), |manager| {
             manager.get_all_overlay_dimensions()
@@ -945,15 +1246,25 @@ impl FlutterOverlayManagerHandle {
     }
 
     /// Gets a clone of the shared Direct3D device context used by the manager.
+    ///
+    /// Provides direct access to the D3D11 context for advanced, custom rendering
+    /// needs that might need to interoperate with the overlay's rendering.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// if let Some(context) = manager.get_d3d_context() {
+    ///     // Perform custom D3D11 operations
+    /// }
+    /// ```
     pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
         self.manager
             .lock()
             .ok()
-            .and_then(|manager| manager.get_d3d_context())
+            .and_then(|manager| manager.shared_d3d_context.clone())
     }
 
     /// Finds the identifier of the topmost, visible overlay at a given screen coordinate.
-    /// This is used for hit-testing to determine which overlay is under the mouse.
     pub fn find_at_position(&self, x: i32, y: i32) -> Option<String> {
         self.manager
             .lock()
@@ -961,70 +1272,159 @@ impl FlutterOverlayManagerHandle {
             .and_then(|manager| manager.find_topmost_overlay_at_position(x, y))
     }
 
-    /// Registers a Dart `SendPort` with a specific overlay instance.
+    /// Registers a Dart `SendPort` with an overlay for Rust-to-Dart communication.
     ///
-    /// This is a required setup step for using the `post_*_to_overlay` methods.
-    /// The Dart application must create a `ReceivePort`, get its `sendPort.nativePort`,
-    /// and send the resulting `i64` handle to this function via an FFI call.
-    pub fn register_dart_port(&self, identifier: &str, port: i64) {
+    /// Establishes a direct, low-level communication channel for pushing data from Rust
+    /// to Dart. This is faster than platform channels and is ideal for
+    /// frequent, fire-and-forget data updates that need to be reflected in the UI every frame.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `port` - The native port handle from Dart's `ReceivePort.sendPort.nativePort`.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // This function would be exposed via FFI and called from Dart at startup.
+    /// #[no_mangle]
+    /// pub extern "C" fn register_dart_port(port: i64) {
+    ///     if let Some(manager) = get_flutter_overlay_manager_handle() {
+    ///         manager.register_dart_port(None, port);
+    ///     }
+    /// }
+    /// ```
+    pub fn register_dart_port(&self, identifier: Option<&str>, port: i64) {
         if let Ok(manager) = self.manager.lock() {
-            manager.register_dart_port(identifier, port);
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                overlay.register_dart_port(port);
+            }
         } else {
             error!("[OverlayManagerHandle] Failed to lock manager for register_dart_port.");
         }
     }
 
-    /// Sends a boolean message to a single overlay identified by its name.
-    pub fn post_bool_to_overlay(&self, identifier: &str, value: bool) -> bool {
+    /// Sends a boolean message to a single overlay via its registered `SendPort`.
+    ///
+    /// A fast path for pushing boolean state to Dart. See `register_dart_port` for the use case.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.post_bool(Some("main_hud"), true); // e.g., show "In Combat" indicator
+    /// ```
+    pub fn post_bool(&self, identifier: Option<&str>, value: bool) -> bool {
         if let Ok(manager) = self.manager.lock() {
-            manager.post_bool_to_overlay(identifier, value).is_ok()
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for post_bool_to_overlay.");
-            false
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_bool(value).is_ok();
+            }
         }
+        error!("[OverlayManagerHandle] Failed to post_bool.");
+        false
     }
 
-    /// Sends an i64 message to a single overlay identified by its name.
-    pub fn post_i64_to_overlay(&self, identifier: &str, value: i64) -> bool {
+    /// Sends an i64 message to a single overlay via its registered `SendPort`.
+    ///
+    /// A fast path for pushing integer data to Dart. See `register_dart_port` for the use case.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let current_score = 1500;
+    /// manager.post_i64(Some("main_hud"), current_score);
+    /// ```
+    pub fn post_i64(&self, identifier: Option<&str>, value: i64) -> bool {
         if let Ok(manager) = self.manager.lock() {
-            manager.post_i64_to_overlay(identifier, value).is_ok()
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for post_i64_to_overlay.");
-            false
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_i64(value).is_ok();
+            }
         }
+        error!("[OverlayManagerHandle] Failed to post_i64.");
+        false
     }
 
-    /// Sends an f64 message to a single overlay identified by its name.
-    pub fn post_f64_to_overlay(&self, identifier: &str, value: f64) -> bool {
+    /// Sends an f64 message to a single overlay via its registered `SendPort`.
+    ///
+    /// A fast path for pushing floating-point data to Dart. See `register_dart_port` for the use case.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let time_remaining = 29.5;
+    /// manager.post_f64(Some("main_hud"), time_remaining);
+    /// ```
+    pub fn post_f64(&self, identifier: Option<&str>, value: f64) -> bool {
         if let Ok(manager) = self.manager.lock() {
-            manager.post_f64_to_overlay(identifier, value).is_ok()
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for post_f64_to_overlay.");
-            false
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_f64(value).is_ok();
+            }
         }
+        error!("[OverlayManagerHandle] Failed to post_f64.");
+        false
     }
 
-    /// Sends a string message to a single overlay identified by its name.
-    pub fn post_string_to_overlay(&self, identifier: &str, value: &str) -> bool {
+    /// Sends a string message to a single overlay via its registered `SendPort`.
+    ///
+    /// A fast path for pushing string data to Dart. See `register_dart_port` for the use case.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Send a quest update to the HUD
+    /// manager.post_string(Some("main_hud"), "New quest: Defeat the dragon!");
+    /// ```
+    pub fn post_string(&self, identifier: Option<&str>, value: &str) -> bool {
         if let Ok(manager) = self.manager.lock() {
-            manager.post_string_to_overlay(identifier, value).is_ok()
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for post_string_to_overlay.");
-            false
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_string(value).is_ok();
+            }
         }
+        error!("[OverlayManagerHandle] Failed to post_string.");
+        false
     }
 
-    /// Sends a byte buffer to a single overlay identified by its name.
-    pub fn post_buffer_to_overlay(&self, identifier: &str, buffer: &[u8]) -> bool {
+    /// Sends a byte buffer to a single overlay via its registered `SendPort`.
+    ///
+    /// A fast path for pushing raw binary data to Dart. See `register_dart_port` for the use case.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let minimap_data: Vec<u8> = vec![0, 1, 2, 3];
+    /// manager.post_buffer(Some("main_hud"), &minimap_data);
+    /// ```
+    pub fn post_buffer(&self, identifier: Option<&str>, buffer: &[u8]) -> bool {
         if let Ok(manager) = self.manager.lock() {
-            manager.post_buffer_to_overlay(identifier, buffer).is_ok()
-        } else {
-            error!("[OverlayManagerHandle] Failed to lock manager for post_buffer_to_overlay.");
-            false
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_buffer(buffer).is_ok();
+            }
         }
+        error!("[OverlayManagerHandle] Failed to post_buffer.");
+        false
     }
 
     /// Retrieves the rendered textures from all active and visible overlays.
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let textures = manager.get_all_overlay_textures();
+    /// for (id, texture_srv) in textures {
+    ///     // Use texture_srv to draw the UI in a custom way
+    /// }
+    /// ```
     pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
         if let Ok(manager) = self.manager.lock() {
             manager.get_all_overlay_textures()

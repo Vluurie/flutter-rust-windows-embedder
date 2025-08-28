@@ -1,13 +1,13 @@
 use crate::bindings::embedder::FlutterTaskRunnerDescription;
 use crate::software_renderer::overlay::overlay_impl::FLUTTER_LOG_TAG;
 use crate::software_renderer::ticker::task_scheduler::{
-    destroy_task_runner_context_callback, post_task_callback, runs_task_on_current_thread_callback, TaskQueueState, TaskRunnerContext
+    TaskQueueState, TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
+    runs_task_on_current_thread_callback,
 };
 
 use log::info;
 use std::ffi::{CStr, CString, OsStr, c_void};
 use std::sync::Arc;
-
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flutter_log_callback(
@@ -53,39 +53,29 @@ pub(crate) fn build_project_args_and_strings(
     assets: &str,
     icu: &str,
     dart_args_opt: Option<&[String]>,
-    is_debug: bool,
     engine_args_opt: Option<&[String]>,
 ) -> (
-    CString,          // assets_c
-    CString,          // icu_c
-    Vec<CString>,     // engine_argv_cs
-    Vec<CString>,     // dart_argv_cs
+    CString,      // assets_c
+    CString,      // icu_c
+    Vec<CString>, // engine_argv_cs
+    Vec<CString>, // dart_argv_cs
 ) {
     let assets_c = CString::new(assets).expect("Failed to convert assets path to CString");
     let icu_c = CString::new(icu).expect("Failed to convert icu data path to CString");
 
-  
-    let engine_argv_cs: Vec<CString> = if is_debug {
-        engine_args_opt
-            .unwrap_or(&[])
-            .iter()
-            .map(|s| CString::new(s.as_str()).expect("Failed to create CString from ARGS"))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let engine_argv_cs: Vec<CString> = engine_args_opt
+        .unwrap_or(&[])
+        .iter()
+        .map(|s| CString::new(s.as_str()).expect("Failed to create CString from engine ARGS"))
+        .collect();
 
-    let dart_argv_cs: Vec<CString> = dart_args_opt.unwrap_or(&[])
+    let dart_argv_cs: Vec<CString> = dart_args_opt
+        .unwrap_or(&[])
         .iter()
         .map(|s| CString::new(s.as_str()).unwrap())
         .collect();
 
-    (
-        assets_c,
-        icu_c,
-        engine_argv_cs,
-        dart_argv_cs,
-    )
+    (assets_c, icu_c, engine_argv_cs, dart_argv_cs)
 }
 pub(crate) fn maybe_load_aot_path_to_cstring(aot_opt: Option<&OsStr>) -> Option<CString> {
     if let Some(os) = aot_opt {

@@ -1,4 +1,4 @@
-use directx_math::XMMatrix;
+use directx_math::{XMMatrix, XMMatrixTranspose};
 use std::mem;
 use windows::Win32::{
     Foundation::BOOL,
@@ -6,7 +6,6 @@ use windows::Win32::{
 };
 
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
-
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex3D {
@@ -19,23 +18,30 @@ struct SceneConstants {
     view_projection: XMMatrix,
 }
 
-pub struct PrimitiveRendererStates {
-    pub blend_state: ID3D11BlendState,
-    pub depth_stencil_state: ID3D11DepthStencilState,
-}
-
 #[derive(Clone)]
 pub struct Primitive3DRenderer {
     vertex_shader: ID3D11VertexShader,
     pixel_shader: ID3D11PixelShader,
     input_layout: ID3D11InputLayout,
-    vertex_buffer: ID3D11Buffer,
+
+    vertex_buffer_opaque: ID3D11Buffer,
+    vertex_buffer_transparent: ID3D11Buffer,
+
     constant_buffer: ID3D11Buffer,
-    submit_buffer: Vec<Vertex3D>,
-    render_buffer: Vec<Vertex3D>,
+
+    submit_buffer_opaque: Vec<Vertex3D>,
+    render_buffer_opaque: Vec<Vertex3D>,
+    submit_buffer_transparent: Vec<Vertex3D>,
+    render_buffer_transparent: Vec<Vertex3D>,
+
     buffer_capacity: usize,
-    pub blend_state: ID3D11BlendState,
-    pub depth_stencil_state: ID3D11DepthStencilState,
+
+    blend_state_transparent: ID3D11BlendState,
+    blend_state_opaque: ID3D11BlendState,
+    depth_stencil_state: ID3D11DepthStencilState,
+    depth_stencil_state_transparent: ID3D11DepthStencilState,
+    rasterizer_state_cull_back: ID3D11RasterizerState,
+    rasterizer_state_cull_none: ID3D11RasterizerState,
 }
 
 impl Primitive3DRenderer {
@@ -94,11 +100,22 @@ impl Primitive3DRenderer {
             ..Default::default()
         };
 
-        let mut vertex_buffer: Option<ID3D11Buffer> = None;
+        let mut vertex_buffer_opaque: Option<ID3D11Buffer> = None;
         unsafe {
             device
-                .CreateBuffer(&vertex_buffer_desc, None, Some(&mut vertex_buffer))
-                .expect("Failed to create dynamic vertex buffer");
+                .CreateBuffer(&vertex_buffer_desc, None, Some(&mut vertex_buffer_opaque))
+                .expect("Failed to create opaque vertex buffer");
+        }
+
+        let mut vertex_buffer_transparent: Option<ID3D11Buffer> = None;
+        unsafe {
+            device
+                .CreateBuffer(
+                    &vertex_buffer_desc,
+                    None,
+                    Some(&mut vertex_buffer_transparent),
+                )
+                .expect("Failed to create transparent vertex buffer");
         }
 
         let constant_buffer_desc = D3D11_BUFFER_DESC {
@@ -116,28 +133,45 @@ impl Primitive3DRenderer {
                 .expect("Failed to create constant buffer");
         }
 
-        let mut blend_desc = D3D11_BLEND_DESC::default();
+        let mut blend_desc_transparent = D3D11_BLEND_DESC::default();
         let rt_blend_desc = D3D11_RENDER_TARGET_BLEND_DESC {
             BlendEnable: BOOL(1),
-            SrcBlend: D3D11_BLEND_ONE,
+
+            SrcBlend: D3D11_BLEND_SRC_ALPHA,
             DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
             BlendOp: D3D11_BLEND_OP_ADD,
-            SrcBlendAlpha: D3D11_BLEND_ONE,
-            DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+
+            SrcBlendAlpha: D3D11_BLEND_ZERO,
+            DestBlendAlpha: D3D11_BLEND_ONE,
             BlendOpAlpha: D3D11_BLEND_OP_ADD,
+
             RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
         };
-        blend_desc.RenderTarget[0] = rt_blend_desc;
 
-        let mut blend_state: Option<ID3D11BlendState> = None;
+        blend_desc_transparent.RenderTarget[0] = rt_blend_desc;
+
+        let mut blend_state_transparent: Option<ID3D11BlendState> = None;
         unsafe {
             device
-                .CreateBlendState(&blend_desc, Some(&mut blend_state))
-                .expect("Failed to create blend state");
+                .CreateBlendState(&blend_desc_transparent, Some(&mut blend_state_transparent))
+                .expect("Failed to create transparent blend state");
         }
 
-        let mut depth_desc = D3D11_DEPTH_STENCIL_DESC::default();
-        depth_desc.DepthEnable = BOOL(0);
+        let blend_desc_opaque = D3D11_BLEND_DESC::default();
+        let mut blend_state_opaque: Option<ID3D11BlendState> = None;
+        unsafe {
+            device
+                .CreateBlendState(&blend_desc_opaque, Some(&mut blend_state_opaque))
+                .expect("Failed to create opaque blend state");
+        }
+
+        let depth_desc = D3D11_DEPTH_STENCIL_DESC {
+            DepthEnable: BOOL(1),
+            DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
+            DepthFunc: D3D11_COMPARISON_LESS,
+            StencilEnable: BOOL(0),
+            ..Default::default()
+        };
 
         let mut depth_stencil_state: Option<ID3D11DepthStencilState> = None;
         unsafe {
@@ -146,42 +180,110 @@ impl Primitive3DRenderer {
                 .expect("Failed to create depth stencil state");
         }
 
+        let depth_desc_transparent = D3D11_DEPTH_STENCIL_DESC {
+            DepthEnable: BOOL(1),
+            DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ZERO,
+            DepthFunc: D3D11_COMPARISON_LESS,
+            ..Default::default()
+        };
+
+        let mut depth_stencil_state_transparent: Option<ID3D11DepthStencilState> = None;
+        unsafe {
+            device
+                .CreateDepthStencilState(
+                    &depth_desc_transparent,
+                    Some(&mut depth_stencil_state_transparent),
+                )
+                .expect("Failed to create transparent depth stencil state");
+        }
+
+        let mut rast_desc = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_SOLID,
+            CullMode: D3D11_CULL_BACK,
+            ScissorEnable: BOOL(1),
+            ..Default::default()
+        };
+        let mut rasterizer_state_cull_back: Option<ID3D11RasterizerState> = None;
+        unsafe {
+            device
+                .CreateRasterizerState(&rast_desc, Some(&mut rasterizer_state_cull_back))
+                .expect("Failed to create cull-back rasterizer state");
+        }
+
+        rast_desc.CullMode = D3D11_CULL_NONE;
+        let mut rasterizer_state_cull_none: Option<ID3D11RasterizerState> = None;
+        unsafe {
+            device
+                .CreateRasterizerState(&rast_desc, Some(&mut rasterizer_state_cull_none))
+                .expect("Failed to create cull-none rasterizer state");
+        }
+
         Self {
             vertex_shader: vertex_shader.unwrap(),
             pixel_shader: pixel_shader.unwrap(),
             input_layout: input_layout.unwrap(),
-            vertex_buffer: vertex_buffer.unwrap(),
+            vertex_buffer_opaque: vertex_buffer_opaque.unwrap(),
+            vertex_buffer_transparent: vertex_buffer_transparent.unwrap(),
             constant_buffer: constant_buffer.unwrap(),
-            submit_buffer: Vec::with_capacity(buffer_capacity),
-            render_buffer: Vec::with_capacity(buffer_capacity),
+            submit_buffer_opaque: Vec::with_capacity(buffer_capacity),
+            render_buffer_opaque: Vec::with_capacity(buffer_capacity),
+            submit_buffer_transparent: Vec::with_capacity(buffer_capacity / 2),
+            render_buffer_transparent: Vec::with_capacity(buffer_capacity / 2),
             buffer_capacity,
-            blend_state: blend_state.unwrap(),
+            blend_state_transparent: blend_state_transparent.unwrap(),
+            blend_state_opaque: blend_state_opaque.unwrap(),
             depth_stencil_state: depth_stencil_state.unwrap(),
+            depth_stencil_state_transparent: depth_stencil_state_transparent.unwrap(),
+            rasterizer_state_cull_back: rasterizer_state_cull_back.unwrap(),
+            rasterizer_state_cull_none: rasterizer_state_cull_none.unwrap(),
         }
     }
 
-    pub fn submit_triangles(&mut self, vertices: &[Vertex3D]) {
-        self.submit_buffer.clear();
-        self.submit_buffer.extend_from_slice(vertices);
+    pub fn submit_triangles(
+        &mut self,
+        opaque_vertices: &[Vertex3D],
+        transparent_vertices: &[Vertex3D],
+    ) {
+        self.submit_buffer_opaque.clear();
+        self.submit_buffer_opaque.extend_from_slice(opaque_vertices);
+        self.submit_buffer_transparent.clear();
+        self.submit_buffer_transparent
+            .extend_from_slice(transparent_vertices);
     }
 
     pub fn latch_buffers(&mut self) {
-        self.render_buffer = self.submit_buffer.clone();
+        self.render_buffer_opaque = self.submit_buffer_opaque.clone();
+        self.render_buffer_transparent = self.submit_buffer_transparent.clone();
     }
 }
 
 impl Renderer for Primitive3DRenderer {
     fn draw(&mut self, params: &FrameParams) {
-        if self.render_buffer.is_empty() {
+        if self.render_buffer_opaque.is_empty() && self.render_buffer_transparent.is_empty() {
             return;
         }
 
         let context = params.context;
-        let vertex_count = self.render_buffer.len().min(self.buffer_capacity);
 
         unsafe {
+            let original_rs_state: Option<ID3D11RasterizerState> = context.RSGetState().ok();
+            let mut original_blend_state: Option<ID3D11BlendState> = None;
+            let mut original_blend_factor = [0.0; 4];
+            let mut original_sample_mask = 0;
+            context.OMGetBlendState(
+                Some(&mut original_blend_state),
+                Some(&mut original_blend_factor),
+                Some(&mut original_sample_mask),
+            );
+            let mut original_depth_state: Option<ID3D11DepthStencilState> = None;
+            let mut original_stencil_ref = 0;
+            context.OMGetDepthStencilState(
+                Some(&mut original_depth_state),
+                Some(&mut original_stencil_ref),
+            );
+
             let constants = SceneConstants {
-                view_projection: *params.view_projection_matrix,
+                view_projection: XMMatrix(XMMatrixTranspose((*params.view_projection_matrix).0)),
             };
             let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
             context
@@ -196,40 +298,91 @@ impl Renderer for Primitive3DRenderer {
             *(mapped_cb.pData as *mut SceneConstants) = constants;
             context.Unmap(&self.constant_buffer, 0);
 
-            let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
-            context
-                .Map(
-                    &self.vertex_buffer,
-                    0,
-                    D3D11_MAP_WRITE_DISCARD,
-                    0,
-                    Some(&mut mapped_vb),
-                )
-                .unwrap();
-
-            std::ptr::copy_nonoverlapping(
-                self.render_buffer.as_ptr(),
-                mapped_vb.pData as *mut Vertex3D,
-                vertex_count,
-            );
-            context.Unmap(&self.vertex_buffer, 0);
-
             context.IASetInputLayout(&self.input_layout);
-            let stride = mem::size_of::<Vertex3D>() as u32;
-            let offset = 0;
-            context.IASetVertexBuffers(
-                0,
-                1,
-                Some(&Some(self.vertex_buffer.clone())),
-                Some(&stride),
-                Some(&offset),
-            );
             context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constant_buffer.clone())]));
             context.PSSetShader(&self.pixel_shader, None);
 
-            context.Draw(vertex_count as u32, 0);
+            if !self.render_buffer_opaque.is_empty() {
+                context.RSSetState(&self.rasterizer_state_cull_back);
+                context.OMSetBlendState(&self.blend_state_opaque, None, 0xffffffff);
+
+                context.OMSetDepthStencilState(&self.depth_stencil_state, 1);
+
+                let vertex_count = self.render_buffer_opaque.len();
+                let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                context
+                    .Map(
+                        &self.vertex_buffer_opaque,
+                        0,
+                        D3D11_MAP_WRITE_DISCARD,
+                        0,
+                        Some(&mut mapped_vb),
+                    )
+                    .unwrap();
+                std::ptr::copy_nonoverlapping(
+                    self.render_buffer_opaque.as_ptr(),
+                    mapped_vb.pData as *mut Vertex3D,
+                    vertex_count,
+                );
+                context.Unmap(&self.vertex_buffer_opaque, 0);
+
+                let stride = mem::size_of::<Vertex3D>() as u32;
+                let offset = 0;
+                context.IASetVertexBuffers(
+                    0,
+                    1,
+                    Some(&Some(self.vertex_buffer_opaque.clone())),
+                    Some(&stride),
+                    Some(&offset),
+                );
+                context.Draw(vertex_count as u32, 0);
+            }
+
+            if !self.render_buffer_transparent.is_empty() {
+                context.RSSetState(&self.rasterizer_state_cull_none);
+                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
+
+                context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
+
+                let vertex_count = self.render_buffer_transparent.len();
+                let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                context
+                    .Map(
+                        &self.vertex_buffer_transparent,
+                        0,
+                        D3D11_MAP_WRITE_DISCARD,
+                        0,
+                        Some(&mut mapped_vb),
+                    )
+                    .unwrap();
+                std::ptr::copy_nonoverlapping(
+                    self.render_buffer_transparent.as_ptr(),
+                    mapped_vb.pData as *mut Vertex3D,
+                    vertex_count,
+                );
+                context.Unmap(&self.vertex_buffer_transparent, 0);
+
+                let stride = mem::size_of::<Vertex3D>() as u32;
+                let offset = 0;
+                context.IASetVertexBuffers(
+                    0,
+                    1,
+                    Some(&Some(self.vertex_buffer_transparent.clone())),
+                    Some(&stride),
+                    Some(&offset),
+                );
+                context.Draw(vertex_count as u32, 0);
+            }
+
+            context.RSSetState(original_rs_state.as_ref());
+            context.OMSetBlendState(
+                original_blend_state.as_ref(),
+                Some(&original_blend_factor),
+                original_sample_mask,
+            );
+            context.OMSetDepthStencilState(original_depth_state.as_ref(), original_stencil_ref);
         }
     }
 }

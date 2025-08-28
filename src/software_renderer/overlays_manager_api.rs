@@ -23,7 +23,7 @@ use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
 
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveType, Vertex3D};
 use crate::software_renderer::d3d11_compositor::scoped_render_state::ScopedRenderState;
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
@@ -896,26 +896,50 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Queues slices of opaque and transparent 3D vertices for rendering.
+    /// Atomically queues a batch of 3D primitives for rendering in a specific overlay.
     ///
-    /// This is the primary method for pushing 3D geometry to the overlay system. It separates
-    /// vertices into two categories to allow for correct two-pass rendering of complex
-    /// transparent objects.
+    /// This is the primary, flexible method for pushing custom 3D geometry (e.g., highlights,
+    /// debug shapes) to the rendering system. To prevent flickering, you should build your
+    /// vertex lists locally and then call this function **once per primitive type** with the
+    /// complete data for the frame.
     ///
     /// # Arguments
     /// * `identifier`: The unique name of the target overlay. If `None`, it targets the
     ///   single active overlay, if one exists.
-    /// * `opaque_vertices`: A slice of `Vertex3D` that should be rendered as solid objects.
-    /// * `transparent_vertices`: A slice of `Vertex3D` that should be alpha-blended.
-    pub fn queue_3d_triangles(
+    /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
+    /// * `topology`: A `PrimitiveType` enum that specifies how the renderer should connect
+    ///   the vertices. This function will route the data to the correct internal buffer.
+    ///   - `PrimitiveType::Triangles`: Renders solid, opaque triangles.
+    ///   - `PrimitiveType::Lines`: Renders transparent, alpha-blended lines.
+    /// * `is_transparent`: A boolean flag. Currently, `Lines` are always drawn transparently
+    ///   and `Triangles` are always drawn opaquely, but this provides future flexibility.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// let line_color = [0.0, 1.0, 1.0, 0.5]; // Semi-transparent cyan
+    ///
+    /// // Define the vertices for all the lines you want to draw this frame.
+    /// let line_vertices = vec![ ... ];
+    ///
+    /// // Queue the line primitives using the flexible API.
+    /// manager.queue_primitives(
+    ///     Some("main_hud"),
+    ///     &line_vertices,
+    ///     PrimitiveType::Lines,
+    ///     true,
+    /// );
+    /// ```
+    pub fn queue_primitives(
         &self,
         identifier: Option<&str>,
-        opaque_vertices: &[Vertex3D],
-        transparent_vertices: &[Vertex3D],
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+        is_transparent: bool,
     ) {
         if let Ok(mut manager) = self.manager.lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.queue_3d_triangles(opaque_vertices, transparent_vertices);
+                overlay.queue_primitives(vertices, topology, is_transparent);
             }
         }
     }

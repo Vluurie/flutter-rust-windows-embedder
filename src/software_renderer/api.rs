@@ -1,6 +1,7 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
@@ -245,31 +246,13 @@ impl FlutterOverlay {
         }
     }
 
-    /// Composites (draws) the overlay's texture onto the screen.
-    /// This function ONLY draws. It assumes `tick()` has already been called.
-    pub fn composite(
-        &self,
-        context: &ID3D11DeviceContext,
-        screen_width: u32,
-        screen_height: u32,
-        time: f32,
-    ) {
-        if !self.visible || self.width == 0 || self.height == 0 {
-            return;
-        }
-
-        self.compositor.render_texture(
-            context,
-            &self.srv,
-            &self.effect_config,
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            screen_width as f32,
-            screen_height as f32,
-            time,
-        );
+    /// Accepts a slice of 3D vertices from the host application (the game)
+    /// and queues them for rendering by the Primitive3DRenderer.
+    ///
+    /// This is the primary way to draw debug shapes or other 3D elements
+    /// through the overlay system.
+    pub fn queue_3d_triangles(&mut self, vertices: &[Vertex3D]) {
+        self.primitive_renderer.queue_triangles(vertices);
     }
 
     /// Processes a Windows keyboard message for this overlay.

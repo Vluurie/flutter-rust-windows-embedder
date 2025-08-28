@@ -1,7 +1,7 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveType, Vertex3D};
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
@@ -246,16 +246,24 @@ impl FlutterOverlay {
         }
     }
 
-    /// Accepts slices of 3D vertices and queues them for rendering.
-    pub fn queue_3d_triangles(
+    /// Accepts a batch of primitives and routes it to the correct buffer in the stable renderer.
+    pub fn queue_primitives(
         &mut self,
-        opaque_vertices: &[Vertex3D],
-        transparent_vertices: &[Vertex3D],
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+        _is_transparent: bool,
     ) {
-        self.primitive_renderer
-            .submit_triangles(opaque_vertices, transparent_vertices);
+        match topology {
+            PrimitiveType::Triangles => {
+                self.primitive_renderer.submit_primitives(vertices, &[]);
+            }
+            PrimitiveType::Lines => {
+                self.primitive_renderer.submit_primitives(&[], vertices);
+            }
+        }
     }
 
+    /// Latches the submitted primitive data, making it ready for rendering.
     pub fn latch_queued_primitives(&mut self) {
         self.primitive_renderer.latch_buffers();
     }

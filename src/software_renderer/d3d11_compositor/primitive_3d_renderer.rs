@@ -1,10 +1,12 @@
 use directx_math::XMMatrix;
 use std::mem;
-use windows::Win32::Graphics::{Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D11::*};
+use windows::Win32::{
+    Foundation::BOOL,
+    Graphics::{Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D11::*},
+};
 
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 
-// Die Datenstruktur für einen einzelnen Vertex im 3D-Raum mit Farbe
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex3D {
@@ -12,10 +14,14 @@ pub struct Vertex3D {
     pub color: [f32; 4],
 }
 
-// Die Daten für unseren Constant Buffer im Shader
 #[repr(C)]
 struct SceneConstants {
     view_projection: XMMatrix,
+}
+
+pub struct PrimitiveRendererStates {
+    pub blend_state: ID3D11BlendState,
+    pub depth_stencil_state: ID3D11DepthStencilState,
 }
 
 #[derive(Clone)]
@@ -25,13 +31,15 @@ pub struct Primitive3DRenderer {
     input_layout: ID3D11InputLayout,
     vertex_buffer: ID3D11Buffer,
     constant_buffer: ID3D11Buffer,
-    queued_vertices: Vec<Vertex3D>,
-    buffer_capacity: usize, // Anzahl der Vertices, die in den GPU-Buffer passen
+    submit_buffer: Vec<Vertex3D>,
+    render_buffer: Vec<Vertex3D>,
+    buffer_capacity: usize,
+    pub blend_state: ID3D11BlendState,
+    pub depth_stencil_state: ID3D11DepthStencilState,
 }
 
 impl Primitive3DRenderer {
     pub fn new(device: &ID3D11Device) -> Self {
-        // --- Shader und Input Layout erstellen ---
         let vs_bytes = include_bytes!("./shaders/primitive_vs.cso");
         let ps_bytes = include_bytes!("./shaders/primitive_ps.cso");
 
@@ -64,7 +72,7 @@ impl Primitive3DRenderer {
                 SemanticIndex: 0,
                 Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32B32A32_FLOAT,
                 InputSlot: 0,
-                AlignedByteOffset: 12, // nach der Position (3 * 4 Bytes)
+                AlignedByteOffset: 12,
                 InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
                 InstanceDataStepRate: 0,
             },
@@ -77,8 +85,7 @@ impl Primitive3DRenderer {
                 .expect("Failed to create primitive input layout");
         }
 
-        // --- GPU-Buffer erstellen ---
-        let buffer_capacity = 65536; // Kapazität für ~21k Dreiecke, kann angepasst werden
+        let buffer_capacity = 65536;
         let vertex_buffer_desc = D3D11_BUFFER_DESC {
             ByteWidth: (mem::size_of::<Vertex3D>() * buffer_capacity) as u32,
             Usage: D3D11_USAGE_DYNAMIC,
@@ -109,42 +116,73 @@ impl Primitive3DRenderer {
                 .expect("Failed to create constant buffer");
         }
 
+        let mut blend_desc = D3D11_BLEND_DESC::default();
+        let rt_blend_desc = D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: BOOL(1),
+            SrcBlend: D3D11_BLEND_ONE,
+            DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+            BlendOp: D3D11_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D11_BLEND_ONE,
+            DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+            BlendOpAlpha: D3D11_BLEND_OP_ADD,
+            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+        };
+        blend_desc.RenderTarget[0] = rt_blend_desc;
+
+        let mut blend_state: Option<ID3D11BlendState> = None;
+        unsafe {
+            device
+                .CreateBlendState(&blend_desc, Some(&mut blend_state))
+                .expect("Failed to create blend state");
+        }
+
+        let mut depth_desc = D3D11_DEPTH_STENCIL_DESC::default();
+        depth_desc.DepthEnable = BOOL(0);
+
+        let mut depth_stencil_state: Option<ID3D11DepthStencilState> = None;
+        unsafe {
+            device
+                .CreateDepthStencilState(&depth_desc, Some(&mut depth_stencil_state))
+                .expect("Failed to create depth stencil state");
+        }
+
         Self {
             vertex_shader: vertex_shader.unwrap(),
             pixel_shader: pixel_shader.unwrap(),
             input_layout: input_layout.unwrap(),
             vertex_buffer: vertex_buffer.unwrap(),
             constant_buffer: constant_buffer.unwrap(),
-            queued_vertices: Vec::with_capacity(buffer_capacity),
+            submit_buffer: Vec::with_capacity(buffer_capacity),
+            render_buffer: Vec::with_capacity(buffer_capacity),
             buffer_capacity,
+            blend_state: blend_state.unwrap(),
+            depth_stencil_state: depth_stencil_state.unwrap(),
         }
     }
 
-    /// Fügt 3D-Vertices zur Render-Warteschlange für diesen Frame hinzu.
-    /// Annahme: Die Vertices sind bereits als Dreiecksliste geordnet.
-    pub fn queue_triangles(&mut self, vertices: &[Vertex3D]) {
-        self.queued_vertices.extend_from_slice(vertices);
+    pub fn submit_triangles(&mut self, vertices: &[Vertex3D]) {
+        self.submit_buffer.clear();
+        self.submit_buffer.extend_from_slice(vertices);
+    }
+
+    pub fn latch_buffers(&mut self) {
+        self.render_buffer = self.submit_buffer.clone();
     }
 }
 
 impl Renderer for Primitive3DRenderer {
     fn draw(&mut self, params: &FrameParams) {
-        if self.queued_vertices.is_empty() {
+        if self.render_buffer.is_empty() {
             return;
         }
 
         let context = params.context;
+        let vertex_count = self.render_buffer.len().min(self.buffer_capacity);
 
         unsafe {
-            // 1. Constant Buffer aktualisieren
-            // OLD, WRONG WAY:
-            // let view_matrix = params.camera.get_view_matrix(); ...
-
-            // NEW, CORRECT WAY: Use the matrix passed directly into params
             let constants = SceneConstants {
                 view_projection: *params.view_projection_matrix,
             };
-
             let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
             context
                 .Map(
@@ -158,7 +196,6 @@ impl Renderer for Primitive3DRenderer {
             *(mapped_cb.pData as *mut SceneConstants) = constants;
             context.Unmap(&self.constant_buffer, 0);
 
-            // 2. Vertex-Buffer mit den Daten aus der Warteschlange aktualisieren
             let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
             context
                 .Map(
@@ -169,15 +206,14 @@ impl Renderer for Primitive3DRenderer {
                     Some(&mut mapped_vb),
                 )
                 .unwrap();
-            let vertex_count = self.queued_vertices.len().min(self.buffer_capacity);
+
             std::ptr::copy_nonoverlapping(
-                self.queued_vertices.as_ptr(),
+                self.render_buffer.as_ptr(),
                 mapped_vb.pData as *mut Vertex3D,
                 vertex_count,
             );
             context.Unmap(&self.vertex_buffer, 0);
 
-            // 3. GPU-Pipeline-State setzen
             context.IASetInputLayout(&self.input_layout);
             let stride = mem::size_of::<Vertex3D>() as u32;
             let offset = 0;
@@ -189,17 +225,11 @@ impl Renderer for Primitive3DRenderer {
                 Some(&offset),
             );
             context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constant_buffer.clone())]));
-
             context.PSSetShader(&self.pixel_shader, None);
 
-            // 4. Draw Call!
             context.Draw(vertex_count as u32, 0);
         }
-
-        // 5. Warteschlange für den nächsten Frame leeren
-        self.queued_vertices.clear();
     }
 }

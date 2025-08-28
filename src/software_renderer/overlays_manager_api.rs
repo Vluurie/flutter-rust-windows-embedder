@@ -896,50 +896,65 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Atomically queues a batch of 3D primitives for rendering in a specific overlay.
+    /// Atomically replaces an entire group of 3D primitives for a specific overlay.
     ///
-    /// This is the primary, flexible method for pushing custom 3D geometry (e.g., highlights,
-    /// debug shapes) to the rendering system. To prevent flickering, you should build your
-    /// vertex lists locally and then call this function **once per primitive type** with the
-    /// complete data for the frame.
+    /// This is the recommended method for pushing 3D geometry to the system. Instead of
+    /// adding primitives, this function replaces all primitives for a given `group_id`
+    /// with the new set of vertices. This prevents stale data from persisting and
+    /// simplifies per-frame logic.
     ///
     /// # Arguments
-    /// * `identifier`: The unique name of the target overlay. If `None`, it targets the
-    ///   single active overlay, if one exists.
+    /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
+    /// * `group_id`: A string slice that identifies this group of primitives (e.g., "entity_highlights", "debug_boxes").
     /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
-    /// * `topology`: A `PrimitiveType` enum that specifies how the renderer should connect
-    ///   the vertices. This function will route the data to the correct internal buffer.
-    ///   - `PrimitiveType::Triangles`: Renders solid, opaque triangles.
-    ///   - `PrimitiveType::Lines`: Renders transparent, alpha-blended lines.
-    /// * `is_transparent`: A boolean flag. Currently, `Lines` are always drawn transparently
-    ///   and `Triangles` are always drawn opaquely, but this provides future flexibility.
-    ///
-    /// # Example
-    /// ```rust, no_run
-    /// let manager = get_flutter_overlay_manager_handle().unwrap();
-    /// let line_color = [0.0, 1.0, 1.0, 0.5]; // Semi-transparent cyan
-    ///
-    /// // Define the vertices for all the lines you want to draw this frame.
-    /// let line_vertices = vec![ ... ];
-    ///
-    /// // Queue the line primitives using the flexible API.
-    /// manager.queue_primitives(
-    ///     Some("main_hud"),
-    ///     &line_vertices,
-    ///     PrimitiveType::Lines,
-    ///     true,
-    /// );
-    /// ```
-    pub fn queue_primitives(
+    /// * `topology`: A `PrimitiveType` enum that specifies how the vertices should be connected.
+    pub fn replace_primitives_in_group(
         &self,
         identifier: Option<&str>,
+        group_id: &str,
         vertices: &[Vertex3D],
         topology: PrimitiveType,
-        is_transparent: bool,
     ) {
         if let Ok(mut manager) = self.manager.lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.queue_primitives(vertices, topology, is_transparent);
+                overlay.replace_queued_primitives_in_group(group_id, vertices, topology);
+            }
+        }
+    }
+
+    // --- REPLACE `clear_all_queued_primitives` ---
+    /// Clears all submitted 3D primitives from all groups and all active overlays.
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.clear_all_primitives();
+    /// ```
+    pub fn clear_all_primitives(&self) {
+        if let Ok(mut manager) = self.manager.lock() {
+            for overlay in manager.active_instances.values_mut() {
+                overlay.clear_all_queued_primitives();
+            }
+        }
+    }
+
+    // --- ADD THIS NEW METHOD ---
+    /// Clears all submitted 3D primitives from a specific group for a specific overlay.
+    ///
+    /// # Arguments
+    /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
+    /// * `group_id`: The ID of the group to clear (e.g., "entity_highlights").
+    ///
+    /// # Example
+    /// ```rust,no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Stop showing entity highlights without affecting other debug drawings.
+    /// manager.clear_primitives_in_group(None, "entity_highlights");
+    /// ```
+    pub fn clear_primitives_in_group(&self, identifier: Option<&str>, group_id: &str) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.clear_queued_primitives_in_group(group_id);
             }
         }
     }

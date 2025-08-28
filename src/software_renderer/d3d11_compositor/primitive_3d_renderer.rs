@@ -1,5 +1,5 @@
 use directx_math::{XMMatrix, XMMatrixTranspose};
-use std::mem;
+use std::{collections::HashMap, mem};
 use windows::Win32::{
     Foundation::BOOL,
     Graphics::{
@@ -38,7 +38,8 @@ pub struct Primitive3DRenderer {
     vertex_buffer_triangles: ID3D11Buffer,
     vertex_buffer_lines: ID3D11Buffer,
 
-    submit_buffer_triangles: Vec<Vertex3D>,
+    submit_groups_triangles: HashMap<String, Vec<Vertex3D>>,
+    submit_groups_lines: HashMap<String, Vec<Vertex3D>>,
     render_buffer_triangles: Vec<Vertex3D>,
     submit_buffer_lines: Vec<Vertex3D>,
     render_buffer_lines: Vec<Vertex3D>,
@@ -228,7 +229,8 @@ impl Primitive3DRenderer {
             vertex_buffer_triangles: vertex_buffer_triangles.unwrap(),
             vertex_buffer_lines: vertex_buffer_lines.unwrap(),
             constant_buffer: constant_buffer.unwrap(),
-            submit_buffer_triangles: Vec::with_capacity(buffer_capacity),
+            submit_groups_triangles: HashMap::new(),
+            submit_groups_lines: HashMap::new(),
             render_buffer_triangles: Vec::with_capacity(buffer_capacity),
             submit_buffer_lines: Vec::with_capacity(buffer_capacity),
             render_buffer_lines: Vec::with_capacity(buffer_capacity),
@@ -241,16 +243,50 @@ impl Primitive3DRenderer {
         }
     }
 
-    pub fn submit_primitives(&mut self, triangles: &[Vertex3D], lines: &[Vertex3D]) {
-        self.submit_buffer_triangles.clear();
-        self.submit_buffer_triangles.extend_from_slice(triangles);
-        self.submit_buffer_lines.clear();
-        self.submit_buffer_lines.extend_from_slice(lines);
+    /// Ersetzt die Primitiven für eine bestimmte Gruppe atomar.
+    /// Wenn ein Slice leer ist, wird die entsprechende Gruppe entfernt.
+    pub fn replace_primitives_in_group(
+        &mut self,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+    ) {
+        if triangles.is_empty() {
+            self.submit_groups_triangles.remove(group_id);
+        } else {
+            self.submit_groups_triangles
+                .insert(group_id.to_string(), triangles.to_vec());
+        }
+
+        if lines.is_empty() {
+            self.submit_groups_lines.remove(group_id);
+        } else {
+            self.submit_groups_lines
+                .insert(group_id.to_string(), lines.to_vec());
+        }
+    }
+
+    pub fn clear_primitives_in_group(&mut self, group_id: &str) {
+        self.submit_groups_triangles.remove(group_id);
+        self.submit_groups_lines.remove(group_id);
+    }
+
+    pub fn clear_all_primitives(&mut self) {
+        self.submit_groups_triangles.clear();
+        self.submit_groups_lines.clear();
     }
 
     pub fn latch_buffers(&mut self) {
-        self.render_buffer_triangles = self.submit_buffer_triangles.clone();
-        self.render_buffer_lines = self.submit_buffer_lines.clone();
+        self.render_buffer_triangles.clear();
+        for group_vertices in self.submit_groups_triangles.values() {
+            self.render_buffer_triangles
+                .extend_from_slice(group_vertices);
+        }
+
+        self.render_buffer_lines.clear();
+        for group_vertices in self.submit_groups_lines.values() {
+            self.render_buffer_lines.extend_from_slice(group_vertices);
+        }
     }
 }
 

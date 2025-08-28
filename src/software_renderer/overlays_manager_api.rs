@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, Once};
 use std::time::Instant;
 
+use directx_math::XMMatrix;
 use log::{error, info, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
@@ -22,6 +23,8 @@ use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
 
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
+use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
 
@@ -706,37 +709,49 @@ impl FlutterOverlayManagerHandle {
 
     /// Ticks all overlays to update their texture content and then composites them.
     ///
-    /// # What it solves
-    /// This is a convenience method for simple rendering loops. It combines `tick_overlays`
-    /// and `composite_overlays` into a single function, which is often all that's
-    /// needed if the host application doesn't need to render anything between the UI
-    /// update and its final presentation.
+    /// This is the main rendering entry point. It must be called every frame.
     ///
-    /// # Example
-    /// ```rust, no_run
-    /// // In a simple main loop
-    /// let manager = get_flutter_overlay_manager_handle().unwrap();
-    /// loop {
-    ///     manager.run_flutter_tick();
-    ///     // present swap chain...
-    /// }
-    /// ```
-    pub fn run_flutter_tick(&self) {
-        if let Ok(manager) = self.manager.lock() {
+    /// # Arguments
+    /// * `view_projection_matrix`: The combined view and projection matrix from the
+    ///   host application's camera. This is required for rendering 3D elements.
+    pub fn run_flutter_tick(&self, view_projection_matrix: &XMMatrix) {
+        if let Ok(mut manager) = self.manager.lock() {
             if let Some(context) = manager.shared_d3d_context.clone() {
-                let time = manager.start_time.elapsed().as_secs_f32();
+                let time = if manager.is_paused {
+                    manager.time_at_pause
+                } else {
+                    manager.start_time.elapsed().as_secs_f32()
+                };
+
+                // Create the frame parameters using the matrix provided by the game.
+                let mut frame_params = FrameParams {
+                    context: &context,
+                    view_projection_matrix, // Pass it in directly
+                    screen_width: manager.screen_width as f32,
+                    screen_height: manager.screen_height as f32,
+                    time,
+                };
 
                 for id in &manager.overlay_order.clone() {
-                    if let Some(overlay) = manager.active_instances.get(id) {
+                    if let Some(overlay) = manager.active_instances.get_mut(id) {
                         if overlay.is_visible() {
+                            // 1. Update Flutter UI texture. This is a CPU/GPU sync point.
                             overlay.tick(&context);
                             update_interactive_widget_hover_state(overlay);
-                            overlay.composite(
-                                &context,
-                                manager.screen_width,
-                                manager.screen_height,
-                                time,
+
+                            // 2. Draw any 3D primitives that the game has queued this frame.
+                            overlay.primitive_renderer.draw(&mut frame_params);
+
+                            // 3. Queue the Flutter UI for drawing and then draw it.
+                            overlay.post_processor.queue_texture_render(
+                                &overlay.srv,
+                                &overlay.effect_config,
+                                overlay.x,
+                                overlay.y,
+                                overlay.width,
+                                overlay.height,
                             );
+                            overlay.post_processor.draw(&mut frame_params);
                         }
                     }
                 }
@@ -788,20 +803,41 @@ impl FlutterOverlayManagerHandle {
     /// render_my_3d_world();
     /// manager.composite_overlays(); // Draws the UI on top of the world
     /// ```
-    pub fn composite_overlays(&self) {
-        if let Ok(manager) = self.manager.lock() {
+    pub fn composite_overlays(&self, view_projection_matrix: &XMMatrix) {
+        if let Ok(mut manager) = self.manager.lock() {
             if let Some(context) = manager.shared_d3d_context.clone() {
-                let time = manager.start_time.elapsed().as_secs_f32();
-                for id in &manager.overlay_order.clone() {
-                    if let Some(overlay) = manager.active_instances.get(id) {
+                let time = if manager.is_paused {
+                    manager.time_at_pause
+                } else {
+                    manager.start_time.elapsed().as_secs_f32()
+                };
+
+                let mut frame_params = FrameParams {
+                    context: &context,
+                    view_projection_matrix,
+                    screen_width: manager.screen_width as f32,
+                    screen_height: manager.screen_height as f32,
+                    time,
+                };
+
+                for id in manager.overlay_order.clone() {
+                    if let Some(overlay) = manager.active_instances.get_mut(&id) {
                         if overlay.is_visible() {
                             update_interactive_widget_hover_state(overlay);
-                            overlay.composite(
-                                &context,
-                                manager.screen_width,
-                                manager.screen_height,
-                                time,
+
+                            // Draw 3D primitives
+                            overlay.primitive_renderer.draw(&mut frame_params);
+
+                            // Queue and draw the 2D Flutter UI
+                            overlay.post_processor.queue_texture_render(
+                                &overlay.srv,
+                                &overlay.effect_config,
+                                overlay.x,
+                                overlay.y,
+                                overlay.width,
+                                overlay.height,
                             );
+                            overlay.post_processor.draw(&mut frame_params);
                         }
                     }
                 }
@@ -839,6 +875,23 @@ impl FlutterOverlayManagerHandle {
             if !manager.is_paused {
                 manager.time_at_pause = manager.start_time.elapsed().as_secs_f32();
                 manager.is_paused = true;
+            }
+        }
+    }
+
+    /// Queues a slice of 3D vertices to be rendered by a specific overlay instance.
+    ///
+    /// This is the primary, high-level method for pushing debug or 3D UI data
+    /// from the host application to the overlay system for rendering.
+    ///
+    /// # Arguments
+    /// * `identifier`: The unique name of the target overlay. If `None`, it targets the
+    ///   single active overlay, if one exists.
+    /// * `vertices`: A slice of `Vertex3D` to be rendered as a triangle list.
+    pub fn queue_3d_triangles(&self, identifier: Option<&str>, vertices: &[Vertex3D]) {
+        if let Ok(mut manager) = self.manager.lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.queue_3d_triangles(vertices);
             }
         }
     }

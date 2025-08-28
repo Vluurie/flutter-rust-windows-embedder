@@ -15,3 +15,12 @@ fxc "hologram_ps.hlsl" /nologo /T ps_4_0 /D PS /E PSMain /Fo "hologram_ps.cso"
 echo:
 echo === Warp Shader ===
 fxc "warp_field_ps.hlsl" /nologo /T ps_4_0 /D PS /E PSMain /Fo "warp_field_ps.cso"
+
+
+echo:
+echo === Primitive PS Shader ===
+fxc "primitive_ps.hlsl" /nologo /T ps_4_0 /D PS /E PSMain /Fo "primitive_ps.cso"
+
+echo:
+echo === Primitive VS Shader ===
+fxc "primitive_vs.hlsl" /nologo /T vs_4_0 /D VS /E VSMain /Fo "primitive_vs.cso"

@@ -1,7 +1,8 @@
 use crate::path_utils::load_flutter_build_paths;
 use crate::software_renderer::api::RendererType;
-use crate::software_renderer::d3d11_compositor::compositor::D3D11Compositor;
 use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
+use crate::software_renderer::d3d11_compositor::post_processing_renderer::PostProcessRenderer;
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Primitive3DRenderer;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 
 use crate::software_renderer::gl_renderer::angle_interop::{
@@ -166,7 +167,8 @@ pub(crate) fn init_overlay(
                 build_software_renderer_config_tuple(game_device, width, height)
             }
         };
-        let compositor = D3D11Compositor::new(device);
+        let post_processor = PostProcessRenderer::new(device);
+        let primitive_renderer = Primitive3DRenderer::new(device);
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
 
@@ -189,7 +191,8 @@ pub(crate) fn init_overlay(
             texture: texture_for_struct,
             srv: srv_for_struct,
             gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
-            compositor,
+            post_processor,
+            primitive_renderer,
             desired_cursor: Arc::new(Mutex::new(None)),
             task_queue_state: task_queue_arc,
             task_runner_thread: None,

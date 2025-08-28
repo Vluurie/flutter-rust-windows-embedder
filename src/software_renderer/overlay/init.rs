@@ -83,7 +83,6 @@ pub(crate) fn init_overlay(
                 &assets.to_string_lossy(),
                 &icu.to_string_lossy(),
                 dart_args_opt,
-                initial_is_debug,
                 engine_args_opt,
             );
 
@@ -194,6 +193,8 @@ pub(crate) fn init_overlay(
             desired_cursor: Arc::new(Mutex::new(None)),
             task_queue_state: task_queue_arc,
             task_runner_thread: None,
+            message_handlers: Arc::new(Mutex::new(HashMap::new())),
+            response_buffer: Arc::new(Mutex::new(Vec::with_capacity(1024))), // Start with 1KB capacity
             _assets_c: assets_c_temp,
             _icu_c: icu_c_temp,
             _engine_argv_cs: engine_argv_cs_temp,

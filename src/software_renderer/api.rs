@@ -246,24 +246,32 @@ impl FlutterOverlay {
         }
     }
 
-    /// Accepts a batch of primitives and routes it to the correct buffer in the stable renderer.
-    pub fn queue_primitives(
+    pub fn clear_all_queued_primitives(&mut self) {
+        self.primitive_renderer.clear_all_primitives();
+    }
+
+    pub fn replace_queued_primitives_in_group(
         &mut self,
+        group_id: &str,
         vertices: &[Vertex3D],
         topology: PrimitiveType,
-        _is_transparent: bool,
     ) {
         match topology {
             PrimitiveType::Triangles => {
-                self.primitive_renderer.submit_primitives(vertices, &[]);
+                self.primitive_renderer
+                    .replace_primitives_in_group(group_id, vertices, &[]);
             }
             PrimitiveType::Lines => {
-                self.primitive_renderer.submit_primitives(&[], vertices);
+                self.primitive_renderer
+                    .replace_primitives_in_group(group_id, &[], vertices);
             }
         }
     }
 
-    /// Latches the submitted primitive data, making it ready for rendering.
+    pub fn clear_queued_primitives_in_group(&mut self, group_id: &str) {
+        self.primitive_renderer.clear_primitives_in_group(group_id);
+    }
+
     pub fn latch_queued_primitives(&mut self) {
         self.primitive_renderer.latch_buffers();
     }

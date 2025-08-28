@@ -441,6 +441,42 @@ impl FlutterOverlay {
         self.visible
     }
 
+    /// Registers a custom handler for a platform channel.
+    ///
+    /// The handler takes the request bytes as an owned `Vec<u8>` and returns its
+    /// response as a new `Vec<u8>`. This is a simpler, higher-level abstraction
+    /// that handles memory allocation for the response automatically.
+    ///
+    /// # Arguments
+    /// * `channel` - The name of the channel to listen on.
+    /// * `handler` - A closure that takes `payload: Vec<u8>` and returns `Vec<u8>`.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// my_overlay.register_channel_handler("my_game/get_player_state", |payload| {
+    ///     let request_str = String::from_utf8_lossy(&payload);
+    ///     println!("Request from Dart: {}", request_str);
+    ///     
+    ///     let state_json = r#"{"health": 100, "mana": 80}"#;
+    ///     state_json.as_bytes().to_vec() // Return the response bytes
+    /// });
+    /// ```
+    pub fn register_channel_handler<F>(&mut self, channel: &str, handler: F)
+    where
+        F: Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static,
+    {
+        match self.message_handlers.lock() {
+            Ok(mut handlers) => {
+                handlers.insert(channel.to_string(), Box::new(handler));
+            }
+            Err(poisoned) => {
+                log::error!(
+                    "Failed to acquire lock on message_handlers because it was poisoned: {}",
+                    poisoned
+                );
+            }
+        }
+    }
     /// Triggers a "Hot Restart" for the running Flutter application.
     ///
     /// This works by sending a specific message on the "app/lifecycle" platform

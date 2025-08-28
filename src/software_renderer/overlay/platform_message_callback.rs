@@ -3,14 +3,14 @@ use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
-use log::error;
-
-use std::ffi::{c_void, CStr, CString};
+use log::{error, warn};
+use std::ffi::{CStr, CString, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::{ptr, str};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+// Standard Method Codec type tags used for parsing simple messages like mouse cursor activation.
 const K_SMC_NULL: u8 = 0;
 const K_SMC_TRUE: u8 = 1;
 const K_SMC_FALSE: u8 = 2;
@@ -19,6 +19,8 @@ const K_SMC_STRING: u8 = 7;
 const K_SMC_LIST: u8 = 12;
 const K_SMC_MAP: u8 = 13;
 
+//  helper functions to decode simple messages without a full codec dependency.
+
 fn read_exact_checked(
     cursor: &mut Cursor<&[u8]>,
     buf: &mut [u8],
@@ -26,10 +28,9 @@ fn read_exact_checked(
 ) -> Result<(), IoError> {
     match cursor.read_exact(buf) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == IoErrorKind::UnexpectedEof => Err(IoError::new(
-            IoErrorKind::UnexpectedEof,
-            format!("Unexpected EOF"),
-        )),
+        Err(e) if e.kind() == IoErrorKind::UnexpectedEof => {
+            Err(IoError::new(IoErrorKind::UnexpectedEof, "Unexpected EOF"))
+        }
         Err(e) => Err(e),
     }
 }
@@ -61,7 +62,7 @@ fn mc_read_cursor_kind_value(cursor: &mut Cursor<&[u8]>) -> Result<Option<String
         }
         _ => Err(IoError::new(
             IoErrorKind::InvalidData,
-            format!("Unsupported type tag"),
+            "Unsupported type tag",
         )),
     }
 }
@@ -128,7 +129,6 @@ fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<St
     Ok((method_name, args_kind_value))
 }
 
-#[unsafe(no_mangle)]
 pub(crate) extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
     user_data: *mut c_void,
@@ -149,6 +149,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
 
         let message = &*platform_message;
 
+        // A message with no channel name is invalid, but we must still respond if a handle is present.
         if message.channel.is_null() {
             if !message.response_handle.is_null() {
                 let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
@@ -165,7 +166,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
         let channel_name_str = channel_name_c_str.to_string_lossy();
         let channel_name = channel_name_str.as_ref();
 
-        let mut response_sent_by_handler = false;
+        let mut response_sent = false;
 
         if channel_name == "flutter/mousecursor" {
             if message.message_size > 0 && !message.message.is_null() {
@@ -176,7 +177,6 @@ pub(crate) extern "C" fn simple_platform_message_callback(
                         K_SMC_LIST => {
                             if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
                                 if method == "activateSystemCursor" {
-                                    // set_desired_cursor(kind_opt);
                                     if let Ok(mut guard) = overlay.desired_cursor.lock() {
                                         *guard = kind_opt;
                                     }
@@ -185,7 +185,6 @@ pub(crate) extern "C" fn simple_platform_message_callback(
                         }
                         K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
                             if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
-                                // set_desired_cursor(kind_opt);
                                 if let Ok(mut guard) = overlay.desired_cursor.lock() {
                                     *guard = kind_opt;
                                 }
@@ -198,7 +197,7 @@ pub(crate) extern "C" fn simple_platform_message_callback(
         } else if channel_name == "flutter/textinput" {
             custom_text_input_platform_message_handler(platform_message, user_data);
             if !message.response_handle.is_null() {
-                response_sent_by_handler = true;
+                response_sent = true;
             }
         } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
             if !message.response_handle.is_null() {
@@ -208,11 +207,40 @@ pub(crate) extern "C" fn simple_platform_message_callback(
                     ptr::null(),
                     0,
                 );
-                response_sent_by_handler = true;
+                response_sent = true;
+            }
+        } else {
+            let data_slice = std::slice::from_raw_parts(message.message, message.message_size);
+
+            match overlay.message_handlers.lock() {
+                Ok(handlers) => {
+                    if let Some(handler) = handlers.get(channel_name) {
+                        let request_payload = data_slice.to_vec();
+                        let response_payload = handler(request_payload);
+                        let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+                            engine_handle.0,
+                            message.response_handle,
+                            response_payload.as_ptr(),
+                            response_payload.len(),
+                        );
+
+                        response_sent = true;
+                    } else {
+                        warn!(
+                            "[PlatformMsgCB] Received message on unhandled custom channel: {}",
+                            channel_name
+                        );
+                    }
+                }
+                Err(poisoned) => {
+                    error!(
+                        "[PlatformMsgCB] Handlers map mutex was poisoned: {}",
+                        poisoned
+                    );
+                }
             }
         }
-
-        if !response_sent_by_handler && !message.response_handle.is_null() {
+        if !response_sent && !message.response_handle.is_null() {
             let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
                 engine_handle.0,
                 message.response_handle,
@@ -223,12 +251,11 @@ pub(crate) extern "C" fn simple_platform_message_callback(
     }
 }
 
-
-/// Sends a platform message directly to the Dart side of the overlay.
-/// This is the primary way to communicate with your Flutter app from Rust.
+/// Sends a platform message from Rust to the Dart application.
 ///
 /// # Arguments
-/// * `channel`: The name of the channel to send the message on (e.g., "app/lifecycle").
+/// * `overlay`: A reference to the active `FlutterOverlay`.
+/// * `channel`: The name of the channel to send the message on.
 /// * `message`: A byte slice representing the message payload.
 ///
 /// # Returns
@@ -244,7 +271,12 @@ pub fn send_platform_message(
 
     let channel_cstring = match CString::new(channel) {
         Ok(s) => s,
-        Err(e) => return Err(FlutterEmbedderError::OperationFailed(format!("Invalid channel name: {}", e))),
+        Err(e) => {
+            return Err(FlutterEmbedderError::OperationFailed(format!(
+                "Invalid channel name: {}",
+                e
+            )));
+        }
     };
 
     let platform_message = embedder::FlutterPlatformMessage {
@@ -255,15 +287,18 @@ pub fn send_platform_message(
         response_handle: ptr::null(),
     };
 
-    unsafe {
-        let result = (overlay.engine_dll.FlutterEngineSendPlatformMessage)(overlay.engine.0, &platform_message);
-        
-        if result == embedder::FlutterEngineResult_kSuccess {
-            Ok(())
-        } else {
-            let err_msg = format!("Failed to send platform message on channel '{}': {:?}", channel, result);
-            error!("[FlutterOverlay:'{}'] {}", overlay.name, err_msg);
-            Err(FlutterEmbedderError::OperationFailed(err_msg))
-        }
+    let result = unsafe {
+        (overlay.engine_dll.FlutterEngineSendPlatformMessage)(overlay.engine.0, &platform_message)
+    };
+
+    if result == embedder::FlutterEngineResult_kSuccess {
+        Ok(())
+    } else {
+        let err_msg = format!(
+            "Failed to send platform message on channel '{}': {:?}",
+            channel, result
+        );
+        error!("[FlutterOverlay:'{}'] {}", overlay.name, err_msg);
+        Err(FlutterEmbedderError::OperationFailed(err_msg))
     }
 }

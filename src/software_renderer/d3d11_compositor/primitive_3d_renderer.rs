@@ -2,10 +2,20 @@ use directx_math::{XMMatrix, XMMatrixTranspose};
 use std::mem;
 use windows::Win32::{
     Foundation::BOOL,
-    Graphics::{Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, Direct3D11::*},
+    Graphics::{
+        Direct3D::{D3D11_PRIMITIVE_TOPOLOGY_LINELIST, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST},
+        Direct3D11::*,
+    },
 };
 
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
+
+#[derive(Clone, Copy, Debug)]
+pub enum PrimitiveType {
+    Triangles,
+    Lines,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex3D {
@@ -23,18 +33,15 @@ pub struct Primitive3DRenderer {
     vertex_shader: ID3D11VertexShader,
     pixel_shader: ID3D11PixelShader,
     input_layout: ID3D11InputLayout,
-
-    vertex_buffer_opaque: ID3D11Buffer,
-    vertex_buffer_transparent: ID3D11Buffer,
-
     constant_buffer: ID3D11Buffer,
 
-    submit_buffer_opaque: Vec<Vertex3D>,
-    render_buffer_opaque: Vec<Vertex3D>,
-    submit_buffer_transparent: Vec<Vertex3D>,
-    render_buffer_transparent: Vec<Vertex3D>,
+    vertex_buffer_triangles: ID3D11Buffer,
+    vertex_buffer_lines: ID3D11Buffer,
 
-    buffer_capacity: usize,
+    submit_buffer_triangles: Vec<Vertex3D>,
+    render_buffer_triangles: Vec<Vertex3D>,
+    submit_buffer_lines: Vec<Vertex3D>,
+    render_buffer_lines: Vec<Vertex3D>,
 
     blend_state_transparent: ID3D11BlendState,
     blend_state_opaque: ID3D11BlendState,
@@ -100,22 +107,22 @@ impl Primitive3DRenderer {
             ..Default::default()
         };
 
-        let mut vertex_buffer_opaque: Option<ID3D11Buffer> = None;
-        unsafe {
-            device
-                .CreateBuffer(&vertex_buffer_desc, None, Some(&mut vertex_buffer_opaque))
-                .expect("Failed to create opaque vertex buffer");
-        }
-
-        let mut vertex_buffer_transparent: Option<ID3D11Buffer> = None;
+        let mut vertex_buffer_triangles: Option<ID3D11Buffer> = None;
         unsafe {
             device
                 .CreateBuffer(
                     &vertex_buffer_desc,
                     None,
-                    Some(&mut vertex_buffer_transparent),
+                    Some(&mut vertex_buffer_triangles),
                 )
-                .expect("Failed to create transparent vertex buffer");
+                .expect("Failed to create triangle vertex buffer");
+        }
+
+        let mut vertex_buffer_lines: Option<ID3D11Buffer> = None;
+        unsafe {
+            device
+                .CreateBuffer(&vertex_buffer_desc, None, Some(&mut vertex_buffer_lines))
+                .expect("Failed to create line vertex buffer");
         }
 
         let constant_buffer_desc = D3D11_BUFFER_DESC {
@@ -136,18 +143,14 @@ impl Primitive3DRenderer {
         let mut blend_desc_transparent = D3D11_BLEND_DESC::default();
         let rt_blend_desc = D3D11_RENDER_TARGET_BLEND_DESC {
             BlendEnable: BOOL(1),
-
             SrcBlend: D3D11_BLEND_SRC_ALPHA,
             DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
             BlendOp: D3D11_BLEND_OP_ADD,
-
             SrcBlendAlpha: D3D11_BLEND_ZERO,
             DestBlendAlpha: D3D11_BLEND_ONE,
             BlendOpAlpha: D3D11_BLEND_OP_ADD,
-
             RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
         };
-
         blend_desc_transparent.RenderTarget[0] = rt_blend_desc;
 
         let mut blend_state_transparent: Option<ID3D11BlendState> = None;
@@ -222,14 +225,13 @@ impl Primitive3DRenderer {
             vertex_shader: vertex_shader.unwrap(),
             pixel_shader: pixel_shader.unwrap(),
             input_layout: input_layout.unwrap(),
-            vertex_buffer_opaque: vertex_buffer_opaque.unwrap(),
-            vertex_buffer_transparent: vertex_buffer_transparent.unwrap(),
+            vertex_buffer_triangles: vertex_buffer_triangles.unwrap(),
+            vertex_buffer_lines: vertex_buffer_lines.unwrap(),
             constant_buffer: constant_buffer.unwrap(),
-            submit_buffer_opaque: Vec::with_capacity(buffer_capacity),
-            render_buffer_opaque: Vec::with_capacity(buffer_capacity),
-            submit_buffer_transparent: Vec::with_capacity(buffer_capacity / 2),
-            render_buffer_transparent: Vec::with_capacity(buffer_capacity / 2),
-            buffer_capacity,
+            submit_buffer_triangles: Vec::with_capacity(buffer_capacity),
+            render_buffer_triangles: Vec::with_capacity(buffer_capacity),
+            submit_buffer_lines: Vec::with_capacity(buffer_capacity),
+            render_buffer_lines: Vec::with_capacity(buffer_capacity),
             blend_state_transparent: blend_state_transparent.unwrap(),
             blend_state_opaque: blend_state_opaque.unwrap(),
             depth_stencil_state: depth_stencil_state.unwrap(),
@@ -239,27 +241,22 @@ impl Primitive3DRenderer {
         }
     }
 
-    pub fn submit_triangles(
-        &mut self,
-        opaque_vertices: &[Vertex3D],
-        transparent_vertices: &[Vertex3D],
-    ) {
-        self.submit_buffer_opaque.clear();
-        self.submit_buffer_opaque.extend_from_slice(opaque_vertices);
-        self.submit_buffer_transparent.clear();
-        self.submit_buffer_transparent
-            .extend_from_slice(transparent_vertices);
+    pub fn submit_primitives(&mut self, triangles: &[Vertex3D], lines: &[Vertex3D]) {
+        self.submit_buffer_triangles.clear();
+        self.submit_buffer_triangles.extend_from_slice(triangles);
+        self.submit_buffer_lines.clear();
+        self.submit_buffer_lines.extend_from_slice(lines);
     }
 
     pub fn latch_buffers(&mut self) {
-        self.render_buffer_opaque = self.submit_buffer_opaque.clone();
-        self.render_buffer_transparent = self.submit_buffer_transparent.clone();
+        self.render_buffer_triangles = self.submit_buffer_triangles.clone();
+        self.render_buffer_lines = self.submit_buffer_lines.clone();
     }
 }
 
 impl Renderer for Primitive3DRenderer {
     fn draw(&mut self, params: &FrameParams) {
-        if self.render_buffer_opaque.is_empty() && self.render_buffer_transparent.is_empty() {
+        if self.render_buffer_triangles.is_empty() && self.render_buffer_lines.is_empty() {
             return;
         }
 
@@ -299,22 +296,21 @@ impl Renderer for Primitive3DRenderer {
             context.Unmap(&self.constant_buffer, 0);
 
             context.IASetInputLayout(&self.input_layout);
-            context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constant_buffer.clone())]));
             context.PSSetShader(&self.pixel_shader, None);
 
-            if !self.render_buffer_opaque.is_empty() {
+            if !self.render_buffer_triangles.is_empty() {
+                context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 context.RSSetState(&self.rasterizer_state_cull_back);
                 context.OMSetBlendState(&self.blend_state_opaque, None, 0xffffffff);
-
                 context.OMSetDepthStencilState(&self.depth_stencil_state, 1);
 
-                let vertex_count = self.render_buffer_opaque.len();
+                let vertex_count = self.render_buffer_triangles.len();
                 let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
                 context
                     .Map(
-                        &self.vertex_buffer_opaque,
+                        &self.vertex_buffer_triangles,
                         0,
                         D3D11_MAP_WRITE_DISCARD,
                         0,
@@ -322,35 +318,35 @@ impl Renderer for Primitive3DRenderer {
                     )
                     .unwrap();
                 std::ptr::copy_nonoverlapping(
-                    self.render_buffer_opaque.as_ptr(),
+                    self.render_buffer_triangles.as_ptr(),
                     mapped_vb.pData as *mut Vertex3D,
                     vertex_count,
                 );
-                context.Unmap(&self.vertex_buffer_opaque, 0);
+                context.Unmap(&self.vertex_buffer_triangles, 0);
 
                 let stride = mem::size_of::<Vertex3D>() as u32;
                 let offset = 0;
                 context.IASetVertexBuffers(
                     0,
                     1,
-                    Some(&Some(self.vertex_buffer_opaque.clone())),
+                    Some(&Some(self.vertex_buffer_triangles.clone())),
                     Some(&stride),
                     Some(&offset),
                 );
                 context.Draw(vertex_count as u32, 0);
             }
 
-            if !self.render_buffer_transparent.is_empty() {
+            if !self.render_buffer_lines.is_empty() {
+                context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
                 context.RSSetState(&self.rasterizer_state_cull_none);
                 context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
-
                 context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
 
-                let vertex_count = self.render_buffer_transparent.len();
+                let vertex_count = self.render_buffer_lines.len();
                 let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
                 context
                     .Map(
-                        &self.vertex_buffer_transparent,
+                        &self.vertex_buffer_lines,
                         0,
                         D3D11_MAP_WRITE_DISCARD,
                         0,
@@ -358,18 +354,18 @@ impl Renderer for Primitive3DRenderer {
                     )
                     .unwrap();
                 std::ptr::copy_nonoverlapping(
-                    self.render_buffer_transparent.as_ptr(),
+                    self.render_buffer_lines.as_ptr(),
                     mapped_vb.pData as *mut Vertex3D,
                     vertex_count,
                 );
-                context.Unmap(&self.vertex_buffer_transparent, 0);
+                context.Unmap(&self.vertex_buffer_lines, 0);
 
                 let stride = mem::size_of::<Vertex3D>() as u32;
                 let offset = 0;
                 context.IASetVertexBuffers(
                     0,
                     1,
-                    Some(&Some(self.vertex_buffer_transparent.clone())),
+                    Some(&Some(self.vertex_buffer_lines.clone())),
                     Some(&stride),
                     Some(&offset),
                 );

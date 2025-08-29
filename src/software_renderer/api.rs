@@ -1,6 +1,7 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveType, Vertex3D};
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
@@ -245,31 +246,34 @@ impl FlutterOverlay {
         }
     }
 
-    /// Composites (draws) the overlay's texture onto the screen.
-    /// This function ONLY draws. It assumes `tick()` has already been called.
-    pub fn composite(
-        &self,
-        context: &ID3D11DeviceContext,
-        screen_width: u32,
-        screen_height: u32,
-        time: f32,
-    ) {
-        if !self.visible || self.width == 0 || self.height == 0 {
-            return;
-        }
+    pub fn clear_all_queued_primitives(&mut self) {
+        self.primitive_renderer.clear_all_primitives();
+    }
 
-        self.compositor.render_texture(
-            context,
-            &self.srv,
-            &self.effect_config,
-            self.x,
-            self.y,
-            self.width,
-            self.height,
-            screen_width as f32,
-            screen_height as f32,
-            time,
-        );
+    pub fn replace_queued_primitives_in_group(
+        &mut self,
+        group_id: &str,
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+    ) {
+        match topology {
+            PrimitiveType::Triangles => {
+                self.primitive_renderer
+                    .replace_primitives_in_group(group_id, vertices, &[]);
+            }
+            PrimitiveType::Lines => {
+                self.primitive_renderer
+                    .replace_primitives_in_group(group_id, &[], vertices);
+            }
+        }
+    }
+
+    pub fn clear_queued_primitives_in_group(&mut self, group_id: &str) {
+        self.primitive_renderer.clear_primitives_in_group(group_id);
+    }
+
+    pub fn latch_queued_primitives(&mut self) {
+        self.primitive_renderer.latch_buffers();
     }
 
     /// Processes a Windows keyboard message for this overlay.

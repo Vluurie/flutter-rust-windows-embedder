@@ -17,7 +17,10 @@ use crate::{
     bindings::embedder::{self, FlutterEngine},
     software_renderer::{
         api::RendererType,
-        d3d11_compositor::{compositor::D3D11Compositor, effects::EffectConfig},
+        d3d11_compositor::{
+            effects::EffectConfig, post_processing_renderer::PostProcessRenderer,
+            primitive_3d_renderer::Primitive3DRenderer,
+        },
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         gl_renderer::angle_interop::SendableAngleState,
         overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
@@ -132,7 +135,8 @@ pub struct FlutterOverlay {
     pub engine: SendableFlutterEngine,
 
     /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
-    pub compositor: D3D11Compositor,
+    pub post_processor: PostProcessRenderer,
+    pub primitive_renderer: Primitive3DRenderer,
 
     // Crate-Internal API - Fields used within the embedder logic.
     // Not intended for modification by the end-user.
@@ -224,7 +228,8 @@ impl Clone for FlutterOverlay {
             engine_atomic_ptr: self.engine_atomic_ptr.clone(),
             texture: self.texture.clone(),
             srv: self.srv.clone(),
-            compositor: self.compositor.clone(),
+            post_processor: self.post_processor.clone(),
+            primitive_renderer: self.primitive_renderer.clone(),
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
             dart_send_port: self.dart_send_port.clone(),

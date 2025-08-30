@@ -9,7 +9,7 @@ use directx_math::XMMatrix;
 use log::{error, info, warn};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11DepthStencilView, ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
+    ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView,
 };
 use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -728,12 +728,7 @@ impl FlutterOverlayManagerHandle {
     ///   rectangle. The main Flutter UI is **not affected**. If `None`, 3D primitives will also
     ///   be drawn without clipping.
     ///
-    pub fn run_flutter_tick(
-        &self,
-        view_projection_matrix: &XMMatrix,
-        rect: Option<&RECT>,
-        dsv: Option<&ID3D11DepthStencilView>,
-    ) {
+    pub fn run_flutter_tick(&self, view_projection_matrix: &XMMatrix, rect: Option<&RECT>) {
         let mut manager = self.manager.lock();
         if let Some(context) = manager.shared_d3d_context.clone() {
             let time = if manager.is_paused {

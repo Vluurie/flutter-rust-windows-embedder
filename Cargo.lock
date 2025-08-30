@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "flutter_rust_windows_embedder"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bindgen",

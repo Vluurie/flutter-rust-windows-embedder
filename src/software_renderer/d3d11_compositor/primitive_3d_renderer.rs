@@ -243,8 +243,6 @@ impl Primitive3DRenderer {
         }
     }
 
-    /// Ersetzt die Primitiven für eine bestimmte Gruppe atomar.
-    /// Wenn ein Slice leer ist, wird die entsprechende Gruppe entfernt.
     pub fn replace_primitives_in_group(
         &mut self,
         group_id: &str,

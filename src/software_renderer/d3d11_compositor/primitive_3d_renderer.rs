@@ -48,6 +48,7 @@ pub struct Primitive3DRenderer {
     blend_state_opaque: ID3D11BlendState,
     depth_stencil_state: ID3D11DepthStencilState,
     depth_stencil_state_transparent: ID3D11DepthStencilState,
+    depth_stencil_state_disabled: ID3D11DepthStencilState,
     rasterizer_state_cull_back: ID3D11RasterizerState,
     rasterizer_state_cull_none: ID3D11RasterizerState,
 }
@@ -201,6 +202,20 @@ impl Primitive3DRenderer {
                 .expect("Failed to create transparent depth stencil state");
         }
 
+        let depth_desc_disabled = D3D11_DEPTH_STENCIL_DESC {
+            DepthEnable: BOOL(0),
+            ..Default::default()
+        };
+        let mut depth_stencil_state_disabled: Option<ID3D11DepthStencilState> = None;
+        unsafe {
+            device
+                .CreateDepthStencilState(
+                    &depth_desc_disabled,
+                    Some(&mut depth_stencil_state_disabled),
+                )
+                .expect("Failed to create disabled depth stencil state");
+        }
+
         let mut rast_desc = D3D11_RASTERIZER_DESC {
             FillMode: D3D11_FILL_SOLID,
             CullMode: D3D11_CULL_BACK,
@@ -238,6 +253,7 @@ impl Primitive3DRenderer {
             blend_state_opaque: blend_state_opaque.unwrap(),
             depth_stencil_state: depth_stencil_state.unwrap(),
             depth_stencil_state_transparent: depth_stencil_state_transparent.unwrap(),
+            depth_stencil_state_disabled: depth_stencil_state_disabled.unwrap(),
             rasterizer_state_cull_back: rasterizer_state_cull_back.unwrap(),
             rasterizer_state_cull_none: rasterizer_state_cull_none.unwrap(),
         }
@@ -297,6 +313,10 @@ impl Renderer for Primitive3DRenderer {
         let context = params.context;
 
         unsafe {
+            let mut original_rtvs: [Option<ID3D11RenderTargetView>; 8] = Default::default();
+            let mut original_dsv: Option<ID3D11DepthStencilView> = None;
+            context.OMGetRenderTargets(Some(&mut original_rtvs), Some(&mut original_dsv));
+
             let original_rs_state: Option<ID3D11RasterizerState> = context.RSGetState().ok();
             let mut original_blend_state: Option<ID3D11BlendState> = None;
             let mut original_blend_factor = [0.0; 4];
@@ -306,12 +326,15 @@ impl Renderer for Primitive3DRenderer {
                 Some(&mut original_blend_factor),
                 Some(&mut original_sample_mask),
             );
+
             let mut original_depth_state: Option<ID3D11DepthStencilState> = None;
             let mut original_stencil_ref = 0;
             context.OMGetDepthStencilState(
                 Some(&mut original_depth_state),
                 Some(&mut original_stencil_ref),
             );
+
+            context.OMSetRenderTargets(Some(&original_rtvs), params.depth_stencil_view.as_ref());
 
             let constants = SceneConstants {
                 view_projection: XMMatrix(XMMatrixTranspose((*params.view_projection_matrix).0)),
@@ -338,9 +361,14 @@ impl Renderer for Primitive3DRenderer {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 context.RSSetState(&self.rasterizer_state_cull_back);
                 context.OMSetBlendState(&self.blend_state_opaque, None, 0xffffffff);
-                context.OMSetDepthStencilState(&self.depth_stencil_state, 1);
 
-                let vertex_count = self.render_buffer_triangles.len();
+                if params.depth_stencil_view.is_some() {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state, 1);
+                } else {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                }
+
+                let vertex_count = self.render_buffer_triangles.len() as u32;
                 let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
                 context
                     .Map(
@@ -354,7 +382,7 @@ impl Renderer for Primitive3DRenderer {
                 std::ptr::copy_nonoverlapping(
                     self.render_buffer_triangles.as_ptr(),
                     mapped_vb.pData as *mut Vertex3D,
-                    vertex_count,
+                    vertex_count as usize,
                 );
                 context.Unmap(&self.vertex_buffer_triangles, 0);
 
@@ -367,16 +395,21 @@ impl Renderer for Primitive3DRenderer {
                     Some(&stride),
                     Some(&offset),
                 );
-                context.Draw(vertex_count as u32, 0);
+                context.Draw(vertex_count, 0);
             }
 
             if !self.render_buffer_lines.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
                 context.RSSetState(&self.rasterizer_state_cull_none);
                 context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
-                context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
 
-                let vertex_count = self.render_buffer_lines.len();
+                if params.depth_stencil_view.is_some() {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
+                } else {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                }
+
+                let vertex_count = self.render_buffer_lines.len() as u32;
                 let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
                 context
                     .Map(
@@ -390,7 +423,7 @@ impl Renderer for Primitive3DRenderer {
                 std::ptr::copy_nonoverlapping(
                     self.render_buffer_lines.as_ptr(),
                     mapped_vb.pData as *mut Vertex3D,
-                    vertex_count,
+                    vertex_count as usize,
                 );
                 context.Unmap(&self.vertex_buffer_lines, 0);
 
@@ -403,7 +436,7 @@ impl Renderer for Primitive3DRenderer {
                     Some(&stride),
                     Some(&offset),
                 );
-                context.Draw(vertex_count as u32, 0);
+                context.Draw(vertex_count, 0);
             }
 
             context.RSSetState(original_rs_state.as_ref());
@@ -413,6 +446,7 @@ impl Renderer for Primitive3DRenderer {
                 original_sample_mask,
             );
             context.OMSetDepthStencilState(original_depth_state.as_ref(), original_stencil_ref);
+            context.OMSetRenderTargets(Some(&original_rtvs), original_dsv.as_ref());
         }
     }
 }

@@ -359,11 +359,11 @@ impl Renderer for Primitive3DRenderer {
 
             if !self.render_buffer_triangles.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                context.RSSetState(&self.rasterizer_state_cull_back);
-                context.OMSetBlendState(&self.blend_state_opaque, None, 0xffffffff);
+                context.RSSetState(&self.rasterizer_state_cull_none);
+                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
 
                 if params.depth_stencil_view.is_some() {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state, 1);
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
                 } else {
                     context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
                 }

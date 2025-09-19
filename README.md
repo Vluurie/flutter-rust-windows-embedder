@@ -31,7 +31,8 @@ Example how it got used:
 
 ### 1\. Flutter Engine
 
-This library requires the `flutter_engine.dll` for version **3.29.3**.
+This library requires the `flutter_engine.dll` for version **3.29.3** for the overlay.
+This library auto uses the found `flutter_windows.dll` for standalone from the flutter build windows command.
 
   * **JIT (Debug)**: Download the pre-compiled JIT engine from the official Google Storage API release ZIP.
   * **AOT (Release)**: Compile the AOT engine yourself by following the [Custom Flutter Engine Embedding in AOT Mode](https://github.com/flutter/engine/blob/main/docs/Custom-Flutter-Engine-Embedding-in-AOT-Mode.md) guide.

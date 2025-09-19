@@ -59,6 +59,11 @@ Place `flutter_engine.dll`, `libEGL.dll`, and `libGLESv2.dll` in the final asset
 
 ## Usage
 
+First add the lib to your project:
+```
+flutter_rust_windows_embedder = { git = "https://github.com/Vluurie/flutter-rust-windows-embedder.git", branch = "master" }
+```
+
 ### Standalone Application
 
 To run a Flutter application in a new window managed by this library:

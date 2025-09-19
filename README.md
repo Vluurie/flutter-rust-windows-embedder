@@ -9,7 +9,8 @@ It provides two modes of operation:
 
 **Example Use Case:**
 
-<img width="1919" height="955" alt="hkhklhhh" src="https://github.com/user-attachments/assets/4be6b9a2-7dac-4613-9e7b-76cf79ec8237" />
+![ezgif com-video-to-gif-converter(1)](https://github.com/user-attachments/assets/5d75d20e-d2f6-4407-a6c4-364e96a89b3e)
+
 
 -----
 

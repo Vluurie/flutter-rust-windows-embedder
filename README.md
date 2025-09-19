@@ -34,6 +34,8 @@ Example how it got used:
 This library requires the `flutter_engine.dll` for version **3.29.3** for the overlay.
 This library auto uses the found `flutter_windows.dll` for standalone from the flutter build windows command.
 
+
+ This steps are only needed for the d3d11 overlay and not the flutter launcher via rust. Important for the launcher is a flutter build windows with the flutter_windows.dll in dir (like how it is original anyway).
   * **JIT (Debug)**: Download the pre-compiled JIT engine from the official Google Storage API release ZIP.
   * **AOT (Release)**: Compile the AOT engine yourself by following the [Custom Flutter Engine Embedding in AOT Mode](https://github.com/flutter/engine/blob/main/docs/Custom-Flutter-Engine-Embedding-in-AOT-Mode.md) guide.
 

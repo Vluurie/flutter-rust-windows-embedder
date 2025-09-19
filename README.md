@@ -1,6 +1,7 @@
 # A Rust-based Embedder for Flutter on Windows
 
-This library is a highly experimental, not perfect or fully fully finished, Rust-based custom embedder for Flutter, originally created for an in-game world editor. Just shared for references or if it maybe helps someone, as saied i experimented with it. It is not intended for production use and has been tested primarily for its original use case.
+This library is a proof-of-concept for a custom Flutter embedder written in Rust. Its sole application is currently an in-game world editor, where it facilitates a rich user experience, hot-reloading, and rapid UI development.
+It is being shared for educational and reference purposes only. The project is not feature-complete, implementations may be unconventional or buggy, and it is not suitable for production environments. Furthermore, as this is a personal project, active support cannot be guaranteed due to time constraints.
 
 It provides two modes of operation:
 

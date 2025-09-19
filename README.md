@@ -2,7 +2,7 @@
 A Rust-based embedder for hosting Flutter applications on Windows.
 
 
-This library is very specific and was mainly used for an ingame world editor (see image) and not in production or any kind, it
+This library is very specific and was mainly used for an ingame world editor (see image) and not in production or any kind, was very experimental from start, less tested for other use cases besides the editor and it
 provides a custom Flutter embedder that operates in two modes:
 
 

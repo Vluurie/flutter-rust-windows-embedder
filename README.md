@@ -6,7 +6,7 @@ This library is very specific and was mainly used for an ingame world editor (se
 provides a custom Flutter embedder that operates in two modes:
 
 
-1.  **Standalone Runner**: Hosts a Flutter application within a Rust-controlled window, suitable for integrating Flutter UIs into a larger desktop application.
+1.  **Standalone Runner**: Launch Flutter applications within a Rust executable instead of main application.
 2.  **DirectX 11 Overlay**: Renders a Flutter UI to a D3D11 texture, allowing the host application to composite it into its own render pipeline.
 
 Example how it got used: 

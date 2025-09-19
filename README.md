@@ -45,11 +45,11 @@ Hardware acceleration in overlay mode uses ANGLE for OpenGL to DirectX translati
 
 Build your Flutter application assets using one of the following commands:
 
-  * **Standard Build**:
+  * **Standard Build for launching windows build or for overlay**:
     ```bash
     flutter build windows
     ```
-  * **Assemble Command**:
+  * **Assemble Command for overlay only**:
     ```bash
     flutter assemble --output=build -dTargetPlatform=windows-x64 -dBuildMode={build_mode} {build_mode}_bundle_windows-x64_assets
     ```
@@ -73,6 +73,7 @@ To run a Flutter application in a new window managed by this library:
 // Use `init_flutter_window_from_dir()` to specify a custom path.
 init_flutter_window();
 ```
+Ensure that the `flutter_windows.dll` is also located in the dir.
 
 ### DirectX Overlay Integration
 

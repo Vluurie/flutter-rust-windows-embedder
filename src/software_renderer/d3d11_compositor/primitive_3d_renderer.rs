@@ -16,11 +16,23 @@ pub enum PrimitiveType {
     Lines,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum PrimitiveEffect {
+    Default,
+    ElectricField,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex3D {
     pub position: [f32; 3],
     pub color: [f32; 4],
+}
+
+#[repr(C)]
+struct TimeConstants {
+    g_time: f32,
+    _padding: [f32; 3],
 }
 
 #[repr(C)]
@@ -31,18 +43,18 @@ struct SceneConstants {
 #[derive(Clone)]
 pub struct Primitive3DRenderer {
     vertex_shader: ID3D11VertexShader,
-    pixel_shader: ID3D11PixelShader,
+    pixel_shaders: HashMap<PrimitiveEffect, ID3D11PixelShader>,
     input_layout: ID3D11InputLayout,
     constant_buffer: ID3D11Buffer,
+    time_constant_buffer: ID3D11Buffer,
 
     vertex_buffer_triangles: ID3D11Buffer,
     vertex_buffer_lines: ID3D11Buffer,
 
-    submit_groups_triangles: HashMap<String, Vec<Vertex3D>>,
-    submit_groups_lines: HashMap<String, Vec<Vertex3D>>,
-    render_buffer_triangles: Vec<Vertex3D>,
-    submit_buffer_lines: Vec<Vertex3D>,
-    render_buffer_lines: Vec<Vertex3D>,
+    submit_groups_triangles: HashMap<String, (PrimitiveEffect, Vec<Vertex3D>)>,
+    submit_groups_lines: HashMap<String, (PrimitiveEffect, Vec<Vertex3D>)>,
+    render_buffer_triangles: HashMap<PrimitiveEffect, Vec<Vertex3D>>,
+    render_buffer_lines: HashMap<PrimitiveEffect, Vec<Vertex3D>>,
 
     blend_state_transparent: ID3D11BlendState,
     blend_state_opaque: ID3D11BlendState,
@@ -57,6 +69,7 @@ impl Primitive3DRenderer {
     pub fn new(device: &ID3D11Device) -> Self {
         let vs_bytes = include_bytes!("./shaders/primitive_vs.cso");
         let ps_bytes = include_bytes!("./shaders/primitive_ps.cso");
+        let electric_ps_bytes = include_bytes!("./shaders/electric_field_ps.cso");
 
         let mut vertex_shader: Option<ID3D11VertexShader> = None;
         unsafe {
@@ -71,6 +84,20 @@ impl Primitive3DRenderer {
                 .CreatePixelShader(ps_bytes, None, Some(&mut pixel_shader))
                 .expect("Failed to create primitive PS");
         }
+
+        let mut electric_pixel_shader: Option<ID3D11PixelShader> = None;
+        unsafe {
+            device
+                .CreatePixelShader(electric_ps_bytes, None, Some(&mut electric_pixel_shader))
+                .expect("Failed to create electric field PS");
+        }
+
+        let mut pixel_shaders = HashMap::new();
+        pixel_shaders.insert(PrimitiveEffect::Default, pixel_shader.unwrap());
+        pixel_shaders.insert(
+            PrimitiveEffect::ElectricField,
+            electric_pixel_shader.unwrap(),
+        );
 
         let input_element_descs = [
             D3D11_INPUT_ELEMENT_DESC {
@@ -140,6 +167,25 @@ impl Primitive3DRenderer {
             device
                 .CreateBuffer(&constant_buffer_desc, None, Some(&mut constant_buffer))
                 .expect("Failed to create constant buffer");
+        }
+
+        let time_constant_buffer_desc = D3D11_BUFFER_DESC {
+            ByteWidth: mem::size_of::<TimeConstants>() as u32,
+            Usage: D3D11_USAGE_DYNAMIC,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+            ..Default::default()
+        };
+
+        let mut time_constant_buffer: Option<ID3D11Buffer> = None;
+        unsafe {
+            device
+                .CreateBuffer(
+                    &time_constant_buffer_desc,
+                    None,
+                    Some(&mut time_constant_buffer),
+                )
+                .expect("Failed to create time constant buffer");
         }
 
         let mut blend_desc_transparent = D3D11_BLEND_DESC::default();
@@ -239,16 +285,16 @@ impl Primitive3DRenderer {
 
         Self {
             vertex_shader: vertex_shader.unwrap(),
-            pixel_shader: pixel_shader.unwrap(),
+            pixel_shaders,
             input_layout: input_layout.unwrap(),
             vertex_buffer_triangles: vertex_buffer_triangles.unwrap(),
             vertex_buffer_lines: vertex_buffer_lines.unwrap(),
             constant_buffer: constant_buffer.unwrap(),
+            time_constant_buffer: time_constant_buffer.unwrap(),
             submit_groups_triangles: HashMap::new(),
             submit_groups_lines: HashMap::new(),
-            render_buffer_triangles: Vec::with_capacity(buffer_capacity),
-            submit_buffer_lines: Vec::with_capacity(buffer_capacity),
-            render_buffer_lines: Vec::with_capacity(buffer_capacity),
+            render_buffer_triangles: HashMap::new(),
+            render_buffer_lines: HashMap::new(),
             blend_state_transparent: blend_state_transparent.unwrap(),
             blend_state_opaque: blend_state_opaque.unwrap(),
             depth_stencil_state: depth_stencil_state.unwrap(),
@@ -265,18 +311,33 @@ impl Primitive3DRenderer {
         triangles: &[Vertex3D],
         lines: &[Vertex3D],
     ) {
+        self.replace_primitives_in_group_with_effect(
+            group_id,
+            triangles,
+            lines,
+            PrimitiveEffect::Default,
+        );
+    }
+
+    pub fn replace_primitives_in_group_with_effect(
+        &mut self,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect: PrimitiveEffect,
+    ) {
         if triangles.is_empty() {
             self.submit_groups_triangles.remove(group_id);
         } else {
             self.submit_groups_triangles
-                .insert(group_id.to_string(), triangles.to_vec());
+                .insert(group_id.to_string(), (effect, triangles.to_vec()));
         }
 
         if lines.is_empty() {
             self.submit_groups_lines.remove(group_id);
         } else {
             self.submit_groups_lines
-                .insert(group_id.to_string(), lines.to_vec());
+                .insert(group_id.to_string(), (effect, lines.to_vec()));
         }
     }
 
@@ -292,14 +353,19 @@ impl Primitive3DRenderer {
 
     pub fn latch_buffers(&mut self) {
         self.render_buffer_triangles.clear();
-        for group_vertices in self.submit_groups_triangles.values() {
+        for (effect, group_vertices) in self.submit_groups_triangles.values() {
             self.render_buffer_triangles
+                .entry(*effect)
+                .or_default()
                 .extend_from_slice(group_vertices);
         }
 
         self.render_buffer_lines.clear();
-        for group_vertices in self.submit_groups_lines.values() {
-            self.render_buffer_lines.extend_from_slice(group_vertices);
+        for (effect, group_vertices) in self.submit_groups_lines.values() {
+            self.render_buffer_lines
+                .entry(*effect)
+                .or_default()
+                .extend_from_slice(group_vertices);
         }
     }
 }
@@ -352,10 +418,27 @@ impl Renderer for Primitive3DRenderer {
             *(mapped_cb.pData as *mut SceneConstants) = constants;
             context.Unmap(&self.constant_buffer, 0);
 
+            let time_constants = TimeConstants {
+                g_time: params.time,
+                _padding: [0.0; 3],
+            };
+            let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
+            context
+                .Map(
+                    &self.time_constant_buffer,
+                    0,
+                    D3D11_MAP_WRITE_DISCARD,
+                    0,
+                    Some(&mut mapped_cb),
+                )
+                .unwrap();
+            *(mapped_cb.pData as *mut TimeConstants) = time_constants;
+            context.Unmap(&self.time_constant_buffer, 0);
+
             context.IASetInputLayout(&self.input_layout);
             context.VSSetShader(&self.vertex_shader, None);
             context.VSSetConstantBuffers(0, Some(&[Some(self.constant_buffer.clone())]));
-            context.PSSetShader(&self.pixel_shader, None);
+            context.PSSetConstantBuffers(1, Some(&[Some(self.time_constant_buffer.clone())]));
 
             if !self.render_buffer_triangles.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -368,34 +451,43 @@ impl Renderer for Primitive3DRenderer {
                     context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
                 }
 
-                let vertex_count = self.render_buffer_triangles.len() as u32;
-                let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
-                context
-                    .Map(
-                        &self.vertex_buffer_triangles,
-                        0,
-                        D3D11_MAP_WRITE_DISCARD,
-                        0,
-                        Some(&mut mapped_vb),
-                    )
-                    .unwrap();
-                std::ptr::copy_nonoverlapping(
-                    self.render_buffer_triangles.as_ptr(),
-                    mapped_vb.pData as *mut Vertex3D,
-                    vertex_count as usize,
-                );
-                context.Unmap(&self.vertex_buffer_triangles, 0);
+                for (effect, vertices) in &self.render_buffer_triangles {
+                    if vertices.is_empty() {
+                        continue;
+                    }
 
-                let stride = mem::size_of::<Vertex3D>() as u32;
-                let offset = 0;
-                context.IASetVertexBuffers(
-                    0,
-                    1,
-                    Some(&Some(self.vertex_buffer_triangles.clone())),
-                    Some(&stride),
-                    Some(&offset),
-                );
-                context.Draw(vertex_count, 0);
+                    let pixel_shader = self.pixel_shaders.get(effect).unwrap();
+                    context.PSSetShader(pixel_shader, None);
+
+                    let vertex_count = vertices.len() as u32;
+                    let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                    context
+                        .Map(
+                            &self.vertex_buffer_triangles,
+                            0,
+                            D3D11_MAP_WRITE_DISCARD,
+                            0,
+                            Some(&mut mapped_vb),
+                        )
+                        .unwrap();
+                    std::ptr::copy_nonoverlapping(
+                        vertices.as_ptr(),
+                        mapped_vb.pData as *mut Vertex3D,
+                        vertex_count as usize,
+                    );
+                    context.Unmap(&self.vertex_buffer_triangles, 0);
+
+                    let stride = mem::size_of::<Vertex3D>() as u32;
+                    let offset = 0;
+                    context.IASetVertexBuffers(
+                        0,
+                        1,
+                        Some(&Some(self.vertex_buffer_triangles.clone())),
+                        Some(&stride),
+                        Some(&offset),
+                    );
+                    context.Draw(vertex_count, 0);
+                }
             }
 
             if !self.render_buffer_lines.is_empty() {
@@ -409,34 +501,43 @@ impl Renderer for Primitive3DRenderer {
                     context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
                 }
 
-                let vertex_count = self.render_buffer_lines.len() as u32;
-                let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
-                context
-                    .Map(
-                        &self.vertex_buffer_lines,
-                        0,
-                        D3D11_MAP_WRITE_DISCARD,
-                        0,
-                        Some(&mut mapped_vb),
-                    )
-                    .unwrap();
-                std::ptr::copy_nonoverlapping(
-                    self.render_buffer_lines.as_ptr(),
-                    mapped_vb.pData as *mut Vertex3D,
-                    vertex_count as usize,
-                );
-                context.Unmap(&self.vertex_buffer_lines, 0);
+                for (effect, vertices) in &self.render_buffer_lines {
+                    if vertices.is_empty() {
+                        continue;
+                    }
 
-                let stride = mem::size_of::<Vertex3D>() as u32;
-                let offset = 0;
-                context.IASetVertexBuffers(
-                    0,
-                    1,
-                    Some(&Some(self.vertex_buffer_lines.clone())),
-                    Some(&stride),
-                    Some(&offset),
-                );
-                context.Draw(vertex_count, 0);
+                    let pixel_shader = self.pixel_shaders.get(effect).unwrap();
+                    context.PSSetShader(pixel_shader, None);
+
+                    let vertex_count = vertices.len() as u32;
+                    let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                    context
+                        .Map(
+                            &self.vertex_buffer_lines,
+                            0,
+                            D3D11_MAP_WRITE_DISCARD,
+                            0,
+                            Some(&mut mapped_vb),
+                        )
+                        .unwrap();
+                    std::ptr::copy_nonoverlapping(
+                        vertices.as_ptr(),
+                        mapped_vb.pData as *mut Vertex3D,
+                        vertex_count as usize,
+                    );
+                    context.Unmap(&self.vertex_buffer_lines, 0);
+
+                    let stride = mem::size_of::<Vertex3D>() as u32;
+                    let offset = 0;
+                    context.IASetVertexBuffers(
+                        0,
+                        1,
+                        Some(&Some(self.vertex_buffer_lines.clone())),
+                        Some(&stride),
+                        Some(&offset),
+                    );
+                    context.Draw(vertex_count, 0);
+                }
             }
 
             context.RSSetState(original_rs_state.as_ref());

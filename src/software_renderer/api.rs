@@ -268,6 +268,25 @@ impl FlutterOverlay {
         }
     }
 
+    pub fn replace_queued_primitives_in_group_with_effect(
+        &mut self,
+        group_id: &str,
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+        effect: crate::software_renderer::d3d11_compositor::primitive_3d_renderer::PrimitiveEffect,
+    ) {
+        match topology {
+            PrimitiveType::Triangles => {
+                self.primitive_renderer
+                    .replace_primitives_in_group_with_effect(group_id, vertices, &[], effect);
+            }
+            PrimitiveType::Lines => {
+                self.primitive_renderer
+                    .replace_primitives_in_group_with_effect(group_id, &[], vertices, effect);
+            }
+        }
+    }
+
     pub fn clear_queued_primitives_in_group(&mut self, group_id: &str) {
         self.primitive_renderer.clear_primitives_in_group(group_id);
     }

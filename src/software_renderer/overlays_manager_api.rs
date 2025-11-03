@@ -24,7 +24,7 @@ use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
 
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveType, Vertex3D};
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveEffect, PrimitiveType, Vertex3D};
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
@@ -981,6 +981,20 @@ impl FlutterOverlayManagerHandle {
         let mut manager = self.manager.lock();
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.replace_queued_primitives_in_group(group_id, vertices, topology);
+        }
+    }
+
+    pub fn replace_primitives_in_group_with_effect(
+        &self,
+        identifier: Option<&str>,
+        group_id: &str,
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+        effect: PrimitiveEffect,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.replace_queued_primitives_in_group_with_effect(group_id, vertices, topology, effect);
         }
     }
 

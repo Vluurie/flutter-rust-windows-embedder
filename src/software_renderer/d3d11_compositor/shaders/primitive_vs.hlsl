@@ -13,6 +13,7 @@ struct PS_INPUT
 {
     float4 position : SV_POSITION;
     float4 color    : COLOR;
+    float3 worldPos : TEXCOORD0;
 };
 
 PS_INPUT VSMain(VS_INPUT input)
@@ -20,5 +21,6 @@ PS_INPUT VSMain(VS_INPUT input)
     PS_INPUT output;
     output.position = mul(float4(input.position, 1.0f), viewProjection);
     output.color = input.color;
+    output.worldPos = input.position;
     return output;
 }

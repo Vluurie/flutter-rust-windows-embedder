@@ -41,6 +41,15 @@ struct SceneConstants {
 }
 
 #[derive(Clone)]
+struct CustomEffectResources {
+    pixel_shader: ID3D11PixelShader,
+    textures: Vec<ID3D11ShaderResourceView>,
+    samplers: Vec<ID3D11SamplerState>,
+    constant_buffer: Option<ID3D11Buffer>,
+    constant_data: Vec<u8>,
+}
+
+#[derive(Clone)]
 pub struct Primitive3DRenderer {
     vertex_shader: ID3D11VertexShader,
     pixel_shaders: HashMap<PrimitiveEffect, ID3D11PixelShader>,
@@ -63,6 +72,16 @@ pub struct Primitive3DRenderer {
     depth_stencil_state_disabled: ID3D11DepthStencilState,
     rasterizer_state_cull_back: ID3D11RasterizerState,
     rasterizer_state_cull_none: ID3D11RasterizerState,
+
+    submit_groups_triangles_custom: HashMap<String, (String, Vec<Vertex3D>)>,
+
+    submit_groups_lines_custom: HashMap<String, (String, Vec<Vertex3D>)>,
+
+    render_buffer_triangles_custom: HashMap<String, Vec<Vertex3D>>,
+
+    render_buffer_lines_custom: HashMap<String, Vec<Vertex3D>>,
+
+    custom_effects: HashMap<String, CustomEffectResources>,
 }
 
 impl Primitive3DRenderer {
@@ -302,6 +321,11 @@ impl Primitive3DRenderer {
             depth_stencil_state_disabled: depth_stencil_state_disabled.unwrap(),
             rasterizer_state_cull_back: rasterizer_state_cull_back.unwrap(),
             rasterizer_state_cull_none: rasterizer_state_cull_none.unwrap(),
+            submit_groups_triangles_custom: HashMap::new(),
+            submit_groups_lines_custom: HashMap::new(),
+            render_buffer_triangles_custom: HashMap::new(),
+            render_buffer_lines_custom: HashMap::new(),
+            custom_effects: HashMap::new(),
         }
     }
 
@@ -341,6 +365,98 @@ impl Primitive3DRenderer {
         }
     }
 
+    pub fn register_custom_pixel_shader(
+        &mut self,
+        device: &ID3D11Device,
+        effect_id: &str,
+        ps_bytes: &[u8],
+        constant_buffer_size: Option<u32>,
+    ) {
+        if self.custom_effects.contains_key(effect_id) {
+            return;
+        }
+        let mut pixel_shader: Option<ID3D11PixelShader> = None;
+        unsafe {
+            device
+                .CreatePixelShader(ps_bytes, None, Some(&mut pixel_shader))
+                .expect("Failed to create custom PS");
+        }
+
+        let constant_buffer = if let Some(size) = constant_buffer_size {
+            let cb_desc = D3D11_BUFFER_DESC {
+                ByteWidth: size,
+                Usage: D3D11_USAGE_DYNAMIC,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                ..Default::default()
+            };
+            let mut cb: Option<ID3D11Buffer> = None;
+            unsafe {
+                device
+                    .CreateBuffer(&cb_desc, None, Some(&mut cb))
+                    .expect("Failed to create custom constant buffer");
+            }
+            cb
+        } else {
+            None
+        };
+
+        self.custom_effects.insert(
+            effect_id.to_string(),
+            CustomEffectResources {
+                pixel_shader: pixel_shader.unwrap(),
+                textures: Vec::new(),
+                samplers: Vec::new(),
+                constant_buffer,
+                constant_data: Vec::new(),
+            },
+        );
+    }
+
+    pub fn set_custom_effect_resources(
+        &mut self,
+        effect_id: &str,
+        textures: Vec<ID3D11ShaderResourceView>,
+        samplers: Vec<ID3D11SamplerState>,
+    ) {
+        if let Some(effect) = self.custom_effects.get_mut(effect_id) {
+            effect.textures = textures;
+            effect.samplers = samplers;
+        }
+    }
+
+    pub fn update_custom_effect_constants(&mut self, effect_id: &str, data: &[u8]) {
+        if let Some(effect) = self.custom_effects.get_mut(effect_id) {
+            effect.constant_data = data.to_vec();
+        }
+    }
+
+    pub fn replace_primitives_in_group_custom(
+        &mut self,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect_id: &str,
+    ) {
+        if triangles.is_empty() {
+            self.submit_groups_triangles_custom.remove(group_id);
+        } else {
+            self.submit_groups_triangles_custom.insert(
+                group_id.to_string(),
+                (effect_id.to_string(), triangles.to_vec()),
+            );
+        }
+
+        if lines.is_empty() {
+            self.submit_groups_lines_custom.remove(group_id);
+        } else {
+            self.submit_groups_lines_custom.insert(
+                group_id.to_string(),
+                (effect_id.to_string(), lines.to_vec()),
+            );
+        }
+    }
+
     pub fn clear_primitives_in_group(&mut self, group_id: &str) {
         self.submit_groups_triangles.remove(group_id);
         self.submit_groups_lines.remove(group_id);
@@ -367,12 +483,31 @@ impl Primitive3DRenderer {
                 .or_default()
                 .extend_from_slice(group_vertices);
         }
+
+        self.render_buffer_triangles_custom.clear();
+        for (effect_id, group_vertices) in self.submit_groups_triangles_custom.values() {
+            self.render_buffer_triangles_custom
+                .entry(effect_id.clone())
+                .or_default()
+                .extend_from_slice(group_vertices);
+        }
+        self.render_buffer_lines_custom.clear();
+        for (effect_id, group_vertices) in self.submit_groups_lines_custom.values() {
+            self.render_buffer_lines_custom
+                .entry(effect_id.clone())
+                .or_default()
+                .extend_from_slice(group_vertices);
+        }
     }
 }
 
 impl Renderer for Primitive3DRenderer {
     fn draw(&mut self, params: &FrameParams) {
-        if self.render_buffer_triangles.is_empty() && self.render_buffer_lines.is_empty() {
+        if self.render_buffer_triangles.is_empty()
+            && self.render_buffer_lines.is_empty()
+            && self.render_buffer_triangles_custom.is_empty()
+            && self.render_buffer_lines_custom.is_empty()
+        {
             return;
         }
 
@@ -537,6 +672,153 @@ impl Renderer for Primitive3DRenderer {
                         Some(&offset),
                     );
                     context.Draw(vertex_count, 0);
+                }
+            }
+
+            if !self.render_buffer_triangles_custom.is_empty() {
+                context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                context.RSSetState(&self.rasterizer_state_cull_none);
+                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
+
+                if params.depth_stencil_view.is_some() {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
+                } else {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                }
+
+                for (effect_id, vertices) in &self.render_buffer_triangles_custom {
+                    if vertices.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(effect) = self.custom_effects.get(effect_id) {
+                        context.PSSetShader(&effect.pixel_shader, None);
+
+                        let textures: Vec<_> =
+                            effect.textures.iter().map(|t| Some(t.clone())).collect();
+                        context.PSSetShaderResources(0, Some(&textures));
+                        let samplers: Vec<_> =
+                            effect.samplers.iter().map(|s| Some(s.clone())).collect();
+                        context.PSSetSamplers(0, Some(&samplers));
+
+                        if let Some(cb) = &effect.constant_buffer {
+                            if !effect.constant_data.is_empty() {
+                                let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
+                                context
+                                    .Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped_cb))
+                                    .unwrap();
+                                std::ptr::copy_nonoverlapping(
+                                    effect.constant_data.as_ptr(),
+                                    mapped_cb.pData as *mut u8,
+                                    effect.constant_data.len(),
+                                );
+                                context.Unmap(cb, 0);
+                            }
+                            context.PSSetConstantBuffers(2, Some(&[Some(cb.clone())]));
+                        }
+
+                        let vertex_count = vertices.len() as u32;
+                        let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                        context
+                            .Map(
+                                &self.vertex_buffer_triangles,
+                                0,
+                                D3D11_MAP_WRITE_DISCARD,
+                                0,
+                                Some(&mut mapped_vb),
+                            )
+                            .unwrap();
+                        std::ptr::copy_nonoverlapping(
+                            vertices.as_ptr(),
+                            mapped_vb.pData as *mut Vertex3D,
+                            vertex_count as usize,
+                        );
+                        context.Unmap(&self.vertex_buffer_triangles, 0);
+
+                        let stride = mem::size_of::<Vertex3D>() as u32;
+                        let offset = 0;
+                        context.IASetVertexBuffers(
+                            0,
+                            1,
+                            Some(&Some(self.vertex_buffer_triangles.clone())),
+                            Some(&stride),
+                            Some(&offset),
+                        );
+                        context.Draw(vertex_count, 0);
+                    }
+                }
+            }
+
+            if !self.render_buffer_lines_custom.is_empty() {
+                context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+                context.RSSetState(&self.rasterizer_state_cull_none);
+                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
+
+                if params.depth_stencil_view.is_some() {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
+                } else {
+                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                }
+
+                for (effect_id, vertices) in &self.render_buffer_lines_custom {
+                    if vertices.is_empty() {
+                        continue;
+                    }
+
+                    if let Some(effect) = self.custom_effects.get(effect_id) {
+                        context.PSSetShader(&effect.pixel_shader, None);
+                        let textures: Vec<_> =
+                            effect.textures.iter().map(|t| Some(t.clone())).collect();
+                        context.PSSetShaderResources(0, Some(&textures));
+                        let samplers: Vec<_> =
+                            effect.samplers.iter().map(|s| Some(s.clone())).collect();
+                        context.PSSetSamplers(0, Some(&samplers));
+
+                        if let Some(cb) = &effect.constant_buffer {
+                            if !effect.constant_data.is_empty() {
+                                let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
+                                context
+                                    .Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped_cb))
+                                    .unwrap();
+                                std::ptr::copy_nonoverlapping(
+                                    effect.constant_data.as_ptr(),
+                                    mapped_cb.pData as *mut u8,
+                                    effect.constant_data.len(),
+                                );
+                                context.Unmap(cb, 0);
+                            }
+                            context.PSSetConstantBuffers(2, Some(&[Some(cb.clone())]));
+                        }
+
+                        let vertex_count = vertices.len() as u32;
+                        let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
+                        context
+                            .Map(
+                                &self.vertex_buffer_lines,
+                                0,
+                                D3D11_MAP_WRITE_DISCARD,
+                                0,
+                                Some(&mut mapped_vb),
+                            )
+                            .unwrap();
+                        std::ptr::copy_nonoverlapping(
+                            vertices.as_ptr(),
+                            mapped_vb.pData as *mut Vertex3D,
+                            vertex_count as usize,
+                        );
+                        context.Unmap(&self.vertex_buffer_lines, 0);
+
+                        let stride = mem::size_of::<Vertex3D>() as u32;
+                        let offset = 0;
+                        context.IASetVertexBuffers(
+                            0,
+                            1,
+                            Some(&Some(self.vertex_buffer_lines.clone())),
+                            Some(&stride),
+                            Some(&offset),
+                        );
+                        context.Draw(vertex_count, 0);
+                    }
                 }
             }
 

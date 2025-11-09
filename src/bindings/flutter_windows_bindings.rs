@@ -43,6 +43,13 @@ pub struct FlutterDesktopEngine {
     _unused: [u8; 0],
 }
 pub type FlutterDesktopEngineRef = *mut FlutterDesktopEngine;
+pub const FlutterDesktopGpuPreference_NoPreference: FlutterDesktopGpuPreference = 0;
+pub const FlutterDesktopGpuPreference_LowPowerPreference: FlutterDesktopGpuPreference = 1;
+pub type FlutterDesktopGpuPreference = ::std::os::raw::c_int;
+pub const FlutterDesktopUIThreadPolicy_Default: FlutterDesktopUIThreadPolicy = 0;
+pub const FlutterDesktopUIThreadPolicy_RunOnPlatformThread: FlutterDesktopUIThreadPolicy = 1;
+pub const FlutterDesktopUIThreadPolicy_RunOnSeparateThread: FlutterDesktopUIThreadPolicy = 2;
+pub type FlutterDesktopUIThreadPolicy = ::std::os::raw::c_int;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct FlutterDesktopEngineProperties {
@@ -52,11 +59,13 @@ pub struct FlutterDesktopEngineProperties {
     pub dart_entrypoint: *const ::std::os::raw::c_char,
     pub dart_entrypoint_argc: ::std::os::raw::c_int,
     pub dart_entrypoint_argv: *mut *const ::std::os::raw::c_char,
+    pub gpu_preference: FlutterDesktopGpuPreference,
+    pub ui_thread_policy: FlutterDesktopUIThreadPolicy,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of FlutterDesktopEngineProperties"]
-        [::std::mem::size_of::<FlutterDesktopEngineProperties>() - 48usize];
+        [::std::mem::size_of::<FlutterDesktopEngineProperties>() - 56usize];
     ["Alignment of FlutterDesktopEngineProperties"]
         [::std::mem::align_of::<FlutterDesktopEngineProperties>() - 8usize];
     ["Offset of field: FlutterDesktopEngineProperties::assets_path"]
@@ -71,6 +80,10 @@ const _: () = {
         [::std::mem::offset_of!(FlutterDesktopEngineProperties, dart_entrypoint_argc) - 32usize];
     ["Offset of field: FlutterDesktopEngineProperties::dart_entrypoint_argv"]
         [::std::mem::offset_of!(FlutterDesktopEngineProperties, dart_entrypoint_argv) - 40usize];
+    ["Offset of field: FlutterDesktopEngineProperties::gpu_preference"]
+        [::std::mem::offset_of!(FlutterDesktopEngineProperties, gpu_preference) - 48usize];
+    ["Offset of field: FlutterDesktopEngineProperties::ui_thread_policy"]
+        [::std::mem::offset_of!(FlutterDesktopEngineProperties, ui_thread_policy) - 52usize];
 };
 unsafe extern "C" {
     pub fn FlutterDesktopViewControllerCreate(

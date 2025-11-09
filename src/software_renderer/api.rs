@@ -1,7 +1,7 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveType, Vertex3D};
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{BlendMode, PrimitiveType, Vertex3D};
 use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
@@ -296,47 +296,105 @@ impl FlutterOverlay {
         self.primitive_renderer.latch_buffers();
     }
 
-    /// Registers a new custom pixel shader from its compiled byte code.
+    /// Registers a new custom shader effect from compiled byte code.
     /// This shader can then be used to render primitives by referencing its `effect_id`.
     ///
     /// # Arguments
     /// * `device`: The D3D11 device to use for creating shader resources.
     /// * `effect_id`: A unique string identifier for this effect.
-    /// * `ps_bytes`: The raw byte slice of the compiled HLSL pixel shader (CSO).
+    /// * `vs_bytes`: Optional compiled vertex shader byte code (CSO). If `None`, uses the default vertex shader.
+    ///   Custom vertex shaders can pass additional data to the pixel shader (e.g., world position, normals).
+    /// * `ps_bytes`: The compiled pixel shader byte code (CSO).
     /// * `constant_buffer_size`: If the shader uses a constant buffer (at register `b2`),
     ///   specify its size in bytes. This buffer can be updated per-frame using
     ///   `update_custom_effect_constants`.
+    /// * `blend_mode`: The blending mode to use when rendering primitives with this effect.
+    ///   Use `BlendMode::Transparent` for standard alpha blending or `BlendMode::Opaque` for no blending.
     pub fn register_custom_pixel_shader(
         &mut self,
         device: &ID3D11Device,
         effect_id: &str,
+        vs_bytes: Option<&[u8]>,
         ps_bytes: &[u8],
         constant_buffer_size: Option<u32>,
+        blend_mode: BlendMode,
     ) {
         self.primitive_renderer.register_custom_pixel_shader(
             device,
             effect_id,
+            vs_bytes,
             ps_bytes,
             constant_buffer_size,
+            blend_mode,
         );
     }
 
-    /// Sets the textures and samplers for a previously registered custom effect.
+    /// Sets a texture at a specific shader resource slot for a custom effect.
+    /// This allows binding textures to non-sequential slots, enabling optional textures
+    /// like normal maps, specular maps, etc.
     ///
     /// # Arguments
     /// * `effect_id`: The identifier of the custom effect to modify.
-    /// * `textures`: A `Vec` of `ID3D11ShaderResourceView` handles to be bound to the shader.
-    ///   They will be bound to texture slots `t0`, `t1`, etc.
-    /// * `samplers`: A `Vec` of `ID3D11SamplerState` handles. They will be bound to
-    ///   sampler slots `s0`, `s1`, etc.
-    pub fn set_custom_effect_resources(
+    /// * `slot`: The shader resource slot index (corresponds to `tN` in HLSL where N = slot).
+    /// * `texture`: The `ID3D11ShaderResourceView` handle for the texture.
+    /// * `sampler`: The `ID3D11SamplerState` handle for the sampler.
+    ///
+    /// # Example
+    /// ```rust
+    /// // Base texture at slot 0
+    /// overlay.set_custom_effect_texture_at_slot("my_effect", 0, base_texture, sampler);
+    /// // Optional normal map at slot 1
+    /// overlay.set_custom_effect_texture_at_slot("my_effect", 1, normal_map, sampler);
+    /// // Optional roughness map at slot 2
+    /// overlay.set_custom_effect_texture_at_slot("my_effect", 2, roughness_map, sampler);
+    /// ```
+    pub fn set_custom_effect_texture_at_slot(
         &mut self,
         effect_id: &str,
-        textures: Vec<ID3D11ShaderResourceView>,
-        samplers: Vec<ID3D11SamplerState>,
+        slot: u32,
+        texture: ID3D11ShaderResourceView,
+        sampler: ID3D11SamplerState,
+    ) {
+        self.primitive_renderer.set_custom_effect_texture_at_slot(
+            effect_id,
+            slot,
+            texture,
+            sampler,
+        );
+    }
+
+    /// Clears a texture from a specific slot for a custom effect.
+    /// Use this to remove optional textures that are no longer needed.
+    ///
+    /// # Arguments
+    /// * `effect_id`: The identifier of the custom effect.
+    /// * `slot`: The shader resource slot index to clear.
+    pub fn clear_custom_effect_texture_at_slot(&mut self, effect_id: &str, slot: u32) {
+        self.primitive_renderer
+            .clear_custom_effect_texture_at_slot(effect_id, slot);
+    }
+
+    /// Convenience method to set multiple textures at once with explicit slot assignments.
+    ///
+    /// # Arguments
+    /// * `effect_id`: The identifier of the custom effect.
+    /// * `textures`: A `Vec` of `(slot, texture, sampler)` tuples.
+    ///
+    /// # Example
+    /// ```rust
+    /// overlay.set_custom_effect_textures_bulk("my_effect", vec![
+    ///     (0, base_texture, sampler),     // t0: base color
+    ///     (1, normal_map, sampler),       // t1: normal map
+    ///     (2, roughness_map, sampler),    // t2: roughness
+    /// ]);
+    /// ```
+    pub fn set_custom_effect_textures_bulk(
+        &mut self,
+        effect_id: &str,
+        textures: Vec<(u32, ID3D11ShaderResourceView, ID3D11SamplerState)>,
     ) {
         self.primitive_renderer
-            .set_custom_effect_resources(effect_id, textures, samplers);
+            .set_custom_effect_textures_bulk(effect_id, textures);
     }
 
     /// Updates the constant buffer data for a custom effect.

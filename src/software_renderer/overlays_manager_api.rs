@@ -24,7 +24,9 @@ use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
 
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{PrimitiveEffect, PrimitiveType, Vertex3D};
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
+    BlendMode, PrimitiveEffect, PrimitiveType, Vertex3D,
+};
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
@@ -35,8 +37,11 @@ pub struct FlutterOverlayManagerHandle {
     pub manager: &'static Mutex<OverlayManager>,
 }
 
+/// Specifies which rendering pass to execute, allowing for separation of 3D primitives and 2D UI.
 pub enum FlutterRenderPass {
+    /// Render only the 3D primitives.
     PrimitivesOnly,
+    /// Render only the 2D Flutter UI.
     UiOnly,
 }
 
@@ -61,6 +66,11 @@ fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
     }
 }
 
+/// Manages all active Flutter overlay instances.
+///
+/// This struct is the central point for creating, tracking, rendering, and managing the lifecycle
+/// of all Flutter overlays. It is not intended to be used directly, but rather through the
+/// `FlutterOverlayManagerHandle`.
 pub struct OverlayManager {
     /// Stores the actual FlutterOverlay instances, keyed by a unique identifier.
     pub active_instances: HashMap<String, Box<FlutterOverlay>>,
@@ -173,10 +183,12 @@ impl OverlayManager {
         None
     }
 
+    /// Gets a clone of the shared Direct3D device context.
     pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
         self.shared_d3d_context.clone()
     }
 
+    /// Latches all queued primitives for all overlay instances.
     pub fn latch_all_queued_primitives(&mut self) {
         for overlay in self.active_instances.values_mut() {
             overlay.latch_queued_primitives();
@@ -461,6 +473,10 @@ impl OverlayManager {
 
     /// Sends the same platform message to all visible overlay instances.
     /// This is useful for broadcasting global events.
+    ///
+    /// # Arguments
+    /// * `channel` - The channel to send the message on.
+    /// * `message` - The message to send.
     pub fn broadcast_platform_message(&self, channel: &str, message: &[u8]) {
         for (id, overlay) in self.active_instances.iter() {
             if !overlay.is_visible() {
@@ -476,7 +492,11 @@ impl OverlayManager {
         }
     }
 
-    // Get all texture to process them before calling tick allowing special effects or resizing.
+    /// Gets the rendered textures from all active and visible overlays.
+    ///
+    /// # Returns
+    /// A vector of tuples, where each tuple contains the overlay identifier and its corresponding
+    /// `ID3D11ShaderResourceView`.
     pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
         let mut textures = Vec::new();
 
@@ -529,6 +549,11 @@ impl OverlayManager {
     }
 
     /// Posts a boolean message to a specific overlay instance.
+    /// Posts a boolean message to a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `value` - The boolean value to post.
     pub fn post_bool_to_overlay(
         &self,
         identifier: Option<&str>,
@@ -543,6 +568,10 @@ impl OverlayManager {
     }
 
     /// Posts an i64 message to a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `value` - The i64 value to post.
     pub fn post_i64_to_overlay(
         &self,
         identifier: Option<&str>,
@@ -557,6 +586,10 @@ impl OverlayManager {
     }
 
     /// Posts an f64 message to a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `value` - The f64 value to post.
     pub fn post_f64_to_overlay(
         &self,
         identifier: Option<&str>,
@@ -571,6 +604,10 @@ impl OverlayManager {
     }
 
     /// Posts a string message to a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `value` - The string value to post.
     pub fn post_string_to_overlay(
         &self,
         identifier: Option<&str>,
@@ -585,6 +622,10 @@ impl OverlayManager {
     }
 
     /// Posts a byte buffer to a specific overlay instance.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `buffer` - The byte buffer to post.
     pub fn post_buffer_to_overlay(
         &self,
         identifier: Option<&str>,
@@ -984,6 +1025,17 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
+    /// Atomically replaces an entire group of 3D primitives and applies a specific built-in effect.
+    ///
+    /// This functions similarly to `replace_primitives_in_group`, but allows specifying a
+    /// `PrimitiveEffect` to be applied to the geometry, such as `Hologram` or `Warp`.
+    ///
+    /// # Arguments
+    /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
+    /// * `group_id`: A string slice that identifies this group of primitives.
+    /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
+    /// * `topology`: A `PrimitiveType` enum that specifies how the vertices should be connected.
+    /// * `effect`: The `PrimitiveEffect` to apply to this geometry.
     pub fn replace_primitives_in_group_with_effect(
         &self,
         identifier: Option<&str>,
@@ -994,7 +1046,9 @@ impl FlutterOverlayManagerHandle {
     ) {
         let mut manager = self.manager.lock();
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.replace_queued_primitives_in_group_with_effect(group_id, vertices, topology, effect);
+            overlay.replace_queued_primitives_in_group_with_effect(
+                group_id, vertices, topology, effect,
+            );
         }
     }
 
@@ -1558,8 +1612,6 @@ impl FlutterOverlayManagerHandle {
         false
     }
 
-    /// Sends a byte buffer to a single overlay via its registered `SendPort`.
-    ///
     /// A fast path for pushing raw binary data to Dart. See `register_dart_port` for the use case.
     ///
     /// # Arguments
@@ -1577,6 +1629,223 @@ impl FlutterOverlayManagerHandle {
             return overlay.post_buffer(buffer).is_ok();
         }
         false
+    }
+
+    /// Registers a custom shader effect from compiled byte code.
+    ///
+    /// This allows for extending the rendering capabilities with custom visual effects for 3D primitives.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - A unique string to identify this shader effect.
+    /// * `vs_bytes` - Optional compiled vertex shader byte code (`.cso` file content). If `None`, uses the default vertex shader.
+    ///   Custom vertex shaders can pass additional data to the pixel shader (e.g., world position, normals).
+    /// * `ps_bytes` - The compiled pixel shader byte code (`.cso` file content).
+    /// * `constant_buffer_size` - Optional size of the constant buffer for this shader.
+    /// * `blend_mode` - The blending mode to use when rendering primitives with this effect.
+    ///   Use `BlendMode::Transparent` for standard alpha blending or `BlendMode::Opaque` for no blending.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::BlendMode;
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // The shaders can be compiled offline using `fxc.exe`
+    /// let vs_bytes = include_bytes!("my_vertex_shader.cso");
+    /// let ps_bytes = include_bytes!("my_pixel_shader.cso");
+    /// manager.register_custom_pixel_shader(None, "my_custom_effect", Some(vs_bytes), ps_bytes, Some(16), BlendMode::Transparent);
+    /// ```
+    pub fn register_custom_pixel_shader(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        vs_bytes: Option<&[u8]>,
+        ps_bytes: &[u8],
+        constant_buffer_size: Option<u32>,
+        blend_mode: BlendMode,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            let device = unsafe { overlay.srv.GetDevice().unwrap() };
+            overlay.register_custom_pixel_shader(
+                &device,
+                effect_id,
+                vs_bytes,
+                ps_bytes,
+                constant_buffer_size,
+                blend_mode,
+            );
+        }
+    }
+
+    /// Sets a texture at a specific shader resource slot for a custom effect.
+    /// This allows binding textures to non-sequential slots, enabling optional textures
+    /// like normal maps, specular maps, etc.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect to which these resources will be bound.
+    /// * `slot` - The shader resource slot index (corresponds to `tN` in HLSL where N = slot).
+    /// * `texture` - The `ID3D11ShaderResourceView` handle for the texture.
+    /// * `sampler` - The `ID3D11SamplerState` handle for the sampler.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11SamplerState};
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Base texture at slot 0
+    /// manager.set_custom_effect_texture_at_slot(None, "my_effect", 0, base_texture, sampler);
+    /// // Optional normal map at slot 1
+    /// manager.set_custom_effect_texture_at_slot(None, "my_effect", 1, normal_map, sampler);
+    /// ```
+    pub fn set_custom_effect_texture_at_slot(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        slot: u32,
+        texture: ID3D11ShaderResourceView,
+        sampler: windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.set_custom_effect_texture_at_slot(effect_id, slot, texture, sampler);
+        }
+    }
+
+    /// Clears a texture from a specific slot for a custom effect.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect.
+    /// * `slot` - The shader resource slot index to clear.
+    pub fn clear_custom_effect_texture_at_slot(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        slot: u32,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.clear_custom_effect_texture_at_slot(effect_id, slot);
+        }
+    }
+
+    /// Convenience method to set multiple textures at once with explicit slot assignments.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect.
+    /// * `textures` - A `Vec` of `(slot, texture, sampler)` tuples.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11SamplerState};
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.set_custom_effect_textures_bulk(None, "my_effect", vec![
+    ///     (0, base_texture, sampler),     // t0: base color
+    ///     (1, normal_map, sampler),       // t1: normal map
+    ///     (2, roughness_map, sampler),    // t2: roughness
+    /// ]);
+    /// ```
+    pub fn set_custom_effect_textures_bulk(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        textures: Vec<(
+            u32,
+            ID3D11ShaderResourceView,
+            windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
+        )>,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.set_custom_effect_textures_bulk(effect_id, textures);
+        }
+    }
+
+    /// Updates the constant buffer data for a custom effect.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect whose constants are being updated.
+    /// * `data` - A byte slice containing the new constant buffer data.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    ///
+    /// #[repr(C)]
+    /// struct MyConstants {
+    ///     time: f32,
+    ///     intensity: f32,
+    /// }
+    ///
+    /// let my_constants = MyConstants { time: 1.0, intensity: 0.8 };
+    ///
+    /// let data = unsafe {
+    ///     std::slice::from_raw_parts(
+    ///         &my_constants as *const _ as *const u8,
+    ///         std::mem::size_of::<MyConstants>(),
+    ///     )
+    /// };
+    ///
+    /// manager.update_custom_effect_constants(None, "my_custom_effect", data);
+    /// ```
+    pub fn update_custom_effect_constants(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        data: &[u8],
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.update_custom_effect_constants(effect_id, data);
+        }
+    }
+
+    /// Replaces the primitives in a group and applies a custom shader effect to them.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `group_id` - The ID of the primitive group to replace.
+    /// * `triangles` - A slice of `Vertex3D` for the triangle list.
+    /// * `lines` - A slice of `Vertex3D` for the line list.
+    /// * `effect_id` - The ID of the custom effect to apply to these primitives.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Vertex3D;
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    ///
+    /// let triangle = vec![
+    ///     Vertex3D { pos: [0.0, 0.5, 0.0], color: [1.0, 0.0, 0.0, 1.0] },
+    ///     Vertex3D { pos: [0.5, -0.5, 0.0], color: [0.0, 1.0, 0.0, 1.0] },
+    ///     Vertex3D { pos: [-0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0, 1.0] },
+    /// ];
+    ///
+    /// manager.replace_primitives_in_group_custom(
+    ///     None,
+    ///     "my_group",
+    ///     &triangle,
+    ///     &[],
+    ///     "my_custom_effect",
+    /// );
+    /// ```
+    pub fn replace_primitives_in_group_custom(
+        &self,
+        identifier: Option<&str>,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect_id: &str,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.replace_primitives_in_group_custom(group_id, triangles, lines, effect_id);
+        }
     }
 
     /// Retrieves the rendered textures from all active and visible overlays.

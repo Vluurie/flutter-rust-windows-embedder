@@ -25,7 +25,7 @@ use crate::software_renderer::d3d11_compositor::effects::{
 };
 
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
-    PrimitiveEffect, PrimitiveType, Vertex3D,
+    BlendMode, PrimitiveEffect, PrimitiveType, Vertex3D,
 };
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
@@ -1631,29 +1631,38 @@ impl FlutterOverlayManagerHandle {
         false
     }
 
-    /// Registers a custom pixel shader from its raw byte code.
+    /// Registers a custom shader effect from compiled byte code.
     ///
     /// This allows for extending the rendering capabilities with custom visual effects for 3D primitives.
     ///
     /// # Arguments
     /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
     /// * `effect_id` - A unique string to identify this shader effect.
+    /// * `vs_bytes` - Optional compiled vertex shader byte code (`.cso` file content). If `None`, uses the default vertex shader.
+    ///   Custom vertex shaders can pass additional data to the pixel shader (e.g., world position, normals).
     /// * `ps_bytes` - The compiled pixel shader byte code (`.cso` file content).
     /// * `constant_buffer_size` - Optional size of the constant buffer for this shader.
+    /// * `blend_mode` - The blending mode to use when rendering primitives with this effect.
+    ///   Use `BlendMode::Transparent` for standard alpha blending or `BlendMode::Opaque` for no blending.
     ///
     /// # Example
     /// ```rust, no_run
+    /// use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::BlendMode;
+    ///
     /// let manager = get_flutter_overlay_manager_handle().unwrap();
-    /// // The shader can be compiled offline using `fxc.exe`
-    /// let shader_bytes = include_bytes!("my_pixel_shader.cso");
-    /// manager.register_custom_pixel_shader(None, "my_custom_effect", shader_bytes, Some(16));
+    /// // The shaders can be compiled offline using `fxc.exe`
+    /// let vs_bytes = include_bytes!("my_vertex_shader.cso");
+    /// let ps_bytes = include_bytes!("my_pixel_shader.cso");
+    /// manager.register_custom_pixel_shader(None, "my_custom_effect", Some(vs_bytes), ps_bytes, Some(16), BlendMode::Transparent);
     /// ```
     pub fn register_custom_pixel_shader(
         &self,
         identifier: Option<&str>,
         effect_id: &str,
+        vs_bytes: Option<&[u8]>,
         ps_bytes: &[u8],
         constant_buffer_size: Option<u32>,
+        blend_mode: BlendMode,
     ) {
         let mut manager = self.manager.lock();
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
@@ -1661,46 +1670,98 @@ impl FlutterOverlayManagerHandle {
             overlay.register_custom_pixel_shader(
                 &device,
                 effect_id,
+                vs_bytes,
                 ps_bytes,
                 constant_buffer_size,
+                blend_mode,
             );
         }
     }
 
-    /// Sets the shader resources (textures and samplers) for a custom effect.
+    /// Sets a texture at a specific shader resource slot for a custom effect.
+    /// This allows binding textures to non-sequential slots, enabling optional textures
+    /// like normal maps, specular maps, etc.
     ///
     /// # Arguments
     /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
     /// * `effect_id` - The ID of the custom effect to which these resources will be bound.
-    /// * `textures` - A vector of `ID3D11ShaderResourceView` to be used as texture inputs.
-    /// * `samplers` - A vector of `ID3D11SamplerState` to control texture sampling.
+    /// * `slot` - The shader resource slot index (corresponds to `tN` in HLSL where N = slot).
+    /// * `texture` - The `ID3D11ShaderResourceView` handle for the texture.
+    /// * `sampler` - The `ID3D11SamplerState` handle for the sampler.
     ///
     /// # Example
     /// ```rust, no_run
     /// use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11SamplerState};
     ///
     /// let manager = get_flutter_overlay_manager_handle().unwrap();
-    /// // These resources must be created using the D3D11 device.
-    /// let my_texture_srv: ID3D11ShaderResourceView = todo!();
-    /// let my_sampler_state: ID3D11SamplerState = todo!();
-    ///
-    /// manager.set_custom_effect_resources(
-    ///     None,
-    ///     "my_custom_effect",
-    ///     vec![my_texture_srv],
-    ///     vec![my_sampler_state],
-    /// );
+    /// // Base texture at slot 0
+    /// manager.set_custom_effect_texture_at_slot(None, "my_effect", 0, base_texture, sampler);
+    /// // Optional normal map at slot 1
+    /// manager.set_custom_effect_texture_at_slot(None, "my_effect", 1, normal_map, sampler);
     /// ```
-    pub fn set_custom_effect_resources(
+    pub fn set_custom_effect_texture_at_slot(
         &self,
         identifier: Option<&str>,
         effect_id: &str,
-        textures: Vec<ID3D11ShaderResourceView>,
-        samplers: Vec<windows::Win32::Graphics::Direct3D11::ID3D11SamplerState>,
+        slot: u32,
+        texture: ID3D11ShaderResourceView,
+        sampler: windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
     ) {
         let mut manager = self.manager.lock();
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.set_custom_effect_resources(effect_id, textures, samplers);
+            overlay.set_custom_effect_texture_at_slot(effect_id, slot, texture, sampler);
+        }
+    }
+
+    /// Clears a texture from a specific slot for a custom effect.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect.
+    /// * `slot` - The shader resource slot index to clear.
+    pub fn clear_custom_effect_texture_at_slot(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        slot: u32,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.clear_custom_effect_texture_at_slot(effect_id, slot);
+        }
+    }
+
+    /// Convenience method to set multiple textures at once with explicit slot assignments.
+    ///
+    /// # Arguments
+    /// * `identifier` - The unique identifier of the overlay. If `None`, targets the single active overlay.
+    /// * `effect_id` - The ID of the custom effect.
+    /// * `textures` - A `Vec` of `(slot, texture, sampler)` tuples.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use windows::Win32::Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11SamplerState};
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.set_custom_effect_textures_bulk(None, "my_effect", vec![
+    ///     (0, base_texture, sampler),     // t0: base color
+    ///     (1, normal_map, sampler),       // t1: normal map
+    ///     (2, roughness_map, sampler),    // t2: roughness
+    /// ]);
+    /// ```
+    pub fn set_custom_effect_textures_bulk(
+        &self,
+        identifier: Option<&str>,
+        effect_id: &str,
+        textures: Vec<(
+            u32,
+            ID3D11ShaderResourceView,
+            windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
+        )>,
+    ) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.set_custom_effect_textures_bulk(effect_id, textures);
         }
     }
 

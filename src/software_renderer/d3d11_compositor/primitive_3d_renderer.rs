@@ -22,6 +22,29 @@ pub enum PrimitiveEffect {
     ElectricField,
 }
 
+/// Defines the blending mode for rendering custom primitives.
+/// This controls how the primitive's colors blend with the existing pixels on the render target,
+/// and also affects depth testing behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum BlendMode {
+    /// Standard alpha blending (SRC_ALPHA, INV_SRC_ALPHA) with depth testing enabled (no writes).
+    /// Most commonly used for transparent objects.
+    /// - Blending: Enabled (alpha blending)
+    /// - Depth Testing: Enabled (read-only, no depth writes)
+    Transparent,
+    /// No blending - pixels are written directly (opaque) with depth testing disabled.
+    /// Use this when the camera/player is inside the geometry (e.g., battle royale cylinder).
+    /// - Blending: Disabled (opaque rendering)
+    /// - Depth Testing: Disabled (always renders, ignores depth buffer)
+    Opaque,
+}
+
+impl Default for BlendMode {
+    fn default() -> Self {
+        BlendMode::Transparent
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex3D {
@@ -42,11 +65,13 @@ struct SceneConstants {
 
 #[derive(Clone)]
 struct CustomEffectResources {
+    vertex_shader: Option<ID3D11VertexShader>,
     pixel_shader: ID3D11PixelShader,
-    textures: Vec<ID3D11ShaderResourceView>,
-    samplers: Vec<ID3D11SamplerState>,
+    textures: HashMap<u32, ID3D11ShaderResourceView>,
+    samplers: HashMap<u32, ID3D11SamplerState>,
     constant_buffer: Option<ID3D11Buffer>,
     constant_data: Vec<u8>,
+    blend_mode: BlendMode,
 }
 
 #[derive(Clone)]
@@ -369,12 +394,27 @@ impl Primitive3DRenderer {
         &mut self,
         device: &ID3D11Device,
         effect_id: &str,
+        vs_bytes: Option<&[u8]>,
         ps_bytes: &[u8],
         constant_buffer_size: Option<u32>,
+        blend_mode: BlendMode,
     ) {
         if self.custom_effects.contains_key(effect_id) {
             return;
         }
+
+        let vertex_shader = if let Some(vs_data) = vs_bytes {
+            let mut vs: Option<ID3D11VertexShader> = None;
+            unsafe {
+                device
+                    .CreateVertexShader(vs_data, None, Some(&mut vs))
+                    .expect("Failed to create custom VS");
+            }
+            vs
+        } else {
+            None
+        };
+
         let mut pixel_shader: Option<ID3D11PixelShader> = None;
         unsafe {
             device
@@ -404,24 +444,47 @@ impl Primitive3DRenderer {
         self.custom_effects.insert(
             effect_id.to_string(),
             CustomEffectResources {
+                vertex_shader,
                 pixel_shader: pixel_shader.unwrap(),
-                textures: Vec::new(),
-                samplers: Vec::new(),
+                textures: HashMap::new(),
+                samplers: HashMap::new(),
                 constant_buffer,
                 constant_data: Vec::new(),
+                blend_mode,
             },
         );
     }
 
-    pub fn set_custom_effect_resources(
+    pub fn set_custom_effect_texture_at_slot(
         &mut self,
         effect_id: &str,
-        textures: Vec<ID3D11ShaderResourceView>,
-        samplers: Vec<ID3D11SamplerState>,
+        slot: u32,
+        texture: ID3D11ShaderResourceView,
+        sampler: ID3D11SamplerState,
     ) {
         if let Some(effect) = self.custom_effects.get_mut(effect_id) {
-            effect.textures = textures;
-            effect.samplers = samplers;
+            effect.textures.insert(slot, texture);
+            effect.samplers.insert(slot, sampler);
+        }
+    }
+
+    pub fn clear_custom_effect_texture_at_slot(&mut self, effect_id: &str, slot: u32) {
+        if let Some(effect) = self.custom_effects.get_mut(effect_id) {
+            effect.textures.remove(&slot);
+            effect.samplers.remove(&slot);
+        }
+    }
+
+    pub fn set_custom_effect_textures_bulk(
+        &mut self,
+        effect_id: &str,
+        textures: Vec<(u32, ID3D11ShaderResourceView, ID3D11SamplerState)>,
+    ) {
+        if let Some(effect) = self.custom_effects.get_mut(effect_id) {
+            for (slot, texture, sampler) in textures {
+                effect.textures.insert(slot, texture);
+                effect.samplers.insert(slot, sampler);
+            }
         }
     }
 
@@ -678,13 +741,6 @@ impl Renderer for Primitive3DRenderer {
             if !self.render_buffer_triangles_custom.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 context.RSSetState(&self.rasterizer_state_cull_none);
-                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
-
-                if params.depth_stencil_view.is_some() {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
-                } else {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                }
 
                 for (effect_id, vertices) in &self.render_buffer_triangles_custom {
                     if vertices.is_empty() {
@@ -692,14 +748,48 @@ impl Renderer for Primitive3DRenderer {
                     }
 
                     if let Some(effect) = self.custom_effects.get(effect_id) {
+                        let blend_state = match effect.blend_mode {
+                            BlendMode::Transparent => &self.blend_state_transparent,
+                            BlendMode::Opaque => &self.blend_state_opaque,
+                        };
+                        context.OMSetBlendState(blend_state, None, 0xffffffff);
+
+
+                        if params.depth_stencil_view.is_some() {
+                            match effect.blend_mode {
+                                BlendMode::Opaque => {
+                                    context.OMSetDepthStencilState(
+                                        &self.depth_stencil_state_disabled,
+                                        1,
+                                    );
+                                }
+                                BlendMode::Transparent => {
+                                    context.OMSetDepthStencilState(
+                                        &self.depth_stencil_state_transparent,
+                                        1,
+                                    );
+                                }
+                            }
+                        } else {
+                            context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                        }
+
+                        // Use custom vertex shader if provided, otherwise use default
+                        if let Some(vs) = &effect.vertex_shader {
+                            context.VSSetShader(vs, None);
+                        } else {
+                            context.VSSetShader(&self.vertex_shader, None);
+                        }
+
                         context.PSSetShader(&effect.pixel_shader, None);
 
-                        let textures: Vec<_> =
-                            effect.textures.iter().map(|t| Some(t.clone())).collect();
-                        context.PSSetShaderResources(0, Some(&textures));
-                        let samplers: Vec<_> =
-                            effect.samplers.iter().map(|s| Some(s.clone())).collect();
-                        context.PSSetSamplers(0, Some(&samplers));
+                        for (&slot, texture) in &effect.textures {
+                            context.PSSetShaderResources(slot, Some(&[Some(texture.clone())]));
+                        }
+
+                        for (&slot, sampler) in &effect.samplers {
+                            context.PSSetSamplers(slot, Some(&[Some(sampler.clone())]));
+                        }
 
                         if let Some(cb) = &effect.constant_buffer {
                             if !effect.constant_data.is_empty() {
@@ -752,13 +842,6 @@ impl Renderer for Primitive3DRenderer {
             if !self.render_buffer_lines_custom.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
                 context.RSSetState(&self.rasterizer_state_cull_none);
-                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
-
-                if params.depth_stencil_view.is_some() {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
-                } else {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                }
 
                 for (effect_id, vertices) in &self.render_buffer_lines_custom {
                     if vertices.is_empty() {
@@ -766,13 +849,40 @@ impl Renderer for Primitive3DRenderer {
                     }
 
                     if let Some(effect) = self.custom_effects.get(effect_id) {
+                        let blend_state = match effect.blend_mode {
+                            BlendMode::Transparent => &self.blend_state_transparent,
+                            BlendMode::Opaque => &self.blend_state_opaque,
+                        };
+                        context.OMSetBlendState(blend_state, None, 0xffffffff);
+
+                        if params.depth_stencil_view.is_some() {
+                            match effect.blend_mode {
+                                BlendMode::Opaque => {
+                                    context.OMSetDepthStencilState(
+                                        &self.depth_stencil_state_disabled,
+                                        1,
+                                    );
+                                }
+                                BlendMode::Transparent => {
+                                    context.OMSetDepthStencilState(
+                                        &self.depth_stencil_state_transparent,
+                                        1,
+                                    );
+                                }
+                            }
+                        } else {
+                            context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
+                        }
+
                         context.PSSetShader(&effect.pixel_shader, None);
-                        let textures: Vec<_> =
-                            effect.textures.iter().map(|t| Some(t.clone())).collect();
-                        context.PSSetShaderResources(0, Some(&textures));
-                        let samplers: Vec<_> =
-                            effect.samplers.iter().map(|s| Some(s.clone())).collect();
-                        context.PSSetSamplers(0, Some(&samplers));
+
+                        for (&slot, texture) in &effect.textures {
+                            context.PSSetShaderResources(slot, Some(&[Some(texture.clone())]));
+                        }
+
+                        for (&slot, sampler) in &effect.samplers {
+                            context.PSSetSamplers(slot, Some(&[Some(sampler.clone())]));
+                        }
 
                         if let Some(cb) = &effect.constant_buffer {
                             if !effect.constant_data.is_empty() {

@@ -246,6 +246,7 @@ pub(crate) fn init_overlay(
             platform_task_runner: &platform_description_box.0,
             render_task_runner: &platform_description_box.0,
             thread_priority_setter: None,
+            ui_task_runner: &platform_description_box.0, // Merged thread mode: UI runs on platform thread
         };
 
         let custom_task_runners_box =
@@ -314,6 +315,8 @@ pub(crate) fn init_overlay(
             update_semantics_callback: None,
             update_semantics_callback2: Some(semantics_update_callback),
             channel_update_callback: None,
+            view_focus_change_request_callback: None, // TODO: Implement for multi-window support
+            engine_id: 0, // TODO: Support multiple engine instances
         };
 
         if let Some(aot_c_ref) = &overlay_box._aot_c {

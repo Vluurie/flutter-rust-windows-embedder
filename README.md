@@ -62,7 +62,7 @@ init_flutter_window();
 
 The DirectX overlay mode requires a specific version of the Flutter Engine and, for hardware acceleration, the ANGLE libraries.
 
-1.  **Flutter Engine**: This mode requires `flutter_engine.dll` for version **3.29.3**.
+1.  **Flutter Engine**: This mode requires `flutter_engine.dll` for version **3.35.7**.
 
       * **JIT (Debug)**: Download the JIT engine from the official Google Storage API release ZIP.
       * **AOT (Release)**: Compile the AOT engine yourself by following the [Custom Flutter Engine Embedding in AOT Mode](https://github.com/flutter/engine/blob/main/docs/Custom-Flutter-Engine-Embedding-in-AOT-Mode.md) guide.

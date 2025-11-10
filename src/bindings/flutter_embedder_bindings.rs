@@ -133,8 +133,135 @@ pub const FlutterSemanticsFlag_kFlutterSemanticsFlagIsExpanded: FlutterSemantics
 #[doc = " The semantics node has the quality of either being \"selected\" or\n \"not selected\"."]
 pub const FlutterSemanticsFlag_kFlutterSemanticsFlagHasSelectedState: FlutterSemanticsFlag =
     268435456;
-#[doc = " The set of properties that may be associated with a semantics node.\n\n Must match the `SemanticsFlag` enum in semantics.dart."]
+#[doc = " Whether a semantics node has the quality of being required."]
+pub const FlutterSemanticsFlag_kFlutterSemanticsFlagHasRequiredState: FlutterSemanticsFlag =
+    536870912;
+#[doc = " Whether user input is required on the semantics node before a form can be\n submitted.\n\n Only applicable when kFlutterSemanticsFlagHasRequiredState flag is on."]
+pub const FlutterSemanticsFlag_kFlutterSemanticsFlagIsRequired: FlutterSemanticsFlag = 1073741824;
+#[doc = " The set of properties that may be associated with a semantics node.\n\n Must match the `SemanticsFlag` enum in semantics.dart.\n\n @deprecated     Use `FlutterSemanticsFlags` instead. No new flags will\n                 be added to `FlutterSemanticsFlag`. New flags will\n                 continue to be added to `FlutterSemanticsFlags`."]
 pub type FlutterSemanticsFlag = ::std::os::raw::c_int;
+#[doc = " The property is not applicable to this semantics node."]
+pub const FlutterTristate_kFlutterTristateNone: FlutterTristate = 0;
+#[doc = " The property is applicable and its state is \"true\" or \"on\"."]
+pub const FlutterTristate_kFlutterTristateTrue: FlutterTristate = 1;
+#[doc = " The property is applicable and its state is \"false\" or \"off\"."]
+pub const FlutterTristate_kFlutterTristateFalse: FlutterTristate = 2;
+pub type FlutterTristate = ::std::os::raw::c_int;
+#[doc = " The semantics node does not have check state."]
+pub const FlutterCheckState_kFlutterCheckStateNone: FlutterCheckState = 0;
+#[doc = " The semantics node is checked."]
+pub const FlutterCheckState_kFlutterCheckStateTrue: FlutterCheckState = 1;
+#[doc = " The semantics node is not checked."]
+pub const FlutterCheckState_kFlutterCheckStateFalse: FlutterCheckState = 2;
+#[doc = " The semantics node represents a checkbox in mixed state."]
+pub const FlutterCheckState_kFlutterCheckStateMixed: FlutterCheckState = 3;
+pub type FlutterCheckState = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterSemanticsFlags {
+    #[doc = " The size of this struct. Must be sizeof(FlutterSemanticsFlags)."]
+    pub struct_size: usize,
+    #[doc = " Whether a semantics node is checked."]
+    pub is_checked: FlutterCheckState,
+    #[doc = " Whether a semantics node is selected."]
+    pub is_selected: FlutterTristate,
+    #[doc = " Whether a semantic node is currently enabled."]
+    pub is_enabled: FlutterTristate,
+    #[doc = " If true, the semantics node is \"on\". If false, the semantics node is\n \"off\"."]
+    pub is_toggled: FlutterTristate,
+    #[doc = " Whether a semantic node that is currently expanded."]
+    pub is_expanded: FlutterTristate,
+    #[doc = " Whether user input is required on the semantics node before a form can be\n submitted."]
+    pub is_required: FlutterTristate,
+    #[doc = " Whether the semantic node currently holds the user's focus."]
+    pub is_focused: FlutterTristate,
+    #[doc = " Whether the semantic node represents a button."]
+    pub is_button: bool,
+    #[doc = " Whether the semantic node represents a text field."]
+    pub is_text_field: bool,
+    #[doc = " Whether a semantic node is in a mutually exclusive group."]
+    pub is_in_mutually_exclusive_group: bool,
+    #[doc = " Whether a semantic node is a header that divides content into sections."]
+    pub is_header: bool,
+    #[doc = " Whether the value of the semantics node is obscured."]
+    pub is_obscured: bool,
+    #[doc = " Whether the semantics node is the root of a subtree for which a route name\n should be announced."]
+    pub scopes_route: bool,
+    #[doc = " Whether the semantics node label is the name of a visually distinct route."]
+    pub names_route: bool,
+    #[doc = " Whether the semantics node is considered hidden."]
+    pub is_hidden: bool,
+    #[doc = " Whether the semantics node represents an image."]
+    pub is_image: bool,
+    #[doc = " Whether the semantics node is a live region."]
+    pub is_live_region: bool,
+    #[doc = " Whether the platform can scroll the semantics node when the user attempts\n to move the accessibility focus to an offscreen child.\n\n For example, a `ListView` widget has implicit scrolling so that users can\n easily move the accessibility focus to the next set of children. A\n `PageView` widget does not have implicit scrolling, so that users don't\n navigate to the next page when reaching the end of the current one."]
+    pub has_implicit_scrolling: bool,
+    #[doc = " Whether the value of the semantics node is coming from a multi-line text\n field.\n\n This is used for text fields to distinguish single-line text fields from\n multi-line ones."]
+    pub is_multiline: bool,
+    #[doc = " Whether the semantic node is read only.\n\n Only applicable when kFlutterSemanticsFlagIsTextField flag is on."]
+    pub is_read_only: bool,
+    #[doc = " Whether the semantics node represents a link."]
+    pub is_link: bool,
+    #[doc = " Whether the semantics node represents a slider."]
+    pub is_slider: bool,
+    #[doc = " Whether the semantics node represents a keyboard key."]
+    pub is_keyboard_key: bool,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterSemanticsFlags"][::std::mem::size_of::<FlutterSemanticsFlags>() - 56usize];
+    ["Alignment of FlutterSemanticsFlags"]
+        [::std::mem::align_of::<FlutterSemanticsFlags>() - 8usize];
+    ["Offset of field: FlutterSemanticsFlags::struct_size"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, struct_size) - 0usize];
+    ["Offset of field: FlutterSemanticsFlags::is_checked"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_checked) - 8usize];
+    ["Offset of field: FlutterSemanticsFlags::is_selected"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_selected) - 12usize];
+    ["Offset of field: FlutterSemanticsFlags::is_enabled"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_enabled) - 16usize];
+    ["Offset of field: FlutterSemanticsFlags::is_toggled"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_toggled) - 20usize];
+    ["Offset of field: FlutterSemanticsFlags::is_expanded"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_expanded) - 24usize];
+    ["Offset of field: FlutterSemanticsFlags::is_required"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_required) - 28usize];
+    ["Offset of field: FlutterSemanticsFlags::is_focused"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_focused) - 32usize];
+    ["Offset of field: FlutterSemanticsFlags::is_button"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_button) - 36usize];
+    ["Offset of field: FlutterSemanticsFlags::is_text_field"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_text_field) - 37usize];
+    ["Offset of field: FlutterSemanticsFlags::is_in_mutually_exclusive_group"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_in_mutually_exclusive_group) - 38usize];
+    ["Offset of field: FlutterSemanticsFlags::is_header"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_header) - 39usize];
+    ["Offset of field: FlutterSemanticsFlags::is_obscured"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_obscured) - 40usize];
+    ["Offset of field: FlutterSemanticsFlags::scopes_route"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, scopes_route) - 41usize];
+    ["Offset of field: FlutterSemanticsFlags::names_route"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, names_route) - 42usize];
+    ["Offset of field: FlutterSemanticsFlags::is_hidden"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_hidden) - 43usize];
+    ["Offset of field: FlutterSemanticsFlags::is_image"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_image) - 44usize];
+    ["Offset of field: FlutterSemanticsFlags::is_live_region"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_live_region) - 45usize];
+    ["Offset of field: FlutterSemanticsFlags::has_implicit_scrolling"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, has_implicit_scrolling) - 46usize];
+    ["Offset of field: FlutterSemanticsFlags::is_multiline"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_multiline) - 47usize];
+    ["Offset of field: FlutterSemanticsFlags::is_read_only"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_read_only) - 48usize];
+    ["Offset of field: FlutterSemanticsFlags::is_link"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_link) - 49usize];
+    ["Offset of field: FlutterSemanticsFlags::is_slider"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_slider) - 50usize];
+    ["Offset of field: FlutterSemanticsFlags::is_keyboard_key"]
+        [::std::mem::offset_of!(FlutterSemanticsFlags, is_keyboard_key) - 51usize];
+};
 #[doc = " Text has unknown text direction."]
 pub const FlutterTextDirection_kFlutterTextDirectionUnknown: FlutterTextDirection = 0;
 #[doc = " Text is read from right to left."]
@@ -996,6 +1123,48 @@ const _: () = {
     ["Offset of field: FlutterWindowMetricsEvent::view_id"]
         [::std::mem::offset_of!(FlutterWindowMetricsEvent, view_id) - 88usize];
 };
+#[doc = " Indicates the focus transition did not have a direction.\n\n This is typically associated with focus being programmatically requested\n or when focus is lost."]
+pub const FlutterViewFocusDirection_kUndefined: FlutterViewFocusDirection = 0;
+#[doc = " Indicates the focus transition was performed in a forward direction.\n\n This is typically result of the user pressing tab."]
+pub const FlutterViewFocusDirection_kForward: FlutterViewFocusDirection = 1;
+#[doc = " Indicates the focus transition was performed in a backward direction.\n\n This is typically result of the user pressing shift + tab."]
+pub const FlutterViewFocusDirection_kBackward: FlutterViewFocusDirection = 2;
+#[doc = " Represents the direction in which the focus transitioned across\n [FlutterView]s."]
+pub type FlutterViewFocusDirection = ::std::os::raw::c_int;
+#[doc = " Specifies that a view does not have platform focus."]
+pub const FlutterViewFocusState_kUnfocused: FlutterViewFocusState = 0;
+#[doc = " Specifies that a view has platform focus."]
+pub const FlutterViewFocusState_kFocused: FlutterViewFocusState = 1;
+#[doc = " Represents the focus state of a given [FlutterView]."]
+pub type FlutterViewFocusState = ::std::os::raw::c_int;
+#[doc = " A FlutterViewFocusChangeRequest is sent by the engine to the embedder when\n when a FlutterView focus state has changed and native view focus\n needs to be updated.\n\n Received in FlutterProjectArgs.view_focus_change_request_callback."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterViewFocusChangeRequest {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterViewFocusChangeRequest)."]
+    pub struct_size: usize,
+    #[doc = " The identifier of the view that received the focus event."]
+    pub view_id: FlutterViewId,
+    #[doc = " The focus state of the view."]
+    pub state: FlutterViewFocusState,
+    #[doc = " The direction in which the focus transitioned across [FlutterView]s."]
+    pub direction: FlutterViewFocusDirection,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterViewFocusChangeRequest"]
+        [::std::mem::size_of::<FlutterViewFocusChangeRequest>() - 24usize];
+    ["Alignment of FlutterViewFocusChangeRequest"]
+        [::std::mem::align_of::<FlutterViewFocusChangeRequest>() - 8usize];
+    ["Offset of field: FlutterViewFocusChangeRequest::struct_size"]
+        [::std::mem::offset_of!(FlutterViewFocusChangeRequest, struct_size) - 0usize];
+    ["Offset of field: FlutterViewFocusChangeRequest::view_id"]
+        [::std::mem::offset_of!(FlutterViewFocusChangeRequest, view_id) - 8usize];
+    ["Offset of field: FlutterViewFocusChangeRequest::state"]
+        [::std::mem::offset_of!(FlutterViewFocusChangeRequest, state) - 16usize];
+    ["Offset of field: FlutterViewFocusChangeRequest::direction"]
+        [::std::mem::offset_of!(FlutterViewFocusChangeRequest, direction) - 20usize];
+};
 pub const FlutterPointerPhase_kCancel: FlutterPointerPhase = 0;
 #[doc = " The pointer, which must have been down (see kDown), is now up.\n\n For touch, this means that the pointer is no longer in contact with the\n screen. For a mouse, it means the last button was released. Note that if\n any other buttons are still pressed when one button is released, that\n should be sent as a kMove rather than a kUp."]
 pub const FlutterPointerPhase_kUp: FlutterPointerPhase = 1;
@@ -1410,8 +1579,8 @@ pub struct FlutterSemanticsNode2 {
     pub struct_size: usize,
     #[doc = " The unique identifier for this node."]
     pub id: i32,
-    #[doc = " The set of semantics flags associated with this node."]
-    pub flags: FlutterSemanticsFlag,
+    #[doc = " The set of semantics flags associated with this node.\n\n @deprecated     Use `flags2` instead. No new flags will\n                 be added to `FlutterSemanticsFlag`. New flags will\n                 continue to be added to `FlutterSemanticsFlags`."]
+    pub flags__deprecated__: FlutterSemanticsFlag,
     #[doc = " The set of semantics actions applicable to this node."]
     pub actions: FlutterSemanticsAction,
     #[doc = " The position at which the text selection originates."]
@@ -1472,18 +1641,19 @@ pub struct FlutterSemanticsNode2 {
     pub increased_value_attributes: *mut *const FlutterStringAttribute,
     pub decreased_value_attribute_count: usize,
     pub decreased_value_attributes: *mut *const FlutterStringAttribute,
+    pub flags2: *mut FlutterSemanticsFlags,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FlutterSemanticsNode2"][::std::mem::size_of::<FlutterSemanticsNode2>() - 368usize];
+    ["Size of FlutterSemanticsNode2"][::std::mem::size_of::<FlutterSemanticsNode2>() - 376usize];
     ["Alignment of FlutterSemanticsNode2"]
         [::std::mem::align_of::<FlutterSemanticsNode2>() - 8usize];
     ["Offset of field: FlutterSemanticsNode2::struct_size"]
         [::std::mem::offset_of!(FlutterSemanticsNode2, struct_size) - 0usize];
     ["Offset of field: FlutterSemanticsNode2::id"]
         [::std::mem::offset_of!(FlutterSemanticsNode2, id) - 8usize];
-    ["Offset of field: FlutterSemanticsNode2::flags"]
-        [::std::mem::offset_of!(FlutterSemanticsNode2, flags) - 12usize];
+    ["Offset of field: FlutterSemanticsNode2::flags__deprecated__"]
+        [::std::mem::offset_of!(FlutterSemanticsNode2, flags__deprecated__) - 12usize];
     ["Offset of field: FlutterSemanticsNode2::actions"]
         [::std::mem::offset_of!(FlutterSemanticsNode2, actions) - 16usize];
     ["Offset of field: FlutterSemanticsNode2::text_selection_base"]
@@ -1556,6 +1726,8 @@ const _: () = {
         [::std::mem::offset_of!(FlutterSemanticsNode2, decreased_value_attribute_count) - 352usize];
     ["Offset of field: FlutterSemanticsNode2::decreased_value_attributes"]
         [::std::mem::offset_of!(FlutterSemanticsNode2, decreased_value_attributes) - 360usize];
+    ["Offset of field: FlutterSemanticsNode2::flags2"]
+        [::std::mem::offset_of!(FlutterSemanticsNode2, flags2) - 368usize];
 };
 #[doc = " A custom semantics action, or action override.\n\n Custom actions can be registered by applications in order to provide\n semantic actions other than the standard actions available through the\n `FlutterSemanticsAction` enum.\n\n Action overrides are custom actions that the application developer requests\n to be used in place of the standard actions in the `FlutterSemanticsAction`\n enum.\n\n @deprecated     Use `FlutterSemanticsCustomAction2` instead. In order to\n                 preserve ABI compatility for existing users, no new fields\n                 will be added to this struct. New fields will continue to\n                 be added to `FlutterSemanticsCustomAction2`."]
 #[repr(C)]
@@ -1664,10 +1836,11 @@ pub struct FlutterSemanticsUpdate2 {
     pub custom_action_count: usize,
     #[doc = " Array of semantics custom action pointers. Has length\n `custom_action_count`."]
     pub custom_actions: *mut *mut FlutterSemanticsCustomAction2,
+    pub view_id: FlutterViewId,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FlutterSemanticsUpdate2"][::std::mem::size_of::<FlutterSemanticsUpdate2>() - 40usize];
+    ["Size of FlutterSemanticsUpdate2"][::std::mem::size_of::<FlutterSemanticsUpdate2>() - 48usize];
     ["Alignment of FlutterSemanticsUpdate2"]
         [::std::mem::align_of::<FlutterSemanticsUpdate2>() - 8usize];
     ["Offset of field: FlutterSemanticsUpdate2::struct_size"]
@@ -1680,6 +1853,8 @@ const _: () = {
         [::std::mem::offset_of!(FlutterSemanticsUpdate2, custom_action_count) - 24usize];
     ["Offset of field: FlutterSemanticsUpdate2::custom_actions"]
         [::std::mem::offset_of!(FlutterSemanticsUpdate2, custom_actions) - 32usize];
+    ["Offset of field: FlutterSemanticsUpdate2::view_id"]
+        [::std::mem::offset_of!(FlutterSemanticsUpdate2, view_id) - 40usize];
 };
 pub type FlutterUpdateSemanticsNodeCallback = ::std::option::Option<
     unsafe extern "C" fn(arg1: *const FlutterSemanticsNode, arg2: *mut ::std::os::raw::c_void),
@@ -1720,6 +1895,12 @@ const _: () = {
 };
 pub type FlutterChannelUpdateCallback = ::std::option::Option<
     unsafe extern "C" fn(arg1: *const FlutterChannelUpdate, arg2: *mut ::std::os::raw::c_void),
+>;
+pub type FlutterViewFocusChangeRequestCallback = ::std::option::Option<
+    unsafe extern "C" fn(
+        arg1: *const FlutterViewFocusChangeRequest,
+        arg2: *mut ::std::os::raw::c_void,
+    ),
 >;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -1793,11 +1974,13 @@ pub struct FlutterCustomTaskRunners {
     #[doc = " Specify a callback that is used to set the thread priority for embedder\n task runners."]
     pub thread_priority_setter:
         ::std::option::Option<unsafe extern "C" fn(arg1: FlutterThreadPriority)>,
+    #[doc = " Specify the task runner for the thread on which the UI tasks will be run.\n This may be same as platform_task_runner, in which case the Flutter engine\n will run the UI isolate on platform thread."]
+    pub ui_task_runner: *const FlutterTaskRunnerDescription,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of FlutterCustomTaskRunners"]
-        [::std::mem::size_of::<FlutterCustomTaskRunners>() - 32usize];
+        [::std::mem::size_of::<FlutterCustomTaskRunners>() - 40usize];
     ["Alignment of FlutterCustomTaskRunners"]
         [::std::mem::align_of::<FlutterCustomTaskRunners>() - 8usize];
     ["Offset of field: FlutterCustomTaskRunners::struct_size"]
@@ -1808,6 +1991,8 @@ const _: () = {
         [::std::mem::offset_of!(FlutterCustomTaskRunners, render_task_runner) - 16usize];
     ["Offset of field: FlutterCustomTaskRunners::thread_priority_setter"]
         [::std::mem::offset_of!(FlutterCustomTaskRunners, thread_priority_setter) - 24usize];
+    ["Offset of field: FlutterCustomTaskRunners::ui_task_runner"]
+        [::std::mem::offset_of!(FlutterCustomTaskRunners, ui_task_runner) - 32usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -2580,10 +2765,14 @@ pub struct FlutterProjectArgs {
     pub update_semantics_callback2: FlutterUpdateSemanticsCallback2,
     #[doc = " The callback invoked by the engine in response to a channel listener\n being registered on the framework side. The callback is invoked from\n a task posted to the platform thread."]
     pub channel_update_callback: FlutterChannelUpdateCallback,
+    #[doc = " The callback invoked by the engine when FlutterView focus state has\n changed. The embedder can use this callback to request focus change for\n the native view. The callback is invoked from a task posted to the\n platform thread."]
+    pub view_focus_change_request_callback: FlutterViewFocusChangeRequestCallback,
+    #[doc = " Opaque identifier provided by the engine. Accessible in Dart code through\n `PlatformDispatcher.instance.engineId`. Can be used in native code to\n retrieve the engine instance that is running the Dart code."]
+    pub engine_id: i64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of FlutterProjectArgs"][::std::mem::size_of::<FlutterProjectArgs>() - 296usize];
+    ["Size of FlutterProjectArgs"][::std::mem::size_of::<FlutterProjectArgs>() - 312usize];
     ["Alignment of FlutterProjectArgs"][::std::mem::align_of::<FlutterProjectArgs>() - 8usize];
     ["Offset of field: FlutterProjectArgs::struct_size"]
         [::std::mem::offset_of!(FlutterProjectArgs, struct_size) - 0usize];
@@ -2664,6 +2853,10 @@ const _: () = {
         [::std::mem::offset_of!(FlutterProjectArgs, update_semantics_callback2) - 280usize];
     ["Offset of field: FlutterProjectArgs::channel_update_callback"]
         [::std::mem::offset_of!(FlutterProjectArgs, channel_update_callback) - 288usize];
+    ["Offset of field: FlutterProjectArgs::view_focus_change_request_callback"]
+        [::std::mem::offset_of!(FlutterProjectArgs, view_focus_change_request_callback) - 296usize];
+    ["Offset of field: FlutterProjectArgs::engine_id"]
+        [::std::mem::offset_of!(FlutterProjectArgs, engine_id) - 304usize];
 };
 unsafe extern "C" {
     #[doc = " @brief      Creates the necessary data structures to launch a Flutter Dart\n             application in AOT mode. The data may only be collected after\n             all FlutterEngine instances launched using this data have been\n             terminated.\n\n @param[in]  source    The source of the AOT data.\n @param[out] data_out  The AOT data on success. Unchanged on failure.\n\n @return     Returns if the AOT data could be successfully resolved.\n"]
@@ -2673,7 +2866,7 @@ unsafe extern "C" {
     ) -> FlutterEngineResult;
 }
 unsafe extern "C" {
-    #[doc = " @brief      Initialize and run a Flutter engine instance and return a handle\n             to it. This is a convenience method for the pair of calls to\n             `FlutterEngineInitialize` and `FlutterEngineRunInitialized`.\n\n @note       This method of running a Flutter engine works well except in\n             cases where the embedder specifies custom task runners via\n             `FlutterProjectArgs::custom_task_runners`. In such cases, the\n             engine may need the embedder to post tasks back to it before\n             `FlutterEngineRun` has returned. Embedders can only post tasks\n             to the engine if they have a handle to the engine. In such\n             cases, embedders are advised to get the engine handle via the\n             `FlutterInitializeCall`. Then they can call\n             `FlutterEngineRunInitialized` knowing that they will be able to\n             service custom tasks on other threads with the engine handle.\n\n @param[in]  version    The Flutter embedder API version. Must be\n                        FLUTTER_ENGINE_VERSION.\n @param[in]  config     The renderer configuration.\n @param[in]  args       The Flutter project arguments.\n @param      user_data  A user data baton passed back to embedders in\n                        callbacks.\n @param[out] engine_out The engine handle on successful engine creation.\n\n @return     The result of the call to run the Flutter engine.\n"]
+    #[doc = " @brief      Initialize and run a Flutter engine instance and return a handle\n             to it. This is a convenience method for the pair of calls to\n             `FlutterEngineInitialize` and `FlutterEngineRunInitialized`.\n\n @note       This method of running a Flutter engine works well except in\n             cases where the embedder specifies custom task runners via\n             `FlutterProjectArgs::custom_task_runners`. In such cases, the\n             engine may need the embedder to post tasks back to it before\n             `FlutterEngineRun` has returned. Embedders can only post tasks\n             to the engine if they have a handle to the engine. In such\n             cases, embedders are advised to get the engine handle by calling\n             `FlutterEngineInitialize`. Then they can call\n             `FlutterEngineRunInitialized` knowing that they will be able to\n             service custom tasks on other threads with the engine handle.\n\n @param[in]  version    The Flutter embedder API version. Must be\n                        FLUTTER_ENGINE_VERSION.\n @param[in]  config     The renderer configuration.\n @param[in]  args       The Flutter project arguments.\n @param      user_data  A user data baton passed back to embedders in\n                        callbacks.\n @param[out] engine_out The engine handle on successful engine creation.\n\n @return     The result of the call to run the Flutter engine.\n"]
     pub fn FlutterEngineRun(
         version: usize,
         config: *const FlutterRendererConfig,

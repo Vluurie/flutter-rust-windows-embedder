@@ -6,6 +6,7 @@ use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetForegroundWindow};
 
 use crate::bindings::embedder::{
+    FlutterCheckState_kFlutterCheckStateMixed, FlutterCheckState_kFlutterCheckStateTrue,
     FlutterRect, FlutterSemanticsFlag, FlutterSemanticsFlag_kFlutterSemanticsFlagHasCheckedState,
     FlutterSemanticsFlag_kFlutterSemanticsFlagHasEnabledState,
     FlutterSemanticsFlag_kFlutterSemanticsFlagHasExpandedState,
@@ -34,8 +35,9 @@ use crate::bindings::embedder::{
     FlutterSemanticsFlag_kFlutterSemanticsFlagIsTextField,
     FlutterSemanticsFlag_kFlutterSemanticsFlagIsToggled,
     FlutterSemanticsFlag_kFlutterSemanticsFlagNamesRoute,
-    FlutterSemanticsFlag_kFlutterSemanticsFlagScopesRoute, FlutterSemanticsNode2,
-    FlutterSemanticsUpdate2, FlutterTransformation,
+    FlutterSemanticsFlag_kFlutterSemanticsFlagScopesRoute, FlutterSemanticsFlags,
+    FlutterSemanticsNode2, FlutterSemanticsUpdate2, FlutterTransformation,
+    FlutterTristate_kFlutterTristateTrue,
 };
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
@@ -165,6 +167,70 @@ pub fn ffi_flags_to_rust_set(ffi_flag_value: FlutterSemanticsFlag) -> HashSet<Ru
     set
 }
 
+/// Converts the new FlutterSemanticsFlags struct (Flutter 3.57+) to our internal RustSemanticsFlag set
+pub fn ffi_flags2_to_rust_set(flags: &FlutterSemanticsFlags) -> HashSet<RustSemanticsFlag> {
+    let mut set = HashSet::new();
+
+    // Check state
+    if flags.is_checked == FlutterCheckState_kFlutterCheckStateTrue {
+        set.insert(RustSemanticsFlag::HasCheckedState);
+        set.insert(RustSemanticsFlag::IsChecked);
+    } else if flags.is_checked == FlutterCheckState_kFlutterCheckStateMixed {
+        set.insert(RustSemanticsFlag::HasCheckedState);
+        set.insert(RustSemanticsFlag::IsCheckStateMixed);
+    }
+
+    // Selected state
+    if flags.is_selected == FlutterTristate_kFlutterTristateTrue {
+        set.insert(RustSemanticsFlag::HasSelectedState);
+        set.insert(RustSemanticsFlag::IsSelected);
+    }
+
+    // Enabled state
+    if flags.is_enabled == FlutterTristate_kFlutterTristateTrue {
+        set.insert(RustSemanticsFlag::HasEnabledState);
+        set.insert(RustSemanticsFlag::IsEnabled);
+    }
+
+    // Toggled state
+    if flags.is_toggled == FlutterTristate_kFlutterTristateTrue {
+        set.insert(RustSemanticsFlag::HasToggledState);
+        set.insert(RustSemanticsFlag::IsToggled);
+    }
+
+    // Expanded state
+    if flags.is_expanded == FlutterTristate_kFlutterTristateTrue {
+        set.insert(RustSemanticsFlag::HasExpandedState);
+        set.insert(RustSemanticsFlag::IsExpanded);
+    }
+
+    // Focused
+    if flags.is_focused == FlutterTristate_kFlutterTristateTrue {
+        set.insert(RustSemanticsFlag::IsFocused);
+        set.insert(RustSemanticsFlag::IsFocusable);
+    }
+
+    // Boolean flags
+    if flags.is_button { set.insert(RustSemanticsFlag::IsButton); }
+    if flags.is_text_field { set.insert(RustSemanticsFlag::IsTextField); }
+    if flags.is_in_mutually_exclusive_group { set.insert(RustSemanticsFlag::IsInMutuallyExclusiveGroup); }
+    if flags.is_header { set.insert(RustSemanticsFlag::IsHeader); }
+    if flags.is_obscured { set.insert(RustSemanticsFlag::IsObscured); }
+    if flags.scopes_route { set.insert(RustSemanticsFlag::ScopesRoute); }
+    if flags.names_route { set.insert(RustSemanticsFlag::NamesRoute); }
+    if flags.is_hidden { set.insert(RustSemanticsFlag::IsHidden); }
+    if flags.is_image { set.insert(RustSemanticsFlag::IsImage); }
+    if flags.is_live_region { set.insert(RustSemanticsFlag::IsLiveRegion); }
+    if flags.has_implicit_scrolling { set.insert(RustSemanticsFlag::HasImplicitScrolling); }
+    if flags.is_multiline { set.insert(RustSemanticsFlag::IsMultiline); }
+    if flags.is_read_only { set.insert(RustSemanticsFlag::IsReadOnly); }
+    if flags.is_link { set.insert(RustSemanticsFlag::IsLink); }
+    if flags.is_slider { set.insert(RustSemanticsFlag::IsSlider); }
+    if flags.is_keyboard_key { set.insert(RustSemanticsFlag::IsKeyboardKey); }
+
+    set
+}
+
 fn cchar_to_string_safe(c_str: *const ::std::os::raw::c_char) -> String {
     if c_str.is_null() {
         String::new()
@@ -235,7 +301,12 @@ pub extern "C" fn semantics_update_callback(
                 };
 
             let current_label = cchar_to_string_safe(ffi_node.label);
-            let current_flags_set = ffi_flags_to_rust_set(ffi_node.flags);
+            // Use flags2 (new API) if available, otherwise fall back to deprecated flags
+            let current_flags_set = if !ffi_node.flags2.is_null() {
+                ffi_flags2_to_rust_set(&*ffi_node.flags2)
+            } else {
+                ffi_flags_to_rust_set(ffi_node.flags__deprecated__)
+            };
 
             new_tree_snapshot.insert(
                 ffi_node.id,

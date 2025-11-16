@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::{CStr, CString},
     sync::{
         Arc, Mutex,
@@ -14,7 +14,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    bindings::embedder::{self, FlutterEngine},
+    bindings::embedder::{self, FlutterEngine, FlutterKeyEventType},
     software_renderer::{
         api::RendererType,
         d3d11_compositor::{
@@ -33,6 +33,30 @@ use crate::{
 
 pub static FLUTTER_LOG_TAG: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
+
+/// Represents a platform message that needs to be sent on the platform thread
+#[derive(Debug, Clone)]
+pub struct PendingPlatformMessage {
+    pub channel: String,
+    pub payload_bytes: Vec<u8>,
+}
+
+/// Represents a Key-Event that is waiting to be sent
+/// to the engine from the platform thread.
+#[derive(Debug, Clone)]
+pub struct PendingKeyEvent {
+    pub event_type: FlutterKeyEventType,
+    pub physical: u64,
+    pub logical: u64,
+    pub characters: String,
+    pub synthesized: bool,
+}
+
+/// Queue for pending key events (new API)
+pub type PendingKeyEventQueue = Arc<Mutex<VecDeque<PendingKeyEvent>>>;
+
+/// Queue for pending platform messages that need to be sent from the platform thread
+pub type PendingPlatformMessageQueue = Arc<Mutex<VecDeque<PendingPlatformMessage>>>;
 
 // A wrapper around the raw FlutterEngine pointer to make it Send + Sync.
 // WARNING: This is only safe because we PROMISE to only use the pointer
@@ -168,6 +192,14 @@ pub struct FlutterOverlay {
     /// State of the active text input field. Managed by text input callbacks and methods.
     pub(crate) text_input_state: Arc<Mutex<Option<ActiveTextInputState>>>,
 
+    /// Queue for pending platform messages that need to be sent from the platform thread.
+    /// Messages sent from non-platform threads (like Windows UI thread) are queued here
+    /// and processed by the platform task runner thread.
+    pub(crate) pending_platform_messages: PendingPlatformMessageQueue,
+
+    /// Used for pending keys for the new key event api
+    pub(crate) pending_key_events: PendingKeyEventQueue,
+
     /// Instance-specific task queue. Managed by task runner and `post_task_callback`.
     pub(crate) task_queue_state: Arc<TaskQueueState>,
 
@@ -236,6 +268,8 @@ impl Clone for FlutterOverlay {
             engine_dll: self.engine_dll.clone(),
             task_queue_state: self.task_queue_state.clone(),
             text_input_state: self.text_input_state.clone(),
+            pending_platform_messages: self.pending_platform_messages.clone(),
+            pending_key_events: self.pending_key_events.clone(),
             semantics_tree_data: self.semantics_tree_data.clone(),
             message_handlers: self.message_handlers.clone(),
             response_buffer: self.response_buffer.clone(),

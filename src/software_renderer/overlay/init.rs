@@ -11,7 +11,7 @@ use crate::software_renderer::gl_renderer::angle_interop::{
 use crate::software_renderer::overlay::d3d::{
     create_compositing_texture, create_srv, create_texture,
 };
-use crate::software_renderer::overlay::engine::{run_engine, update_flutter_window_metrics};
+use crate::software_renderer::overlay::engine::{on_root_isolate_created, run_engine};
 use crate::software_renderer::overlay::overlay_impl::{
     FLUTTER_LOG_TAG, SendHwnd, SendableFlutterEngine, SendableHandle,
 };
@@ -35,7 +35,7 @@ use crate::software_renderer::ticker::task_scheduler::{
 };
 
 use log::{error, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_char;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
@@ -208,6 +208,8 @@ pub(crate) fn init_overlay(
             _custom_task_runners_struct: None,
             engine_dll: engine_dll_arc.clone(),
             text_input_state: Arc::new(Mutex::new(None)),
+            pending_platform_messages: Arc::new(Mutex::new(VecDeque::new())),
+            pending_key_events: Arc::new(Mutex::new(VecDeque::new())),
             mouse_buttons_state: AtomicI32::new(0),
             is_mouse_added: AtomicBool::new(false),
             semantics_tree_data: Arc::new(Mutex::new(HashMap::new())),
@@ -287,7 +289,7 @@ pub(crate) fn init_overlay(
             isolate_snapshot_data_size: 0,
             isolate_snapshot_instructions: ptr::null(),
             isolate_snapshot_instructions_size: 0,
-            root_isolate_create_callback: None,
+            root_isolate_create_callback: Some(on_root_isolate_created),
             update_semantics_node_callback: None,
             update_semantics_custom_action_callback: None,
             persistent_cache_path: ptr::null(),
@@ -316,7 +318,7 @@ pub(crate) fn init_overlay(
             update_semantics_callback2: Some(semantics_update_callback),
             channel_update_callback: None,
             view_focus_change_request_callback: None, // TODO: Implement for multi-window support
-            engine_id: 0, // TODO: Support multiple engine instances
+            engine_id: 0,                             // TODO: Support multiple engine instances
         };
 
         if let Some(aot_c_ref) = &overlay_box._aot_c {
@@ -371,15 +373,6 @@ pub(crate) fn init_overlay(
         assert_eq!(
             overlay_box.engine.0, engine_handle,
             "Engine handle mismatch after storing."
-        );
-
-        update_flutter_window_metrics(
-            engine_handle,
-            x,
-            y,
-            width,
-            height,
-            overlay_box.engine_dll.clone(),
         );
 
         info!(

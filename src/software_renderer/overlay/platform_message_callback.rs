@@ -335,8 +335,10 @@ fn handle_platform_message(message: &embedder::FlutterPlatformMessage) -> Channe
                         ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
                     }
                     _ => {
-                        // Unknown platform method
-                        ChannelHandlerResult::RespondNull
+                        // Unknown platform method - acknowledge with null envelope to prevent errors
+                        // This allows Flutter widgets to call any platform method without crashing
+                        let response = json!([null]);
+                        ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
                     }
                 }
             } else {

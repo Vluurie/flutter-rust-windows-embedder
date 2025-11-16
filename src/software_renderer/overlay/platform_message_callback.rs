@@ -1,14 +1,82 @@
 use crate::bindings::embedder::{self};
 use crate::software_renderer::api::FlutterEmbedderError;
+use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::textinput::custom_text_input_platform_message_handler;
 
-use log::{error, warn};
+use byteorder::{LittleEndian, ReadBytesExt};
+use log::error;
+use serde_json::json;
 use std::ffi::{CStr, CString, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
+use std::sync::Arc;
 use std::{ptr, str};
+use winapi::um::winuser::VK_LWIN;
+use winapi::um::winuser::VK_RWIN;
+use winapi::um::winuser::{GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
 
-use byteorder::{LittleEndian, ReadBytesExt};
+/// Enum representing all known Flutter platform channels
+#[derive(Debug, PartialEq, Eq)]
+enum FlutterChannel<'a> {
+    /// Mouse cursor channel - handles cursor appearance changes
+    MouseCursor,
+    /// Text input channel - handles text input state and methods
+    TextInput,
+    /// Accessibility channel - handles accessibility features
+    Accessibility,
+    /// Platform channel - handles general platform methods
+    Platform,
+    /// Keyboard channel - handles keyboard state queries
+    Keyboard,
+    /// Key event channel - handles legacy key events
+    KeyEvent,
+    /// Isolate channel - handles Dart isolate lifecycle events
+    Isolate,
+    /// Navigation channel - handles route/navigation events
+    Navigation,
+    /// Custom application-defined channel
+    Custom(&'a str),
+    /// Unknown or unrecognized channel
+    Unknown(&'a str),
+}
+
+impl<'a> FlutterChannel<'a> {
+    /// Parse a channel name string into a FlutterChannel enum
+    fn from_str(channel: &'a str) -> Self {
+        match channel {
+            "flutter/mousecursor" => FlutterChannel::MouseCursor,
+            "flutter/textinput" => FlutterChannel::TextInput,
+            "flutter/accessibility" => FlutterChannel::Accessibility,
+            "flutter/platform" => FlutterChannel::Platform,
+            "flutter/keyboard" => FlutterChannel::Keyboard,
+            "flutter/keyevent" => FlutterChannel::KeyEvent,
+            "flutter/isolate" => FlutterChannel::Isolate,
+            "flutter/navigation" => FlutterChannel::Navigation,
+            _ => {
+                if channel.starts_with("flutter/") {
+                    FlutterChannel::Unknown(channel)
+                } else {
+                    FlutterChannel::Custom(channel)
+                }
+            }
+        }
+    }
+
+    /// Get the channel name as a string
+    fn as_str(&self) -> &str {
+        match self {
+            FlutterChannel::MouseCursor => "flutter/mousecursor",
+            FlutterChannel::TextInput => "flutter/textinput",
+            FlutterChannel::Accessibility => "flutter/accessibility",
+            FlutterChannel::Platform => "flutter/platform",
+            FlutterChannel::Keyboard => "flutter/keyboard",
+            FlutterChannel::KeyEvent => "flutter/keyevent",
+            FlutterChannel::Isolate => "flutter/isolate",
+            FlutterChannel::Navigation => "flutter/navigation",
+            FlutterChannel::Custom(name) | FlutterChannel::Unknown(name) => name,
+        }
+    }
+}
 
 // Standard Method Codec type tags used for parsing simple messages like mouse cursor activation.
 const K_SMC_NULL: u8 = 0;
@@ -129,12 +197,175 @@ fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<St
     Ok((method_name, args_kind_value))
 }
 
+/// Result type for channel handlers
+enum ChannelHandlerResult {
+    /// Response was sent, no further action needed
+    Handled,
+    /// Response needs to be sent with provided data
+    RespondWith(Vec<u8>),
+    /// Send a null/empty response
+    RespondNull,
+    /// No response needed or already handled elsewhere
+    NoResponse,
+}
+
+/// Handle messages on the flutter/mousecursor channel
+fn handle_mousecursor_message(
+    message: &embedder::FlutterPlatformMessage,
+    overlay: &FlutterOverlay,
+) -> ChannelHandlerResult {
+    unsafe {
+        if message.message_size > 0 && !message.message.is_null() {
+            let slice = std::slice::from_raw_parts(message.message, message.message_size);
+            let mut msg_cursor = Cursor::new(slice);
+            if !slice.is_empty() {
+                match slice[0] {
+                    K_SMC_LIST => {
+                        if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
+                            if method == "activateSystemCursor" {
+                                if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                                    *guard = kind_opt;
+                                }
+                            }
+                        }
+                    }
+                    K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
+                        if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
+                            if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                                *guard = kind_opt;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    ChannelHandlerResult::RespondNull
+}
+
+/// Handle messages on the flutter/keyboard channel
+fn handle_keyboard_message(message: &embedder::FlutterPlatformMessage) -> ChannelHandlerResult {
+    unsafe {
+        let slice = std::slice::from_raw_parts(message.message, message.message_size);
+
+        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(slice) {
+            if let Some(method) = json_value.get("method").and_then(|m| m.as_str()) {
+                match method {
+                    "Keyboard.getState" => {
+                        let mut flutter_modifiers = 0;
+                        if (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0 {
+                            flutter_modifiers |= 0x1; // Shift
+                        }
+                        if (GetAsyncKeyState(VK_CONTROL) & 0x8000u16 as i16) != 0 {
+                            flutter_modifiers |= 0x2; // Control
+                        }
+                        if (GetAsyncKeyState(VK_MENU) & 0x8000u16 as i16) != 0 {
+                            flutter_modifiers |= 0x4; // Alt
+                        }
+                        if ((GetAsyncKeyState(VK_LWIN) & 0x8000u16 as i16) != 0)
+                            || ((GetAsyncKeyState(VK_RWIN) & 0x8000u16 as i16) != 0)
+                        {
+                            flutter_modifiers |= 0x8; // Meta (Windows Key)
+                        }
+
+                        let response_payload = json!({ "modifiers": flutter_modifiers });
+                        let response_bytes = response_payload.to_string().into_bytes();
+
+                        return ChannelHandlerResult::RespondWith(response_bytes);
+                    }
+                    _ => {
+                        // Unknown keyboard method - send null response
+                    }
+                }
+            }
+        }
+    }
+    ChannelHandlerResult::RespondNull
+}
+
+/// Handle messages on the flutter/isolate channel
+fn handle_isolate_message(_message: &embedder::FlutterPlatformMessage) -> ChannelHandlerResult {
+    // Isolate messages are typically lifecycle notifications from Dart
+    // We acknowledge them but don't need to process them
+    ChannelHandlerResult::RespondNull
+}
+
+/// Handle messages on the flutter/navigation channel
+fn handle_navigation_message(_message: &embedder::FlutterPlatformMessage) -> ChannelHandlerResult {
+    // Navigation messages are route push/pop notifications
+    // Acknowledge without processing
+    ChannelHandlerResult::RespondNull
+}
+
+/// Handle custom application-defined channels
+fn handle_custom_channel(
+    channel_name: &str,
+    message: &embedder::FlutterPlatformMessage,
+    overlay: &FlutterOverlay,
+) -> ChannelHandlerResult {
+    unsafe {
+        let data_slice = std::slice::from_raw_parts(message.message, message.message_size);
+
+        match overlay.message_handlers.lock() {
+            Ok(handlers) => {
+                if let Some(handler) = handlers.get(channel_name) {
+                    let request_payload = data_slice.to_vec();
+                    let response_payload = handler(request_payload);
+                    ChannelHandlerResult::RespondWith(response_payload)
+                } else {
+                    ChannelHandlerResult::RespondNull
+                }
+            }
+            Err(poisoned) => {
+                error!(
+                    "[PlatformMsgCB] Handlers map mutex poisoned for channel '{}': {}",
+                    channel_name, poisoned
+                );
+                ChannelHandlerResult::RespondNull
+            }
+        }
+    }
+}
+
+/// Send a response back to Flutter for a platform message
+fn send_response(
+    engine_handle: embedder::FlutterEngine,
+    engine_dll: &Arc<FlutterEngineDll>,
+    response_handle: *const embedder::FlutterPlatformMessageResponseHandle,
+    data: Option<&[u8]>,
+) {
+    if response_handle.is_null() {
+        return;
+    }
+
+    let (ptr, len) = match data {
+        Some(bytes) => (bytes.as_ptr(), bytes.len()),
+        None => (ptr::null(), 0),
+    };
+
+    unsafe {
+        let result = (engine_dll.FlutterEngineSendPlatformMessageResponse)(
+            engine_handle,
+            response_handle,
+            ptr,
+            len,
+        );
+
+        if result != embedder::FlutterEngineResult_kSuccess {
+            error!("[PlatformMsgCB] Failed to send response: {:?}", result);
+        }
+    }
+}
+
 pub(crate) extern "C" fn simple_platform_message_callback(
     platform_message: *const embedder::FlutterPlatformMessage,
     user_data: *mut c_void,
 ) {
     unsafe {
+        // Validate inputs
         if platform_message.is_null() {
+            error!("[PlatformMsgCB] Received null platform_message pointer");
             return;
         }
 
@@ -146,107 +377,80 @@ pub(crate) extern "C" fn simple_platform_message_callback(
         let overlay: &mut FlutterOverlay = &mut *(user_data as *mut FlutterOverlay);
         let engine_handle = overlay.engine;
         let engine_dll_arc = overlay.engine_dll.clone();
-
         let message = &*platform_message;
 
-        // A message with no channel name is invalid, but we must still respond if a handle is present.
+        // Handle messages with no channel name
         if message.channel.is_null() {
-            if !message.response_handle.is_null() {
-                let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                    engine_handle.0,
-                    message.response_handle,
-                    ptr::null(),
-                    0,
-                );
-            }
+            send_response(
+                engine_handle.0,
+                &engine_dll_arc,
+                message.response_handle,
+                None,
+            );
             return;
         }
 
+        // Parse channel name
         let channel_name_c_str = CStr::from_ptr(message.channel);
         let channel_name_str = channel_name_c_str.to_string_lossy();
         let channel_name = channel_name_str.as_ref();
+        let channel = FlutterChannel::from_str(channel_name);
 
-        let mut response_sent = false;
+        // Route message to appropriate handler based on channel
+        let result = match channel {
+            FlutterChannel::MouseCursor => handle_mousecursor_message(message, overlay),
 
-        if channel_name == "flutter/mousecursor" {
-            if message.message_size > 0 && !message.message.is_null() {
-                let slice = std::slice::from_raw_parts(message.message, message.message_size);
-                let mut msg_cursor = Cursor::new(slice);
-                if !slice.is_empty() {
-                    match slice[0] {
-                        K_SMC_LIST => {
-                            if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
-                                if method == "activateSystemCursor" {
-                                    if let Ok(mut guard) = overlay.desired_cursor.lock() {
-                                        *guard = kind_opt;
-                                    }
-                                }
-                            }
-                        }
-                        K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
-                            if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
-                                if let Ok(mut guard) = overlay.desired_cursor.lock() {
-                                    *guard = kind_opt;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+            FlutterChannel::TextInput => {
+                // TextInput handler sends its own response
+                custom_text_input_platform_message_handler(platform_message, user_data);
+                ChannelHandlerResult::Handled
             }
-        } else if channel_name == "flutter/textinput" {
-            custom_text_input_platform_message_handler(platform_message, user_data);
-            if !message.response_handle.is_null() {
-                response_sent = true;
+
+            FlutterChannel::Accessibility | FlutterChannel::Platform => {
+                // These channels just need acknowledgment
+                ChannelHandlerResult::RespondNull
             }
-        } else if channel_name == "flutter/accessibility" || channel_name == "flutter/platform" {
-            if !message.response_handle.is_null() {
-                let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
+
+            FlutterChannel::Keyboard => handle_keyboard_message(message),
+
+            FlutterChannel::KeyEvent => {
+                // Key event channel - respond null
+                ChannelHandlerResult::RespondNull
+            }
+
+            FlutterChannel::Isolate => handle_isolate_message(message),
+
+            FlutterChannel::Navigation => handle_navigation_message(message),
+
+            FlutterChannel::Custom(name) => handle_custom_channel(name, message, overlay),
+
+            FlutterChannel::Unknown(_name) => ChannelHandlerResult::RespondNull,
+        };
+
+        // Send response based on handler result
+        match result {
+            ChannelHandlerResult::Handled => {
+                // Response already sent by handler
+            }
+            ChannelHandlerResult::RespondWith(data) => {
+                send_response(
                     engine_handle.0,
+                    &engine_dll_arc,
                     message.response_handle,
-                    ptr::null(),
-                    0,
+                    Some(&data),
                 );
-                response_sent = true;
             }
-        } else {
-            let data_slice = std::slice::from_raw_parts(message.message, message.message_size);
-
-            match overlay.message_handlers.lock() {
-                Ok(handlers) => {
-                    if let Some(handler) = handlers.get(channel_name) {
-                        let request_payload = data_slice.to_vec();
-                        let response_payload = handler(request_payload);
-                        let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                            engine_handle.0,
-                            message.response_handle,
-                            response_payload.as_ptr(),
-                            response_payload.len(),
-                        );
-
-                        response_sent = true;
-                    } else {
-                        warn!(
-                            "[PlatformMsgCB] Received message on unhandled custom channel: {}",
-                            channel_name
-                        );
-                    }
-                }
-                Err(poisoned) => {
-                    error!(
-                        "[PlatformMsgCB] Handlers map mutex was poisoned: {}",
-                        poisoned
-                    );
-                }
+            ChannelHandlerResult::RespondNull => {
+                send_response(
+                    engine_handle.0,
+                    &engine_dll_arc,
+                    message.response_handle,
+                    None,
+                );
             }
-        }
-        if !response_sent && !message.response_handle.is_null() {
-            let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(
-                engine_handle.0,
-                message.response_handle,
-                ptr::null(),
-                0,
-            );
+            ChannelHandlerResult::NoResponse => {
+                // No response needed
+            }
         }
     }
 }

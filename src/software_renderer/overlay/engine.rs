@@ -3,13 +3,15 @@ use crate::bindings::embedder::{
 };
 
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
-use crate::software_renderer::overlay::overlay_impl::SendableFlutterEngine;
+use crate::software_renderer::overlay::overlay_impl::{
+    PendingPlatformMessage, SendableFlutterEngine,
+};
 
-use log::{error};
+use log::error;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::overlay_impl::FlutterOverlay;
 
@@ -37,8 +39,13 @@ pub(crate) fn run_engine(
             "user_data and overlay_raw_ptr should match if user_data is the overlay pointer"
         );
 
-        let init_result =
-            (engine_dll_arc.FlutterEngineInitialize)(version, config, args, user_data, &mut engine_handle);
+        let init_result = (engine_dll_arc.FlutterEngineInitialize)(
+            version,
+            config,
+            args,
+            user_data,
+            &mut engine_handle,
+        );
 
         if init_result != embedder::FlutterEngineResult_kSuccess || engine_handle.is_null() {
             let err_msg = format!(
@@ -50,10 +57,11 @@ pub(crate) fn run_engine(
         }
 
         (*overlay_raw_ptr).engine = SendableFlutterEngine(engine_handle);
-        (*overlay_raw_ptr).engine_atomic_ptr.store(engine_handle, Ordering::SeqCst);
+        (*overlay_raw_ptr)
+            .engine_atomic_ptr
+            .store(engine_handle, Ordering::SeqCst);
 
-
-        let run_result =  (engine_dll_arc.FlutterEngineRunInitialized)(engine_handle);
+        let run_result = (engine_dll_arc.FlutterEngineRunInitialized)(engine_handle);
 
         if run_result != embedder::FlutterEngineResult_kSuccess {
             let err_msg = format!(
@@ -61,11 +69,12 @@ pub(crate) fn run_engine(
                 run_result
             );
             error!("{}", err_msg);
-            
 
             (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
             (*overlay_raw_ptr).engine = SendableFlutterEngine(ptr::null_mut());
-            (*overlay_raw_ptr).engine_atomic_ptr.store(ptr::null_mut(), Ordering::SeqCst);
+            (*overlay_raw_ptr)
+                .engine_atomic_ptr
+                .store(ptr::null_mut(), Ordering::SeqCst);
 
             return Err(err_msg);
         }
@@ -73,12 +82,11 @@ pub(crate) fn run_engine(
     }
 }
 
-
 pub(crate) fn update_flutter_window_metrics(
     engine: FlutterEngine,
-    x: i32,   
-    y: i32,  
-    width: u32, 
+    x: i32,
+    y: i32,
+    width: u32,
     height: u32,
     engine_dll: Arc<FlutterEngineDll>,
 ) {
@@ -93,13 +101,51 @@ pub(crate) fn update_flutter_window_metrics(
     wm.width = width as usize;
     wm.height = height as usize;
     wm.pixel_ratio = 1.0;
-    wm.left = x as usize;  
-    wm.top = y as usize;  
+    wm.left = x as usize;
+    wm.top = y as usize;
     let r = unsafe { (engine_dll.FlutterEngineSendWindowMetricsEvent)(engine, &wm) };
     if r != embedder::FlutterEngineResult_kSuccess {
         error!(
             "[Metrics] FlutterEngineSendWindowMetricsEvent failed with result: {:?}",
             r
         );
+    }
+}
+
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn on_root_isolate_created(user_data: *mut ::std::os::raw::c_void) {
+    if user_data.is_null() {
+        error!("[Engine] Root isolate created with null user_data.");
+        return;
+    }
+
+    let overlay: &mut FlutterOverlay = unsafe { &mut *(user_data as *mut FlutterOverlay) };
+
+    let channel = "flutter/lifecycle".to_string();
+    let payload_bytes = "AppLifecycleState.resumed".to_string().into_bytes();
+
+    let msg_lifecycle = PendingPlatformMessage {
+        channel,
+        payload_bytes,
+    };
+
+    let metrics_channel = "flutter/window".to_string();
+
+    let metrics_payload = format!(
+        r#"{{"method":"setWindowMetrics","args":{{"viewId":0,"width":{},"height":{},"devicePixelRatio":1.0,"left":{},"top":{}}}}}"#,
+        overlay.width, overlay.height, overlay.x, overlay.y
+    );
+    let metrics_bytes = metrics_payload.into_bytes();
+
+    let msg_metrics = PendingPlatformMessage {
+        channel: metrics_channel,
+        payload_bytes: metrics_bytes,
+    };
+
+    if let Ok(mut queue) = overlay.pending_platform_messages.lock() {
+        queue.push_back(msg_metrics);
+        queue.push_back(msg_lifecycle);
+    } else {
+        error!("[Engine] Failed to lock queue in isolate callback.");
     }
 }

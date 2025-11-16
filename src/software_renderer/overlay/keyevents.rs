@@ -1,6 +1,4 @@
-use std::ffi::CString;
 use std::mem::MaybeUninit;
-use std::ptr;
 
 use serde_json::json;
 
@@ -17,14 +15,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::bindings::embedder::{
-    FlutterEngine, FlutterEngineResult, FlutterKeyEvent,
-    FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard, FlutterKeyEventType,
-    FlutterKeyEventType_kFlutterKeyEventTypeDown, FlutterKeyEventType_kFlutterKeyEventTypeRepeat,
-    FlutterKeyEventType_kFlutterKeyEventTypeUp, FlutterPlatformMessage,
+    FlutterKeyEventType, FlutterKeyEventType_kFlutterKeyEventTypeDown,
+    FlutterKeyEventType_kFlutterKeyEventTypeRepeat, FlutterKeyEventType_kFlutterKeyEventTypeUp,
 };
 use crate::bindings::keyboard_layout::{KeyMapEntry, get_key_map};
-use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+
+use crate::software_renderer::overlay::overlay_impl::{
+    FlutterOverlay, PendingKeyEvent, PendingKeyEventQueue, PendingPlatformMessageQueue,
+};
 use crate::software_renderer::overlay::textinput::{
     TextInputModel, send_perform_action_to_flutter, send_update_editing_state_to_flutter,
 };
@@ -63,8 +61,7 @@ fn resolve_modifier_virtual_key(virtual_key: u16, is_extended_key: bool, scan_co
 }
 
 fn send_legacy_key_event_platform_message(
-    engine: FlutterEngine,
-    engine_dll: &FlutterEngineDll,
+    message_queue: &PendingPlatformMessageQueue,
     msg_type: &str,
     original_virtual_key: u16,
     scan_code_raw: u32,
@@ -72,9 +69,6 @@ fn send_legacy_key_event_platform_message(
     hkl: HKL,
 ) {
     unsafe {
-        if engine.is_null() {
-            return;
-        }
         let mut flutter_modifiers = 0;
         if (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0 {
             flutter_modifiers |= 0x1;
@@ -112,17 +106,17 @@ fn send_legacy_key_event_platform_message(
             "unicodeScalarValues": character_code_point,
         });
         let payload_str = platform_message_payload.to_string();
-        let payload_bytes = payload_str.as_bytes();
-        let channel_name_cstring = CString::new("flutter/keyevent")
-            .expect("CString::new für flutter/keyevent fehlgeschlagen");
-        let platform_message = FlutterPlatformMessage {
-            struct_size: std::mem::size_of::<FlutterPlatformMessage>(),
-            channel: channel_name_cstring.as_ptr(),
-            message: payload_bytes.as_ptr(),
-            message_size: payload_bytes.len(),
-            response_handle: ptr::null(),
-        };
-        let _send_result = (engine_dll.FlutterEngineSendPlatformMessage)(engine, &platform_message);
+        let payload_bytes = payload_str.into_bytes(); // Vec<u8>
+
+        let pending_message =
+            crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage {
+                channel: "flutter/keyevent".to_string(),
+                payload_bytes,
+            };
+
+        if let Ok(mut queue) = message_queue.lock() {
+            queue.push_back(pending_message);
+        }
     }
 }
 
@@ -132,10 +126,7 @@ pub fn handle_keyboard_event(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> bool {
-    let engine = overlay.engine;
-    let engine_dll = &overlay.engine_dll;
-
-    if engine.0.is_null() {
+    if overlay.engine.0.is_null() {
         return false;
     }
 
@@ -179,14 +170,17 @@ pub fn handle_keyboard_event(
 
                 if let Some((client_id, cloned_model)) = send_update_args {
                     send_update_editing_state_to_flutter(
-                        engine.0,
-                        engine_dll,
+                        &overlay.pending_platform_messages,
                         client_id,
                         &cloned_model,
                     );
                 }
                 if let Some((client_id, action_string)) = send_action_args {
-                    send_perform_action_to_flutter(engine.0, engine_dll, client_id, &action_string);
+                    send_perform_action_to_flutter(
+                        &overlay.pending_platform_messages,
+                        client_id,
+                        &action_string,
+                    );
                 }
 
                 if event_handled_by_text_input {
@@ -213,8 +207,7 @@ pub fn handle_keyboard_event(
                     get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl);
 
                 send_key_event_to_flutter(
-                    engine.0,
-                    engine_dll,
+                    &overlay.pending_key_events,
                     flutter_event_type,
                     physical_key,
                     logical_key,
@@ -223,8 +216,7 @@ pub fn handle_keyboard_event(
                 );
 
                 send_legacy_key_event_platform_message(
-                    engine.0,
-                    engine_dll,
+                    &overlay.pending_platform_messages,
                     "keydown",
                     original_virtual_key,
                     scan_code_raw,
@@ -246,8 +238,7 @@ pub fn handle_keyboard_event(
                 );
 
                 send_key_event_to_flutter(
-                    engine.0,
-                    engine_dll,
+                    &overlay.pending_key_events,
                     FlutterKeyEventType_kFlutterKeyEventTypeUp,
                     physical_key,
                     logical_key,
@@ -256,8 +247,7 @@ pub fn handle_keyboard_event(
                 );
 
                 send_legacy_key_event_platform_message(
-                    engine.0,
-                    engine_dll,
+                    &overlay.pending_platform_messages,
                     "keyup",
                     original_virtual_key,
                     scan_code_raw,
@@ -286,8 +276,7 @@ pub fn handle_keyboard_event(
                     }
                     if let Some((client_id, cloned_model)) = send_update_args_char {
                         send_update_editing_state_to_flutter(
-                            engine.0,
-                            engine_dll,
+                            &overlay.pending_platform_messages,
                             client_id,
                             &cloned_model,
                         );
@@ -306,43 +295,29 @@ pub fn handle_keyboard_event(
 }
 
 fn send_key_event_to_flutter(
-    engine: FlutterEngine,
-    engine_dll: &FlutterEngineDll,
+    message_queue: &PendingKeyEventQueue,
     type_: FlutterKeyEventType,
     physical: u64,
     logical: u64,
     characters_bytes: &[u8; 8],
     synthesized: bool,
 ) {
-    unsafe {
-        if engine.is_null() {
-            return;
-        }
-        let mut len = 0;
-        while len < characters_bytes.len() && characters_bytes[len] != 0 {
-            len += 1;
-        }
-        let char_slice = &characters_bytes[0..len];
-        let characters_cstring =
-            CString::new(char_slice).unwrap_or_else(|_| CString::new("").unwrap());
-        let characters_ptr = characters_cstring.as_ptr();
-        let event_data = FlutterKeyEvent {
-            struct_size: std::mem::size_of::<FlutterKeyEvent>(),
-            timestamp: (engine_dll.FlutterEngineGetCurrentTime)() as f64,
-            type_,
-            physical,
-            logical,
-            character: characters_ptr,
-            synthesized,
-            device_type: FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard,
-        };
+    let len = characters_bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(characters_bytes.len());
+    let characters = String::from_utf8_lossy(&characters_bytes[..len]).to_string();
 
-        let _result: FlutterEngineResult = (engine_dll.FlutterEngineSendKeyEvent)(
-            engine,
-            &event_data as *const _,
-            None,
-            ptr::null_mut(),
-        );
+    let event_data = PendingKeyEvent {
+        event_type: type_,
+        physical,
+        logical,
+        characters,
+        synthesized,
+    };
+
+    if let Ok(mut queue) = message_queue.lock() {
+        queue.push_back(event_data);
     }
 }
 

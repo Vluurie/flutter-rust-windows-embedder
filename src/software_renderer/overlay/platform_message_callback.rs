@@ -11,9 +11,13 @@ use std::ffi::{CStr, CString, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::sync::Arc;
 use std::{ptr, str};
-use winapi::um::winuser::VK_LWIN;
-use winapi::um::winuser::VK_RWIN;
-use winapi::um::winuser::{GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+use winapi::shared::minwindef::HGLOBAL;
+use winapi::um::winbase::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
+use winapi::um::winuser::{CF_UNICODETEXT, GetAsyncKeyState};
+use winapi::um::winuser::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+    SetClipboardData, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+};
 
 /// Enum representing all known Flutter platform channels
 #[derive(Debug, PartialEq, Eq)]
@@ -298,6 +302,119 @@ fn handle_navigation_message(_message: &embedder::FlutterPlatformMessage) -> Cha
     ChannelHandlerResult::RespondNull
 }
 
+/// Handle messages on the flutter/platform channel (clipboard, system chrome, etc.)
+fn handle_platform_message(message: &embedder::FlutterPlatformMessage) -> ChannelHandlerResult {
+    unsafe {
+        let slice = std::slice::from_raw_parts(message.message, message.message_size);
+
+        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(slice) {
+            if let Some(method) = json_value.get("method").and_then(|m| m.as_str()) {
+                match method {
+                    "Clipboard.getData" => {
+                        if let Some(text) = get_clipboard_text() {
+                            let response = json!([{"text": text}]);
+                            return ChannelHandlerResult::RespondWith(
+                                response.to_string().into_bytes(),
+                            );
+                        }
+                        let response = json!([null]);
+                        ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
+                    }
+                    "Clipboard.setData" => {
+                        if let Some(args) = json_value.get("args") {
+                            if let Some(text) = args.get("text").and_then(|t| t.as_str()) {
+                                set_clipboard_text(text);
+                            }
+                        }
+                        let response = json!([null]);
+                        ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
+                    }
+                    "Clipboard.hasStrings" => {
+                        let has_text = has_clipboard_text();
+                        let response = json!([{"value": has_text}]);
+                        ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
+                    }
+                    _ => {
+                        // Unknown platform method
+                        ChannelHandlerResult::RespondNull
+                    }
+                }
+            } else {
+                ChannelHandlerResult::RespondNull
+            }
+        } else {
+            ChannelHandlerResult::RespondNull
+        }
+    }
+}
+
+/// Get text from Windows clipboard
+fn get_clipboard_text() -> Option<String> {
+    unsafe {
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return None;
+        }
+
+        let result = if IsClipboardFormatAvailable(CF_UNICODETEXT) != 0 {
+            let h_data = GetClipboardData(CF_UNICODETEXT);
+            if !h_data.is_null() {
+                let p_data = GlobalLock(h_data) as *const u16;
+                if !p_data.is_null() {
+                    let size = GlobalSize(h_data) / 2;
+                    let mut len = 0;
+                    while len < size && *p_data.offset(len as isize) != 0 {
+                        len += 1;
+                    }
+                    let slice = std::slice::from_raw_parts(p_data, len);
+                    let text = String::from_utf16_lossy(slice);
+                    GlobalUnlock(h_data);
+                    Some(text)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        CloseClipboard();
+        result
+    }
+}
+
+/// Set text to Windows clipboard
+fn set_clipboard_text(text: &str) {
+    unsafe {
+        if OpenClipboard(ptr::null_mut()) == 0 {
+            return;
+        }
+
+        EmptyClipboard();
+
+        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let size = wide.len() * 2;
+
+        let h_mem = GlobalAlloc(GMEM_MOVEABLE, size);
+        if !h_mem.is_null() {
+            let p_mem = GlobalLock(h_mem) as *mut u16;
+            if !p_mem.is_null() {
+                ptr::copy_nonoverlapping(wide.as_ptr(), p_mem, wide.len());
+                GlobalUnlock(h_mem);
+                SetClipboardData(CF_UNICODETEXT, h_mem as HGLOBAL);
+            }
+        }
+
+        CloseClipboard();
+    }
+}
+
+/// Check if Windows clipboard has text
+fn has_clipboard_text() -> bool {
+    unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) != 0 }
+}
+
 /// Handle custom application-defined channels
 fn handle_custom_channel(
     channel_name: &str,
@@ -406,10 +523,12 @@ pub(crate) extern "C" fn simple_platform_message_callback(
                 ChannelHandlerResult::Handled
             }
 
-            FlutterChannel::Accessibility | FlutterChannel::Platform => {
-                // These channels just need acknowledgment
+            FlutterChannel::Accessibility => {
+                // Accessibility channel just needs acknowledgment
                 ChannelHandlerResult::RespondNull
             }
+
+            FlutterChannel::Platform => handle_platform_message(message),
 
             FlutterChannel::Keyboard => handle_keyboard_message(message),
 

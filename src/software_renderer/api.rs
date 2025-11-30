@@ -1,8 +1,12 @@
 use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
-use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{BlendMode, PrimitiveType, Vertex3D};
-use crate::software_renderer::overlay::d3d::{create_srv, create_texture};
+use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
+    BlendMode, PrimitiveType, Vertex3D,
+};
+use crate::software_renderer::overlay::d3d::{
+    create_compositing_texture, create_srv, create_texture,
+};
 use crate::software_renderer::overlay::engine::update_flutter_window_metrics;
 use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
@@ -175,7 +179,7 @@ impl FlutterOverlay {
                     info!("[handle_window_resize] Recreating ANGLE surface resources...");
                     match angle_state.0.recreate_resources(self.width, self.height) {
                         Ok((new_angle_texture, new_shared_handle)) => {
-                            let new_game_texture: ID3D11Texture2D = unsafe {
+                            let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
                                 let mut opened_resource_option: Option<ID3D11Texture2D> = None;
                                 game_device
                                 .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
@@ -184,10 +188,15 @@ impl FlutterOverlay {
                                     .expect("Opened shared resource was null after resize")
                             };
 
-                            self.texture = new_game_texture;
+                            let local_compositing_texture =
+                                create_compositing_texture(&game_device, self.width, self.height);
+
+                            self.texture = local_compositing_texture;
                             self.srv = create_srv(&game_device, &self.texture);
                             self.gl_internal_linear_texture = Some(new_angle_texture);
                             self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+                            // Update angle_shared_texture with the opened shared resource
+                            self.angle_shared_texture = Some(angle_texture_on_game_device);
                             info!(
                                 "[handle_window_resize] ANGLE surface resources recreated successfully."
                             );
@@ -238,6 +247,12 @@ impl FlutterOverlay {
                 tick(self, context);
             }
             RendererType::OpenGL => {
+                if let Some(angle_state) = &self.angle_state {
+                    if angle_state.0.is_device_lost() {
+                        return;
+                    }
+                }
+
                 if let Some(angle_texture) = &self.angle_shared_texture {
                     unsafe {
                         context.CopyResource(&self.texture, angle_texture);
@@ -245,6 +260,104 @@ impl FlutterOverlay {
                 }
             }
         }
+    }
+
+    /// Checks if the ANGLE device has been lost due to D3D11 device removal.
+    /// When this returns true, rendering is disabled and recovery may be attempted.
+    pub fn is_device_lost(&self) -> bool {
+        if let Some(angle_state) = &self.angle_state {
+            angle_state.0.is_device_lost()
+        } else {
+            false
+        }
+    }
+
+    /// Attempts to recover from a device lost condition by reinitializing ANGLE resources.
+    /// This should be called when is_device_lost() returns true and the application
+    /// wants to attempt to restore rendering capability.
+    pub fn attempt_device_recovery(&mut self, swap_chain: &IDXGISwapChain) -> bool {
+        if let Some(angle_state) = &mut self.angle_state {
+            if !angle_state.0.is_device_lost() {
+                return true;
+            }
+
+            info!(
+                "[FlutterOverlay:'{}'] Attempting device recovery...",
+                self.name
+            );
+
+            if let Err(e) = angle_state.0.full_reinitialize() {
+                error!(
+                    "[FlutterOverlay:'{}'] Failed to reinitialize ANGLE: {}",
+                    self.name, e
+                );
+                return false;
+            }
+
+            match angle_state.0.recreate_resources(self.width, self.height) {
+                Ok((new_angle_texture, new_shared_handle)) => {
+                    let game_device = match unsafe { swap_chain.GetDevice::<ID3D11Device>() } {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!(
+                                "[FlutterOverlay:'{}'] Failed to get device from swap chain during recovery: {}",
+                                self.name, e
+                            );
+                            return false;
+                        }
+                    };
+
+                    let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
+                        let mut opened_resource_option: Option<ID3D11Texture2D> = None;
+                        if let Err(e) = game_device
+                            .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
+                        {
+                            error!(
+                                "[FlutterOverlay:'{}'] Failed to open shared resource during recovery: {}",
+                                self.name, e
+                            );
+                            return false;
+                        }
+                        match opened_resource_option {
+                            Some(tex) => tex,
+                            None => {
+                                error!(
+                                    "[FlutterOverlay:'{}'] Opened shared resource was null during recovery",
+                                    self.name
+                                );
+                                return false;
+                            }
+                        }
+                    };
+
+                    let local_compositing_texture =
+                        create_compositing_texture(&game_device, self.width, self.height);
+
+                    use crate::software_renderer::overlay::overlay_impl::SendableHandle;
+
+                    self.texture = local_compositing_texture;
+                    self.srv = create_srv(&game_device, &self.texture);
+                    self.gl_internal_linear_texture = Some(new_angle_texture);
+                    self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+                    self.angle_shared_texture = Some(angle_texture_on_game_device);
+
+                    info!(
+                        "[FlutterOverlay:'{}'] Device recovery successful!",
+                        self.name
+                    );
+                    return true;
+                }
+                Err(e) => {
+                    error!(
+                        "[FlutterOverlay:'{}'] Failed to recreate ANGLE resources during recovery: {}",
+                        self.name, e
+                    );
+                    return false;
+                }
+            }
+        }
+
+        true
     }
 
     pub fn clear_all_queued_primitives(&mut self) {
@@ -355,12 +468,8 @@ impl FlutterOverlay {
         texture: ID3D11ShaderResourceView,
         sampler: ID3D11SamplerState,
     ) {
-        self.primitive_renderer.set_custom_effect_texture_at_slot(
-            effect_id,
-            slot,
-            texture,
-            sampler,
-        );
+        self.primitive_renderer
+            .set_custom_effect_texture_at_slot(effect_id, slot, texture, sampler);
     }
 
     /// Clears a texture from a specific slot for a custom effect.

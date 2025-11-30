@@ -210,6 +210,7 @@ pub(crate) fn init_overlay(
             text_input_state: Arc::new(Mutex::new(None)),
             pending_platform_messages: Arc::new(Mutex::new(VecDeque::new())),
             pending_key_events: Arc::new(Mutex::new(VecDeque::new())),
+            pressed_keys: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mouse_buttons_state: AtomicI32::new(0),
             is_mouse_added: AtomicBool::new(false),
             semantics_tree_data: Arc::new(Mutex::new(HashMap::new())),

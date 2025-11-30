@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::{CStr, CString},
     sync::{
         Arc, Mutex,
@@ -200,6 +200,11 @@ pub struct FlutterOverlay {
     /// Used for pending keys for the new key event api
     pub(crate) pending_key_events: PendingKeyEventQueue,
 
+    /// Tracks which physical keys we've sent KeyDown events for.
+    /// This prevents sending KeyUp for keys that Flutter doesn't know are pressed,
+    /// which would cause assertion errors in Flutter's HardwareKeyboard.
+    pub(crate) pressed_keys: Arc<Mutex<HashSet<u64>>>,
+
     /// Instance-specific task queue. Managed by task runner and `post_task_callback`.
     pub(crate) task_queue_state: Arc<TaskQueueState>,
 
@@ -270,6 +275,7 @@ impl Clone for FlutterOverlay {
             text_input_state: self.text_input_state.clone(),
             pending_platform_messages: self.pending_platform_messages.clone(),
             pending_key_events: self.pending_key_events.clone(),
+            pressed_keys: self.pressed_keys.clone(),
             semantics_tree_data: self.semantics_tree_data.clone(),
             message_handlers: self.message_handlers.clone(),
             response_buffer: self.response_buffer.clone(),

@@ -10,6 +10,10 @@ use windows::Win32::{
 
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 
+/// Maximum number of vertices that can be stored in each vertex buffer.
+/// This must match the buffer_capacity used when creating the vertex buffers.
+const MAX_VERTEX_BUFFER_CAPACITY: usize = 65536;
+
 #[derive(Clone, Copy, Debug)]
 pub enum PrimitiveType {
     Triangles,
@@ -171,7 +175,7 @@ impl Primitive3DRenderer {
                 .expect("Failed to create primitive input layout");
         }
 
-        let buffer_capacity = 65536;
+        let buffer_capacity = MAX_VERTEX_BUFFER_CAPACITY;
         let vertex_buffer_desc = D3D11_BUFFER_DESC {
             ByteWidth: (mem::size_of::<Vertex3D>() * buffer_capacity) as u32,
             Usage: D3D11_USAGE_DYNAMIC,
@@ -533,33 +537,39 @@ impl Primitive3DRenderer {
     pub fn latch_buffers(&mut self) {
         self.render_buffer_triangles.clear();
         for (effect, group_vertices) in self.submit_groups_triangles.values() {
-            self.render_buffer_triangles
-                .entry(*effect)
-                .or_default()
-                .extend_from_slice(group_vertices);
+            let buffer = self.render_buffer_triangles.entry(*effect).or_default();
+            let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
+            let vertices_to_add = group_vertices.len().min(remaining_capacity);
+            buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
 
         self.render_buffer_lines.clear();
         for (effect, group_vertices) in self.submit_groups_lines.values() {
-            self.render_buffer_lines
-                .entry(*effect)
-                .or_default()
-                .extend_from_slice(group_vertices);
+            let buffer = self.render_buffer_lines.entry(*effect).or_default();
+            let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
+            let vertices_to_add = group_vertices.len().min(remaining_capacity);
+            buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
 
         self.render_buffer_triangles_custom.clear();
         for (effect_id, group_vertices) in self.submit_groups_triangles_custom.values() {
-            self.render_buffer_triangles_custom
+            let buffer = self
+                .render_buffer_triangles_custom
                 .entry(effect_id.clone())
-                .or_default()
-                .extend_from_slice(group_vertices);
+                .or_default();
+            let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
+            let vertices_to_add = group_vertices.len().min(remaining_capacity);
+            buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
         self.render_buffer_lines_custom.clear();
         for (effect_id, group_vertices) in self.submit_groups_lines_custom.values() {
-            self.render_buffer_lines_custom
+            let buffer = self
+                .render_buffer_lines_custom
                 .entry(effect_id.clone())
-                .or_default()
-                .extend_from_slice(group_vertices);
+                .or_default();
+            let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
+            let vertices_to_add = group_vertices.len().min(remaining_capacity);
+            buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
     }
 }

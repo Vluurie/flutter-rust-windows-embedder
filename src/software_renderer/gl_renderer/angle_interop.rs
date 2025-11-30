@@ -1,16 +1,18 @@
 use crate::bindings::embedder;
 
+use crate::software_renderer::gl_renderer::nvidia_aftermath;
 use crate::software_renderer::overlay::d3d::create_shared_texture_and_get_handle;
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 use libloading::{Library, Symbol};
-use log::{error, info};
+use log::{error, info, warn};
 use once_cell::sync::OnceCell;
 use std::ffi::{CString, c_void};
 use std::path::{Path, PathBuf};
 use std::thread::current;
 use std::{mem, ptr};
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Graphics::Direct3D10::ID3D10Multithread;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::core::Interface;
 
@@ -37,6 +39,9 @@ pub const EGL_NONE: i32 = 0x3038;
 /// The value returned by `eglGetError` when the most recently called EGL function
 /// completed without any errors.
 pub const EGL_SUCCESS: i32 = 0x3000;
+/// The value returned by `eglGetError` when the EGL context has been lost due to
+/// device reset or removal. Recovery requires recreating all EGL resources.
+pub const EGL_CONTEXT_LOST: i32 = 0x300E;
 
 /// An attribute key used to specify or query the width of a drawing surface in pixels.
 /// Used when creating pbuffer surfaces or querying any surface's dimensions.
@@ -104,6 +109,13 @@ pub const EGL_DEVICE_EXT: i32 = 0x322C;
 /// An attribute for `eglQueryDeviceAttribEXT` that retrieves the underlying
 /// `ID3D11Device` pointer from an EGL device when using the D3D11 backend.
 pub const EGL_D3D11_DEVICE_ANGLE: i32 = 0x33A1;
+/// An ANGLE-specific attribute that enables the D3D11 debug layer for the device
+/// created by ANGLE. Requires the D3D11 SDK debug layer to be installed.
+pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE: i32 = 0x3209;
+/// Value for EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE to request a hardware device (default).
+pub const EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE: i32 = 0x320A;
+/// An ANGLE-specific attribute to enable D3D11 debug validation on the device.
+pub const EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE: i32 = 0x3451;
 /// A buffer type for `eglCreatePbufferFromClientBuffer` that indicates the client
 /// buffer is a Direct3D texture.
 pub const EGL_D3D_TEXTURE_ANGLE: i32 = 0x33A3;
@@ -202,6 +214,31 @@ fn log_egl_error(func: &str, line: u32, egl_get_error_fn: EglGetError) {
             code
         );
     }
+}
+
+///
+/// Builds the EGL display attributes array for ANGLE initialization.
+/// Debug layers are enabled only if the `ANGLE_DEBUG_LAYERS_ENABLED` environment variable is set.
+///
+fn build_display_attributes() -> Vec<i32> {
+    let debug_layers_enabled = std::env::var("ANGLE_DEBUG_LAYERS_ENABLED").is_ok();
+
+    let mut attrs = vec![
+        EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+        EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+        EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE,
+        EGL_TRUE,
+        EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE,
+        EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE,
+    ];
+
+    if debug_layers_enabled {
+        attrs.push(EGL_PLATFORM_ANGLE_DEBUG_LAYERS_ENABLED_ANGLE);
+        attrs.push(EGL_TRUE);
+    }
+
+    attrs.push(EGL_NONE);
+    attrs
 }
 
 ///
@@ -305,6 +342,10 @@ pub struct AngleInteropState {
     /// A runtime safety check for the `resource_context`. It ensures that all operations
     /// on the resource context are confined to its designated background thread.
     resource_thread_id: Option<std::thread::ThreadId>,
+
+    /// Flag indicating that a device lost condition has been detected and recovery is needed.
+    /// When true, the next call to make_current should attempt to reinitialize.
+    pub device_lost: bool,
 }
 
 impl AngleInteropState {
@@ -354,15 +395,7 @@ impl AngleInteropState {
             let egl_initialize: EglInitialize = mem::transmute(get_proc("eglInitialize"));
             let egl_get_error: EglGetError = mem::transmute(get_proc("eglGetError"));
 
-            let display_attributes: [i32; 7] = [
-                EGL_PLATFORM_ANGLE_TYPE_ANGLE,
-                EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
-                EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE,
-                EGL_TRUE,
-                EGL_EXPERIMENTAL_PRESENT_PATH_ANGLE,
-                EGL_EXPERIMENTAL_PRESENT_PATH_FAST_ANGLE,
-                EGL_NONE,
-            ];
+            let display_attributes = build_display_attributes();
 
             let display = egl_get_platform_display_ext(
                 EGL_PLATFORM_ANGLE_ANGLE,
@@ -373,6 +406,14 @@ impl AngleInteropState {
             if display == EGL_NO_DISPLAY {
                 log_egl_error("eglGetPlatformDisplayEXT", line!(), egl_get_error);
                 return Err("Failed to get EGL display.".to_string());
+            }
+
+            match nvidia_aftermath::enable_gpu_crash_dumps(engine_dir) {
+                Ok(true) => info!("[AngleInterop] NVIDIA Aftermath GPU crash debugging enabled"),
+                Ok(false) => info!(
+                    "[AngleInterop] NVIDIA Aftermath not available (non-NVIDIA GPU or missing SDK)"
+                ),
+                Err(e) => warn!("[AngleInterop] Failed to enable Aftermath: {}", e),
             }
 
             if !egl_initialize(display, ptr::null_mut(), ptr::null_mut()) {
@@ -406,6 +447,25 @@ impl AngleInteropState {
             }
 
             let angle_d3d11_device: ID3D11Device = Interface::from_raw(d3d11_device_ptr as *mut _);
+
+            // Enable D3D11 multithread protection - CRITICAL for thread safety!
+            // Flutter uses multiple threads (raster, resource) that can call D3D11 simultaneously.
+            // Without this, concurrent access causes memory corruption and crashes.
+            if let Ok(multithread) = angle_d3d11_device.cast::<ID3D10Multithread>() {
+                let _ = multithread.SetMultithreadProtected(true);
+            } else {
+                warn!(
+                    "[AngleInterop] Failed to enable D3D11 multithread protection - thread safety not guaranteed!"
+                );
+            }
+
+            if let Err(e) = nvidia_aftermath::initialize_d3d11_device(&angle_d3d11_device) {
+                warn!(
+                    "[AngleInterop] Failed to initialize Aftermath for D3D11 device: {}",
+                    e
+                );
+            }
+
             let egl_choose_config: EglChooseConfig =
                 mem::transmute(get_proc_assert("eglChooseConfig"));
 
@@ -473,6 +533,7 @@ impl AngleInteropState {
                 pbuffer_surface: EGL_NO_SURFACE,
                 main_thread_id: None,
                 resource_thread_id: None,
+                device_lost: false,
             }))
         }
     }
@@ -482,6 +543,211 @@ impl AngleInteropState {
     ///
     pub fn get_d3d_device(&self) -> Result<ID3D11Device, String> {
         Ok(self.angle_d3d11_device.clone())
+    }
+
+    ///
+    /// Checks if the ANGLE device has been lost and needs recovery.
+    ///
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost
+    }
+
+    ///
+    /// Attempts to reset the device lost state and prepare for recovery.
+    /// This cleans up the existing contexts and surface so they can be recreated.
+    /// Returns true if cleanup was successful and recovery can be attempted.
+    ///
+    pub fn prepare_for_recovery(&mut self) -> bool {
+        if !self.device_lost {
+            return true;
+        }
+        unsafe {
+            self.cleanup_surface_resources();
+
+            if self.context != EGL_NO_CONTEXT {
+                (self.egl_destroy_context)(self.display, self.context);
+                self.context = EGL_NO_CONTEXT;
+            }
+            if self.resource_context != EGL_NO_CONTEXT {
+                (self.egl_destroy_context)(self.display, self.resource_context);
+                self.resource_context = EGL_NO_CONTEXT;
+            }
+
+            self.main_thread_id = None;
+            self.resource_thread_id = None;
+
+            self.device_lost = false;
+        }
+
+        true
+    }
+
+    /// Performs a full reinitialization of the ANGLE/EGL state after a device lost condition.
+    pub fn full_reinitialize(&mut self) -> Result<(), String> {
+        if nvidia_aftermath::is_enabled() {
+            info!("[AngleInterop] Waiting for Aftermath crash dump collection...");
+            nvidia_aftermath::wait_for_crash_dump(3000);
+        }
+
+        unsafe {
+            self.cleanup_surface_resources();
+
+            if self.context != EGL_NO_CONTEXT {
+                (self.egl_destroy_context)(self.display, self.context);
+                self.context = EGL_NO_CONTEXT;
+            }
+            if self.resource_context != EGL_NO_CONTEXT {
+                (self.egl_destroy_context)(self.display, self.resource_context);
+                self.resource_context = EGL_NO_CONTEXT;
+            }
+
+            if self.display != EGL_NO_DISPLAY {
+                info!("[AngleInterop] Terminating dead EGL display...");
+                (self.egl_terminate)(self.display);
+                self.display = EGL_NO_DISPLAY;
+            }
+
+            self.main_thread_id = None;
+            self.resource_thread_id = None;
+
+            let shared_egl = get_or_init_shared_egl(None)?;
+
+            let get_proc = |name: &str| -> *mut c_void {
+                let c_name = CString::new(name).unwrap();
+                (shared_egl.egl_get_proc_address)(c_name.as_ptr())
+            };
+
+            let egl_get_error: EglGetError = mem::transmute(get_proc("eglGetError"));
+            let egl_get_platform_display_ext: EglGetPlatformDisplayEXT =
+                mem::transmute(get_proc("eglGetPlatformDisplayEXT"));
+            let egl_initialize: EglInitialize = mem::transmute(get_proc("eglInitialize"));
+
+            let _ = egl_get_error();
+
+            let display_attributes = build_display_attributes();
+
+            let new_display = egl_get_platform_display_ext(
+                EGL_PLATFORM_ANGLE_ANGLE,
+                EGL_DEFAULT_DISPLAY,
+                display_attributes.as_ptr(),
+            );
+
+            if new_display == EGL_NO_DISPLAY {
+                let error_code = egl_get_error();
+                return Err(format!(
+                    "Failed to get new EGL display during recovery: {} ({:#X})",
+                    egl_error_to_string(error_code),
+                    error_code
+                ));
+            }
+
+            if !egl_initialize(new_display, ptr::null_mut(), ptr::null_mut()) {
+                let error_code = egl_get_error();
+                return Err(format!(
+                    "Failed to initialize new EGL display during recovery: {} ({:#X})",
+                    egl_error_to_string(error_code),
+                    error_code
+                ));
+            }
+
+            info!("[AngleInterop] New EGL display created and initialized successfully.");
+
+            let _ = egl_get_error();
+
+            let egl_query_display_attrib_ext: EglQueryDisplayAttribEXT =
+                mem::transmute(get_proc("eglQueryDisplayAttribEXT"));
+            let egl_query_device_attrib_ext: EglQueryDeviceAttribEXT =
+                mem::transmute(get_proc("eglQueryDeviceAttribEXT"));
+
+            let mut egl_device: isize = 0;
+            if !egl_query_display_attrib_ext(new_display, EGL_DEVICE_EXT, &mut egl_device) {
+                let error_code = egl_get_error();
+                return Err(format!(
+                    "Failed to query EGL device during recovery: {} ({:#X})",
+                    egl_error_to_string(error_code),
+                    error_code
+                ));
+            }
+
+            let mut d3d11_device_ptr: isize = 0;
+            if !egl_query_device_attrib_ext(
+                egl_device as *mut c_void,
+                EGL_D3D11_DEVICE_ANGLE,
+                &mut d3d11_device_ptr,
+            ) {
+                let error_code = egl_get_error();
+                return Err(format!(
+                    "Failed to query D3D11 device during recovery: {} ({:#X})",
+                    egl_error_to_string(error_code),
+                    error_code
+                ));
+            }
+
+            if d3d11_device_ptr == 0 {
+                return Err("ANGLE created a null D3D11 device during recovery.".to_string());
+            }
+
+            let new_d3d11_device: ID3D11Device = Interface::from_raw(d3d11_device_ptr as *mut _);
+
+            if let Ok(multithread) = new_d3d11_device.cast::<ID3D10Multithread>() {
+                let _ = multithread.SetMultithreadProtected(true);
+            } else {
+                warn!(
+                    "[AngleInterop] Failed to enable D3D11 multithread protection on recovered device"
+                );
+            }
+
+            if let Err(e) = nvidia_aftermath::initialize_d3d11_device(&new_d3d11_device) {
+                warn!(
+                    "[AngleInterop] Failed to initialize Aftermath for recovered D3D11 device: {}",
+                    e
+                );
+            }
+
+            let egl_choose_config: EglChooseConfig = mem::transmute(get_proc("eglChooseConfig"));
+
+            let config_attribs = [
+                EGL_RED_SIZE,
+                8,
+                EGL_GREEN_SIZE,
+                8,
+                EGL_BLUE_SIZE,
+                8,
+                EGL_ALPHA_SIZE,
+                8,
+                EGL_DEPTH_SIZE,
+                8,
+                EGL_STENCIL_SIZE,
+                8,
+                EGL_SURFACE_TYPE,
+                EGL_PBUFFER_BIT,
+                EGL_RENDERABLE_TYPE,
+                EGL_OPENGL_ES2_BIT,
+                EGL_NONE,
+            ];
+            let mut new_config: *mut c_void = ptr::null_mut();
+            let mut num_config = 0;
+
+            if !egl_choose_config(
+                new_display,
+                config_attribs.as_ptr(),
+                &mut new_config,
+                1,
+                &mut num_config,
+            ) || num_config == 0
+            {
+                return Err("eglChooseConfig failed during recovery.".to_string());
+            }
+
+            self.display = new_display;
+            self.config = new_config;
+            self.angle_d3d11_device = new_d3d11_device;
+            self.egl_get_error = egl_get_error;
+            self.device_lost = false;
+
+            info!("[AngleInterop] Full reinitialization successful! New D3D11 device created.");
+            Ok(())
+        }
     }
 
     ///
@@ -615,6 +881,10 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
 
+            if state.device_lost {
+                return false;
+            }
+
             if state.context == EGL_NO_CONTEXT {
                 info!(
                     "[AngleInterop] First call on main render thread {:?}. Initializing main EGL context.",
@@ -628,7 +898,19 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                     context_attribs.as_ptr(),
                 );
                 if state.context == EGL_NO_CONTEXT {
-                    error!("[AngleInterop] Failed to create main context.");
+                    let error_code = (state.egl_get_error)();
+                    let reason_hr = match state.angle_d3d11_device.GetDeviceRemovedReason() {
+                        Ok(()) => 0i32,
+                        Err(e) => e.code().0,
+                    };
+                    error!(
+                        "[AngleInterop] Failed to create main context. EGL error: {} ({:#X}). GetDeviceRemovedReason: {:#X} ({}). Marking device as lost.",
+                        egl_error_to_string(error_code),
+                        error_code,
+                        reason_hr,
+                        device_removed_reason_to_string(reason_hr)
+                    );
+                    state.device_lost = true;
                     return false;
                 }
                 state.main_thread_id = Some(std::thread::current().id());
@@ -647,11 +929,44 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
             );
 
             if result != EGL_TRUE {
-                log_egl_error("make_current_callback", line!(), state.egl_get_error);
+                let error_code = (state.egl_get_error)();
+                if error_code == EGL_CONTEXT_LOST {
+                    let reason_hr = match state.angle_d3d11_device.GetDeviceRemovedReason() {
+                        Ok(()) => 0i32,
+                        Err(e) => e.code().0,
+                    };
+                    error!(
+                        "[AngleInterop] EGL_CONTEXT_LOST detected - D3D11 device was removed. GetDeviceRemovedReason: {:#X} ({}). Marking device as lost.",
+                        reason_hr,
+                        device_removed_reason_to_string(reason_hr)
+                    );
+                    state.device_lost = true;
+                } else {
+                    error!(
+                        "[ANGLE DEBUG] EGL Error in make_current_callback:{} -> {} ({:#X})",
+                        line!(),
+                        egl_error_to_string(error_code),
+                        error_code
+                    );
+                }
             }
             return result == EGL_TRUE;
         }
         false
+    }
+}
+
+fn device_removed_reason_to_string(hr: i32) -> &'static str {
+    match hr as u32 {
+        0x00000000 => "S_OK (no error)",
+        0x887A0001 => "DXGI_ERROR_INVALID_CALL",
+        0x887A0002 => "DXGI_ERROR_NOT_FOUND",
+        0x887A0005 => "DXGI_ERROR_UNSUPPORTED",
+        0x887A0006 => "DXGI_ERROR_DEVICE_REMOVED",
+        0x887A0007 => "DXGI_ERROR_DEVICE_HUNG (GPU timeout/TDR)",
+        0x887A0008 => "DXGI_ERROR_DEVICE_RESET",
+        0x887A0020 => "DXGI_ERROR_DRIVER_INTERNAL_ERROR",
+        _ => "Unknown error",
     }
 }
 
@@ -670,6 +985,11 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
+
+            if state.device_lost {
+                return false;
+            }
+
             if state.resource_context == EGL_NO_CONTEXT {
                 info!(
                     "[AngleInterop] First call on resource thread {:?}. Initializing resource EGL context.",
@@ -685,7 +1005,19 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 );
 
                 if state.resource_context == EGL_NO_CONTEXT {
-                    error!("[AngleInterop] Failed to create resource context.");
+                    let error_code = (state.egl_get_error)();
+                    let reason_hr = match state.angle_d3d11_device.GetDeviceRemovedReason() {
+                        Ok(()) => 0i32,
+                        Err(e) => e.code().0,
+                    };
+                    error!(
+                        "[AngleInterop] Failed to create resource context. EGL error: {} ({:#X}). GetDeviceRemovedReason: {:#X} ({}). Marking device as lost.",
+                        egl_error_to_string(error_code),
+                        error_code,
+                        reason_hr,
+                        device_removed_reason_to_string(reason_hr)
+                    );
+                    state.device_lost = true;
                     return false;
                 }
                 state.resource_thread_id = Some(std::thread::current().id());
@@ -703,11 +1035,26 @@ extern "C" fn make_resource_current_callback(user_data: *mut c_void) -> bool {
                 state.resource_context,
             );
             if result != EGL_TRUE {
-                log_egl_error(
-                    "make_resource_current_callback",
-                    line!(),
-                    state.egl_get_error,
-                );
+                let error_code = (state.egl_get_error)();
+                if error_code == EGL_CONTEXT_LOST {
+                    let reason_hr = match state.angle_d3d11_device.GetDeviceRemovedReason() {
+                        Ok(()) => 0i32,
+                        Err(e) => e.code().0,
+                    };
+                    error!(
+                        "[AngleInterop] EGL_CONTEXT_LOST detected in resource context - D3D11 device was removed. GetDeviceRemovedReason: {:#X} ({}). Marking device as lost.",
+                        reason_hr,
+                        device_removed_reason_to_string(reason_hr)
+                    );
+                    state.device_lost = true;
+                } else {
+                    error!(
+                        "[ANGLE DEBUG] EGL Error in make_resource_current_callback:{} -> {} ({:#X})",
+                        line!(),
+                        egl_error_to_string(error_code),
+                        error_code
+                    );
+                }
             }
             return result == EGL_TRUE;
         }

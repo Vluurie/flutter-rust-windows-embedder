@@ -2,8 +2,11 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Once;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+/// Global flag indicating that the overlay system is fully initialized and ready.
+static OVERLAY_SYSTEM_READY: AtomicBool = AtomicBool::new(false);
 
 use directx_math::{XMMatrix, XMMatrixIdentity};
 use log::{error, info, warn};
@@ -23,6 +26,7 @@ use crate::software_renderer::api::FlutterEmbedderError;
 use crate::software_renderer::d3d11_compositor::effects::{
     EffectConfig, EffectParams, EffectTarget, HologramParams, PostEffect, WarpFieldParams,
 };
+use crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage;
 
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
     BlendMode, PrimitiveEffect, PrimitiveType, Vertex3D,
@@ -90,6 +94,8 @@ pub struct OverlayManager {
     is_paused: bool,
     /// The time in seconds when the `OverlayManager` was paused.
     time_at_pause: f32,
+    /// Cooldown counter for device recovery attempts. When > 0, recovery won't be attempted.
+    recovery_cooldown: u32,
 }
 
 impl OverlayManager {
@@ -105,6 +111,7 @@ impl OverlayManager {
             start_time: Instant::now(),
             is_paused: false,
             time_at_pause: 0.0,
+            recovery_cooldown: 0,
         }
     }
 
@@ -483,10 +490,17 @@ impl OverlayManager {
                 continue;
             }
 
-            if let Err(e) = overlay.send_platform_message(channel, message) {
+            let pending_message = PendingPlatformMessage {
+                channel: channel.to_string(),
+                payload_bytes: message.to_vec(),
+            };
+
+            if let Ok(mut queue) = overlay.pending_platform_messages.lock() {
+                queue.push_back(pending_message);
+            } else {
                 error!(
-                    "[OverlayManager] Failed to broadcast message to overlay '{}': {}",
-                    id, e
+                    "[OverlayManager] Failed to queue message for overlay '{}': lock failed",
+                    id
                 );
             }
         }
@@ -848,9 +862,7 @@ impl FlutterOverlayManagerHandle {
 
         let context = match manager.shared_d3d_context.clone() {
             Some(ctx) => ctx,
-            None => {
-                return;
-            }
+            None => return,
         };
 
         let time = manager.start_time.elapsed().as_secs_f32();
@@ -865,6 +877,7 @@ impl FlutterOverlayManagerHandle {
             time,
         };
 
+        let mut rendered_any = false;
         for overlay in manager.active_instances.values_mut() {
             if overlay.is_visible() {
                 overlay.tick(&context);
@@ -879,7 +892,13 @@ impl FlutterOverlayManagerHandle {
                     overlay.height,
                 );
                 overlay.post_processor.draw(&mut frame_params);
+                rendered_any = true;
             }
+        }
+
+        if rendered_any && !OVERLAY_SYSTEM_READY.load(Ordering::Acquire) {
+            OVERLAY_SYSTEM_READY.store(true, Ordering::Release);
+            manager.broadcast_platform_message("overlay/system_ready", b"true");
         }
     }
 
@@ -1019,9 +1038,10 @@ impl FlutterOverlayManagerHandle {
         vertices: &[Vertex3D],
         topology: PrimitiveType,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.replace_queued_primitives_in_group(group_id, vertices, topology);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.replace_queued_primitives_in_group(group_id, vertices, topology);
+            }
         }
     }
 
@@ -1044,11 +1064,12 @@ impl FlutterOverlayManagerHandle {
         topology: PrimitiveType,
         effect: PrimitiveEffect,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.replace_queued_primitives_in_group_with_effect(
-                group_id, vertices, topology, effect,
-            );
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.replace_queued_primitives_in_group_with_effect(
+                    group_id, vertices, topology, effect,
+                );
+            }
         }
     }
 
@@ -1060,9 +1081,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.clear_all_primitives();
     /// ```
     pub fn clear_all_primitives(&self) {
-        let mut manager = self.manager.lock();
-        for overlay in manager.active_instances.values_mut() {
-            overlay.clear_all_queued_primitives();
+        if let Some(mut manager) = self.manager.try_lock() {
+            for overlay in manager.active_instances.values_mut() {
+                overlay.clear_all_queued_primitives();
+            }
         }
     }
 
@@ -1079,9 +1101,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.clear_primitives_in_group(None, "entity_highlights");
     /// ```
     pub fn clear_primitives_in_group(&self, identifier: Option<&str>, group_id: &str) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.clear_queued_primitives_in_group(group_id);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.clear_queued_primitives_in_group(group_id);
+            }
         }
     }
 
@@ -1842,9 +1865,10 @@ impl FlutterOverlayManagerHandle {
         lines: &[Vertex3D],
         effect_id: &str,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.replace_primitives_in_group_custom(group_id, triangles, lines, effect_id);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.replace_primitives_in_group_custom(group_id, triangles, lines, effect_id);
+            }
         }
     }
 
@@ -1860,5 +1884,106 @@ impl FlutterOverlayManagerHandle {
     pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
         let manager = self.manager.lock();
         manager.get_all_overlay_textures()
+    }
+
+    /// Checks if any overlay has experienced a device lost condition.
+    ///
+    /// A device lost condition occurs when the D3D11 device is removed (e.g., driver crash,
+    /// driver update, GPU reset). When this returns true, rendering will be disabled until
+    /// recovery is attempted.
+    ///
+    /// # Returns
+    /// `true` if any overlay has a lost device.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// if manager.is_any_device_lost() {
+    ///     // Attempt recovery or notify user
+    ///     manager.attempt_device_recovery(&swap_chain);
+    /// }
+    /// ```
+    pub fn is_any_device_lost(&self) -> bool {
+        let manager = self.manager.lock();
+        for overlay in manager.active_instances.values() {
+            if overlay.is_device_lost() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Checks if device recovery should be attempted now, considering the cooldown.
+    /// Returns true if any device is lost AND we're not in a cooldown period.
+    /// Also decrements the cooldown counter each call.
+    pub fn should_attempt_recovery(&self) -> bool {
+        let mut manager = self.manager.lock();
+
+        if manager.recovery_cooldown > 0 {
+            manager.recovery_cooldown -= 1;
+            return false;
+        }
+
+        for overlay in manager.active_instances.values() {
+            if overlay.is_device_lost() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Attempts to recover all overlays from a device lost condition.
+    ///
+    /// This should be called when `is_any_device_lost()` returns true. It will attempt to
+    /// reinitialize the ANGLE contexts and textures for all affected overlays.
+    ///
+    /// If recovery fails, a cooldown is set to prevent spamming recovery attempts.
+    ///
+    /// # Arguments
+    /// * `swap_chain` - The swap chain to use for recovering device references.
+    ///
+    /// # Returns
+    /// `true` if all overlays recovered successfully.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// if manager.should_attempt_recovery() {
+    ///     if manager.attempt_device_recovery(&swap_chain) {
+    ///         info!("Flutter overlay device recovery successful");
+    ///     } else {
+    ///         error!("Flutter overlay device recovery failed");
+    ///     }
+    /// }
+    /// ```
+    pub fn attempt_device_recovery(&self, swap_chain: &IDXGISwapChain) -> bool {
+        let mut manager = self.manager.lock();
+        let mut all_recovered = true;
+
+        for (id, overlay) in manager.active_instances.iter_mut() {
+            if overlay.is_device_lost() {
+                info!(
+                    "[OverlayManager] Attempting device recovery for overlay '{}'",
+                    id
+                );
+                if !overlay.attempt_device_recovery(swap_chain) {
+                    error!(
+                        "[OverlayManager] Device recovery failed for overlay '{}'",
+                        id
+                    );
+                    all_recovered = false;
+                }
+            }
+        }
+
+        if !all_recovered {
+            manager.recovery_cooldown = 300;
+            warn!(
+                "[OverlayManager] Device recovery failed, will retry in {} frames",
+                manager.recovery_cooldown
+            );
+        }
+
+        all_recovered
     }
 }

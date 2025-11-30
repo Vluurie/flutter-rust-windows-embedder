@@ -203,6 +203,13 @@ pub fn handle_keyboard_event(
                     hkl,
                 );
 
+                // Track this key as pressed (only for non-repeat events)
+                if !is_repeat {
+                    if let Ok(mut pressed) = overlay.pressed_keys.lock() {
+                        pressed.insert(physical_key);
+                    }
+                }
+
                 let characters_bytes_for_flutter_key_event =
                     get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl);
 
@@ -236,6 +243,17 @@ pub fn handle_keyboard_event(
                     is_extended_key,
                     hkl,
                 );
+
+                let was_pressed = if let Ok(mut pressed) = overlay.pressed_keys.lock() {
+                    pressed.remove(&physical_key)
+                } else {
+                    false
+                };
+
+                if !was_pressed {
+                    // Skip this KeyUp - Flutter doesn't know this key was pressed
+                    return true;
+                }
 
                 send_key_event_to_flutter(
                     &overlay.pending_key_events,

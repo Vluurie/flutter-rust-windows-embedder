@@ -20,12 +20,6 @@ pub enum PrimitiveType {
     Lines,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum PrimitiveEffect {
-    Default,
-    ElectricField,
-}
-
 /// Defines the blending mode for rendering custom primitives.
 /// This controls how the primitive's colors blend with the existing pixels on the render target,
 /// and also affects depth testing behavior.
@@ -46,6 +40,48 @@ pub enum BlendMode {
 impl Default for BlendMode {
     fn default() -> Self {
         BlendMode::Transparent
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct PrimitiveOptions {
+    // Depth options
+    pub ignore_depth_stencil: bool,
+    pub write_to_depth: bool,
+    pub depth_bias: i32,
+
+    // Rasterizer options
+    pub cull_back: bool,
+    pub wireframe: bool,
+    pub scissor_enabled: bool,
+
+    // Blend options
+    pub opaque: bool,
+
+    // Stencil options
+    pub stencil_ref: u8,
+    pub stencil_write: bool,
+    pub stencil_test: bool,
+
+    // Ordering
+    pub render_priority: i32,
+}
+
+impl Default for PrimitiveOptions {
+    fn default() -> Self {
+        Self {
+            ignore_depth_stencil: false,
+            write_to_depth: false,
+            depth_bias: 0,
+            cull_back: false,
+            wireframe: false,
+            scissor_enabled: true,
+            opaque: false,
+            stencil_ref: 0,
+            stencil_write: false,
+            stencil_test: false,
+            render_priority: 0,
+        }
     }
 }
 
@@ -81,7 +117,7 @@ struct CustomEffectResources {
 #[derive(Clone)]
 pub struct Primitive3DRenderer {
     vertex_shader: ID3D11VertexShader,
-    pixel_shaders: HashMap<PrimitiveEffect, ID3D11PixelShader>,
+    pixel_shader: ID3D11PixelShader,
     input_layout: ID3D11InputLayout,
     constant_buffer: ID3D11Buffer,
     time_constant_buffer: ID3D11Buffer,
@@ -89,10 +125,10 @@ pub struct Primitive3DRenderer {
     vertex_buffer_triangles: ID3D11Buffer,
     vertex_buffer_lines: ID3D11Buffer,
 
-    submit_groups_triangles: HashMap<String, (PrimitiveEffect, Vec<Vertex3D>)>,
-    submit_groups_lines: HashMap<String, (PrimitiveEffect, Vec<Vertex3D>)>,
-    render_buffer_triangles: HashMap<PrimitiveEffect, Vec<Vertex3D>>,
-    render_buffer_lines: HashMap<PrimitiveEffect, Vec<Vertex3D>>,
+    submit_groups_triangles: HashMap<String, (Vec<Vertex3D>, PrimitiveOptions)>,
+    submit_groups_lines: HashMap<String, (Vec<Vertex3D>, PrimitiveOptions)>,
+    render_buffer_triangles: HashMap<PrimitiveOptions, Vec<Vertex3D>>,
+    render_buffer_lines: HashMap<PrimitiveOptions, Vec<Vertex3D>>,
 
     blend_state_transparent: ID3D11BlendState,
     blend_state_opaque: ID3D11BlendState,
@@ -101,14 +137,18 @@ pub struct Primitive3DRenderer {
     depth_stencil_state_disabled: ID3D11DepthStencilState,
     rasterizer_state_cull_back: ID3D11RasterizerState,
     rasterizer_state_cull_none: ID3D11RasterizerState,
+    rasterizer_state_wireframe: ID3D11RasterizerState,
+    rasterizer_state_cull_back_wireframe: ID3D11RasterizerState,
 
-    submit_groups_triangles_custom: HashMap<String, (String, Vec<Vertex3D>)>,
+    device: ID3D11Device,
 
-    submit_groups_lines_custom: HashMap<String, (String, Vec<Vertex3D>)>,
+    submit_groups_triangles_custom: HashMap<String, (String, Vec<Vertex3D>, PrimitiveOptions)>,
 
-    render_buffer_triangles_custom: HashMap<String, Vec<Vertex3D>>,
+    submit_groups_lines_custom: HashMap<String, (String, Vec<Vertex3D>, PrimitiveOptions)>,
 
-    render_buffer_lines_custom: HashMap<String, Vec<Vertex3D>>,
+    render_buffer_triangles_custom: HashMap<(String, PrimitiveOptions), Vec<Vertex3D>>,
+
+    render_buffer_lines_custom: HashMap<(String, PrimitiveOptions), Vec<Vertex3D>>,
 
     custom_effects: HashMap<String, CustomEffectResources>,
 }
@@ -117,7 +157,6 @@ impl Primitive3DRenderer {
     pub fn new(device: &ID3D11Device) -> Self {
         let vs_bytes = include_bytes!("./shaders/primitive_vs.cso");
         let ps_bytes = include_bytes!("./shaders/primitive_ps.cso");
-        let electric_ps_bytes = include_bytes!("./shaders/electric_field_ps.cso");
 
         let mut vertex_shader: Option<ID3D11VertexShader> = None;
         unsafe {
@@ -132,20 +171,6 @@ impl Primitive3DRenderer {
                 .CreatePixelShader(ps_bytes, None, Some(&mut pixel_shader))
                 .expect("Failed to create primitive PS");
         }
-
-        let mut electric_pixel_shader: Option<ID3D11PixelShader> = None;
-        unsafe {
-            device
-                .CreatePixelShader(electric_ps_bytes, None, Some(&mut electric_pixel_shader))
-                .expect("Failed to create electric field PS");
-        }
-
-        let mut pixel_shaders = HashMap::new();
-        pixel_shaders.insert(PrimitiveEffect::Default, pixel_shader.unwrap());
-        pixel_shaders.insert(
-            PrimitiveEffect::ElectricField,
-            electric_pixel_shader.unwrap(),
-        );
 
         let input_element_descs = [
             D3D11_INPUT_ELEMENT_DESC {
@@ -331,9 +356,35 @@ impl Primitive3DRenderer {
                 .expect("Failed to create cull-none rasterizer state");
         }
 
+        let rast_desc_wireframe = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_WIREFRAME,
+            CullMode: D3D11_CULL_NONE,
+            ScissorEnable: BOOL(1),
+            ..Default::default()
+        };
+        let mut rasterizer_state_wireframe: Option<ID3D11RasterizerState> = None;
+        unsafe {
+            device
+                .CreateRasterizerState(&rast_desc_wireframe, Some(&mut rasterizer_state_wireframe))
+                .expect("Failed to create wireframe rasterizer state");
+        }
+
+        let rast_desc_cull_back_wireframe = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_WIREFRAME,
+            CullMode: D3D11_CULL_BACK,
+            ScissorEnable: BOOL(1),
+            ..Default::default()
+        };
+        let mut rasterizer_state_cull_back_wireframe: Option<ID3D11RasterizerState> = None;
+        unsafe {
+            device
+                .CreateRasterizerState(&rast_desc_cull_back_wireframe, Some(&mut rasterizer_state_cull_back_wireframe))
+                .expect("Failed to create cull-back wireframe rasterizer state");
+        }
+
         Self {
             vertex_shader: vertex_shader.unwrap(),
-            pixel_shaders,
+            pixel_shader: pixel_shader.unwrap(),
             input_layout: input_layout.unwrap(),
             vertex_buffer_triangles: vertex_buffer_triangles.unwrap(),
             vertex_buffer_lines: vertex_buffer_lines.unwrap(),
@@ -350,6 +401,9 @@ impl Primitive3DRenderer {
             depth_stencil_state_disabled: depth_stencil_state_disabled.unwrap(),
             rasterizer_state_cull_back: rasterizer_state_cull_back.unwrap(),
             rasterizer_state_cull_none: rasterizer_state_cull_none.unwrap(),
+            rasterizer_state_wireframe: rasterizer_state_wireframe.unwrap(),
+            rasterizer_state_cull_back_wireframe: rasterizer_state_cull_back_wireframe.unwrap(),
+            device: device.clone(),
             submit_groups_triangles_custom: HashMap::new(),
             submit_groups_lines_custom: HashMap::new(),
             render_buffer_triangles_custom: HashMap::new(),
@@ -358,39 +412,34 @@ impl Primitive3DRenderer {
         }
     }
 
-    pub fn replace_primitives_in_group(
+    pub fn set_primitives(
         &mut self,
         group_id: &str,
         triangles: &[Vertex3D],
         lines: &[Vertex3D],
     ) {
-        self.replace_primitives_in_group_with_effect(
-            group_id,
-            triangles,
-            lines,
-            PrimitiveEffect::Default,
-        );
+        self.set_primitives_ex(group_id, triangles, lines, PrimitiveOptions::default());
     }
 
-    pub fn replace_primitives_in_group_with_effect(
+    pub fn set_primitives_ex(
         &mut self,
         group_id: &str,
         triangles: &[Vertex3D],
         lines: &[Vertex3D],
-        effect: PrimitiveEffect,
+        options: PrimitiveOptions,
     ) {
         if triangles.is_empty() {
             self.submit_groups_triangles.remove(group_id);
         } else {
             self.submit_groups_triangles
-                .insert(group_id.to_string(), (effect, triangles.to_vec()));
+                .insert(group_id.to_string(), (triangles.to_vec(), options));
         }
 
         if lines.is_empty() {
             self.submit_groups_lines.remove(group_id);
         } else {
             self.submit_groups_lines
-                .insert(group_id.to_string(), (effect, lines.to_vec()));
+                .insert(group_id.to_string(), (lines.to_vec(), options));
         }
     }
 
@@ -498,19 +547,36 @@ impl Primitive3DRenderer {
         }
     }
 
-    pub fn replace_primitives_in_group_custom(
+    pub fn set_custom_primitives(
         &mut self,
         group_id: &str,
         triangles: &[Vertex3D],
         lines: &[Vertex3D],
         effect_id: &str,
     ) {
+        self.set_custom_primitives_ex(
+            group_id,
+            triangles,
+            lines,
+            effect_id,
+            PrimitiveOptions::default(),
+        );
+    }
+
+    pub fn set_custom_primitives_ex(
+        &mut self,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect_id: &str,
+        options: PrimitiveOptions,
+    ) {
         if triangles.is_empty() {
             self.submit_groups_triangles_custom.remove(group_id);
         } else {
             self.submit_groups_triangles_custom.insert(
                 group_id.to_string(),
-                (effect_id.to_string(), triangles.to_vec()),
+                (effect_id.to_string(), triangles.to_vec(), options),
             );
         }
 
@@ -519,58 +585,89 @@ impl Primitive3DRenderer {
         } else {
             self.submit_groups_lines_custom.insert(
                 group_id.to_string(),
-                (effect_id.to_string(), lines.to_vec()),
+                (effect_id.to_string(), lines.to_vec(), options),
             );
         }
     }
 
-    pub fn clear_primitives_in_group(&mut self, group_id: &str) {
+    pub fn clear_primitives(&mut self, group_id: &str) {
         self.submit_groups_triangles.remove(group_id);
         self.submit_groups_lines.remove(group_id);
+        self.submit_groups_triangles_custom.remove(group_id);
+        self.submit_groups_lines_custom.remove(group_id);
     }
 
     pub fn clear_all_primitives(&mut self) {
         self.submit_groups_triangles.clear();
         self.submit_groups_lines.clear();
+        self.submit_groups_triangles_custom.clear();
+        self.submit_groups_lines_custom.clear();
     }
 
     pub fn latch_buffers(&mut self) {
         self.render_buffer_triangles.clear();
-        for (effect, group_vertices) in self.submit_groups_triangles.values() {
-            let buffer = self.render_buffer_triangles.entry(*effect).or_default();
+        for (group_vertices, options) in self.submit_groups_triangles.values() {
+            let buffer = self.render_buffer_triangles.entry(*options).or_default();
             let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
             let vertices_to_add = group_vertices.len().min(remaining_capacity);
             buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
 
         self.render_buffer_lines.clear();
-        for (effect, group_vertices) in self.submit_groups_lines.values() {
-            let buffer = self.render_buffer_lines.entry(*effect).or_default();
+        for (group_vertices, options) in self.submit_groups_lines.values() {
+            let buffer = self.render_buffer_lines.entry(*options).or_default();
             let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
             let vertices_to_add = group_vertices.len().min(remaining_capacity);
             buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
 
         self.render_buffer_triangles_custom.clear();
-        for (effect_id, group_vertices) in self.submit_groups_triangles_custom.values() {
+        for (effect_id, group_vertices, options) in self.submit_groups_triangles_custom.values() {
             let buffer = self
                 .render_buffer_triangles_custom
-                .entry(effect_id.clone())
+                .entry((effect_id.clone(), *options))
                 .or_default();
             let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
             let vertices_to_add = group_vertices.len().min(remaining_capacity);
             buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
         self.render_buffer_lines_custom.clear();
-        for (effect_id, group_vertices) in self.submit_groups_lines_custom.values() {
+        for (effect_id, group_vertices, options) in self.submit_groups_lines_custom.values() {
             let buffer = self
                 .render_buffer_lines_custom
-                .entry(effect_id.clone())
+                .entry((effect_id.clone(), *options))
                 .or_default();
             let remaining_capacity = MAX_VERTEX_BUFFER_CAPACITY.saturating_sub(buffer.len());
             let vertices_to_add = group_vertices.len().min(remaining_capacity);
             buffer.extend_from_slice(&group_vertices[..vertices_to_add]);
         }
+    }
+}
+
+impl Primitive3DRenderer {
+    fn get_rasterizer_state(&self, options: &PrimitiveOptions) -> &ID3D11RasterizerState {
+        match (options.cull_back, options.wireframe) {
+            (true, true) => &self.rasterizer_state_cull_back_wireframe,
+            (true, false) => &self.rasterizer_state_cull_back,
+            (false, true) => &self.rasterizer_state_wireframe,
+            (false, false) => &self.rasterizer_state_cull_none,
+        }
+    }
+
+    fn get_or_create_depth_stencil_state(
+        &self,
+        options: &PrimitiveOptions,
+        has_depth_view: bool,
+    ) -> ID3D11DepthStencilState {
+        if options.ignore_depth_stencil || !has_depth_view {
+            return self.depth_stencil_state_disabled.clone();
+        }
+
+        if options.write_to_depth {
+            return self.depth_stencil_state.clone();
+        }
+
+        self.depth_stencil_state_transparent.clone()
     }
 }
 
@@ -650,22 +747,28 @@ impl Renderer for Primitive3DRenderer {
 
             if !self.render_buffer_triangles.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                context.RSSetState(&self.rasterizer_state_cull_none);
-                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
+                context.PSSetShader(&self.pixel_shader, None);
 
-                if params.depth_stencil_view.is_some() {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
-                } else {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                }
+                let mut sorted_batches: Vec<_> = self.render_buffer_triangles.iter().collect();
+                sorted_batches.sort_by_key(|(options, _)| options.render_priority);
 
-                for (effect, vertices) in &self.render_buffer_triangles {
+                for (options, vertices) in sorted_batches {
                     if vertices.is_empty() {
                         continue;
                     }
 
-                    let pixel_shader = self.pixel_shaders.get(effect).unwrap();
-                    context.PSSetShader(pixel_shader, None);
+                    let rasterizer_state = self.get_rasterizer_state(options);
+                    context.RSSetState(rasterizer_state);
+
+                    let blend_state = if options.opaque {
+                        &self.blend_state_opaque
+                    } else {
+                        &self.blend_state_transparent
+                    };
+                    context.OMSetBlendState(blend_state, None, 0xffffffff);
+
+                    let depth_state = self.get_or_create_depth_stencil_state(options, params.depth_stencil_view.is_some());
+                    context.OMSetDepthStencilState(&depth_state, options.stencil_ref as u32);
 
                     let vertex_count = vertices.len() as u32;
                     let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
@@ -700,22 +803,28 @@ impl Renderer for Primitive3DRenderer {
 
             if !self.render_buffer_lines.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-                context.RSSetState(&self.rasterizer_state_cull_none);
-                context.OMSetBlendState(&self.blend_state_transparent, None, 0xffffffff);
+                context.PSSetShader(&self.pixel_shader, None);
 
-                if params.depth_stencil_view.is_some() {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_transparent, 1);
-                } else {
-                    context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                }
+                let mut sorted_batches: Vec<_> = self.render_buffer_lines.iter().collect();
+                sorted_batches.sort_by_key(|(options, _)| options.render_priority);
 
-                for (effect, vertices) in &self.render_buffer_lines {
+                for (options, vertices) in sorted_batches {
                     if vertices.is_empty() {
                         continue;
                     }
 
-                    let pixel_shader = self.pixel_shaders.get(effect).unwrap();
-                    context.PSSetShader(pixel_shader, None);
+                    let rasterizer_state = self.get_rasterizer_state(options);
+                    context.RSSetState(rasterizer_state);
+
+                    let blend_state = if options.opaque {
+                        &self.blend_state_opaque
+                    } else {
+                        &self.blend_state_transparent
+                    };
+                    context.OMSetBlendState(blend_state, None, 0xffffffff);
+
+                    let depth_state = self.get_or_create_depth_stencil_state(options, params.depth_stencil_view.is_some());
+                    context.OMSetDepthStencilState(&depth_state, options.stencil_ref as u32);
 
                     let vertex_count = vertices.len() as u32;
                     let mut mapped_vb = D3D11_MAPPED_SUBRESOURCE::default();
@@ -750,41 +859,32 @@ impl Renderer for Primitive3DRenderer {
 
             if !self.render_buffer_triangles_custom.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                context.RSSetState(&self.rasterizer_state_cull_none);
 
-                for (effect_id, vertices) in &self.render_buffer_triangles_custom {
+                let mut sorted_batches: Vec<_> = self.render_buffer_triangles_custom.iter().collect();
+                sorted_batches.sort_by_key(|((_, options), _)| options.render_priority);
+
+                for ((effect_id, options), vertices) in sorted_batches {
                     if vertices.is_empty() {
                         continue;
                     }
 
                     if let Some(effect) = self.custom_effects.get(effect_id) {
-                        let blend_state = match effect.blend_mode {
-                            BlendMode::Transparent => &self.blend_state_transparent,
-                            BlendMode::Opaque => &self.blend_state_opaque,
+                        let rasterizer_state = self.get_rasterizer_state(options);
+                        context.RSSetState(rasterizer_state);
+
+                        let blend_state = if options.opaque {
+                            &self.blend_state_opaque
+                        } else {
+                            match effect.blend_mode {
+                                BlendMode::Transparent => &self.blend_state_transparent,
+                                BlendMode::Opaque => &self.blend_state_opaque,
+                            }
                         };
                         context.OMSetBlendState(blend_state, None, 0xffffffff);
 
+                        let depth_state = self.get_or_create_depth_stencil_state(options, params.depth_stencil_view.is_some());
+                        context.OMSetDepthStencilState(&depth_state, options.stencil_ref as u32);
 
-                        if params.depth_stencil_view.is_some() {
-                            match effect.blend_mode {
-                                BlendMode::Opaque => {
-                                    context.OMSetDepthStencilState(
-                                        &self.depth_stencil_state_disabled,
-                                        1,
-                                    );
-                                }
-                                BlendMode::Transparent => {
-                                    context.OMSetDepthStencilState(
-                                        &self.depth_stencil_state_transparent,
-                                        1,
-                                    );
-                                }
-                            }
-                        } else {
-                            context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                        }
-
-                        // Use custom vertex shader if provided, otherwise use default
                         if let Some(vs) = &effect.vertex_shader {
                             context.VSSetShader(vs, None);
                         } else {
@@ -851,38 +951,31 @@ impl Renderer for Primitive3DRenderer {
 
             if !self.render_buffer_lines_custom.is_empty() {
                 context.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-                context.RSSetState(&self.rasterizer_state_cull_none);
 
-                for (effect_id, vertices) in &self.render_buffer_lines_custom {
+                let mut sorted_batches: Vec<_> = self.render_buffer_lines_custom.iter().collect();
+                sorted_batches.sort_by_key(|((_, options), _)| options.render_priority);
+
+                for ((effect_id, options), vertices) in sorted_batches {
                     if vertices.is_empty() {
                         continue;
                     }
 
                     if let Some(effect) = self.custom_effects.get(effect_id) {
-                        let blend_state = match effect.blend_mode {
-                            BlendMode::Transparent => &self.blend_state_transparent,
-                            BlendMode::Opaque => &self.blend_state_opaque,
+                        let rasterizer_state = self.get_rasterizer_state(options);
+                        context.RSSetState(rasterizer_state);
+
+                        let blend_state = if options.opaque {
+                            &self.blend_state_opaque
+                        } else {
+                            match effect.blend_mode {
+                                BlendMode::Transparent => &self.blend_state_transparent,
+                                BlendMode::Opaque => &self.blend_state_opaque,
+                            }
                         };
                         context.OMSetBlendState(blend_state, None, 0xffffffff);
 
-                        if params.depth_stencil_view.is_some() {
-                            match effect.blend_mode {
-                                BlendMode::Opaque => {
-                                    context.OMSetDepthStencilState(
-                                        &self.depth_stencil_state_disabled,
-                                        1,
-                                    );
-                                }
-                                BlendMode::Transparent => {
-                                    context.OMSetDepthStencilState(
-                                        &self.depth_stencil_state_transparent,
-                                        1,
-                                    );
-                                }
-                            }
-                        } else {
-                            context.OMSetDepthStencilState(&self.depth_stencil_state_disabled, 1);
-                        }
+                        let depth_state = self.get_or_create_depth_stencil_state(options, params.depth_stencil_view.is_some());
+                        context.OMSetDepthStencilState(&depth_state, options.stencil_ref as u32);
 
                         context.PSSetShader(&effect.pixel_shader, None);
 

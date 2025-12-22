@@ -2,7 +2,7 @@ use crate::bindings::embedder::{
     self as e, FlutterEngine, FlutterEngineDartObject__bindgen_ty_1 as DartObjectUnion,
 };
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
-    BlendMode, PrimitiveType, Vertex3D,
+    BlendMode, PrimitiveOptions, PrimitiveType, Vertex3D,
 };
 use crate::software_renderer::overlay::d3d::{
     create_compositing_texture, create_srv, create_texture,
@@ -364,7 +364,7 @@ impl FlutterOverlay {
         self.primitive_renderer.clear_all_primitives();
     }
 
-    pub fn replace_queued_primitives_in_group(
+    pub fn set_primitives(
         &mut self,
         group_id: &str,
         vertices: &[Vertex3D],
@@ -373,36 +373,36 @@ impl FlutterOverlay {
         match topology {
             PrimitiveType::Triangles => {
                 self.primitive_renderer
-                    .replace_primitives_in_group(group_id, vertices, &[]);
+                    .set_primitives(group_id, vertices, &[]);
             }
             PrimitiveType::Lines => {
                 self.primitive_renderer
-                    .replace_primitives_in_group(group_id, &[], vertices);
+                    .set_primitives(group_id, &[], vertices);
             }
         }
     }
 
-    pub fn replace_queued_primitives_in_group_with_effect(
+    pub fn set_primitives_ex(
         &mut self,
         group_id: &str,
         vertices: &[Vertex3D],
         topology: PrimitiveType,
-        effect: crate::software_renderer::d3d11_compositor::primitive_3d_renderer::PrimitiveEffect,
+        options: PrimitiveOptions,
     ) {
         match topology {
             PrimitiveType::Triangles => {
                 self.primitive_renderer
-                    .replace_primitives_in_group_with_effect(group_id, vertices, &[], effect);
+                    .set_primitives_ex(group_id, vertices, &[], options);
             }
             PrimitiveType::Lines => {
                 self.primitive_renderer
-                    .replace_primitives_in_group_with_effect(group_id, &[], vertices, effect);
+                    .set_primitives_ex(group_id, &[], vertices, options);
             }
         }
     }
 
-    pub fn clear_queued_primitives_in_group(&mut self, group_id: &str) {
-        self.primitive_renderer.clear_primitives_in_group(group_id);
+    pub fn clear_primitives(&mut self, group_id: &str) {
+        self.primitive_renderer.clear_primitives(group_id);
     }
 
     pub fn latch_queued_primitives(&mut self) {
@@ -529,7 +529,7 @@ impl FlutterOverlay {
     /// * `lines`: A slice of `Vertex3D` defining the lines for this group.
     /// * `effect_id`: The identifier of the custom effect (registered via
     ///   `register_custom_pixel_shader`) to use for rendering these primitives.
-    pub fn replace_primitives_in_group_custom(
+    pub fn set_custom_primitives(
         &mut self,
         group_id: &str,
         triangles: &[Vertex3D],
@@ -537,7 +537,19 @@ impl FlutterOverlay {
         effect_id: &str,
     ) {
         self.primitive_renderer
-            .replace_primitives_in_group_custom(group_id, triangles, lines, effect_id);
+            .set_custom_primitives(group_id, triangles, lines, effect_id);
+    }
+
+    pub fn set_custom_primitives_ex(
+        &mut self,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect_id: &str,
+        options: PrimitiveOptions,
+    ) {
+        self.primitive_renderer
+            .set_custom_primitives_ex(group_id, triangles, lines, effect_id, options);
     }
 
     /// Processes a Windows keyboard message for this overlay.

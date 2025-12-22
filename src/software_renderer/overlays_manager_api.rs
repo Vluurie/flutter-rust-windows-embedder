@@ -29,7 +29,7 @@ use crate::software_renderer::d3d11_compositor::effects::{
 use crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage;
 
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
-    BlendMode, PrimitiveEffect, PrimitiveType, Vertex3D,
+    BlendMode, PrimitiveOptions, PrimitiveType, Vertex3D,
 };
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
@@ -761,14 +761,17 @@ impl FlutterOverlayManagerHandle {
         dart_args: Option<Vec<String>>,
         engine_args: Option<Vec<String>>,
     ) -> bool {
-        let mut manager = self.manager.lock();
-        manager.init(
-            swap_chain,
-            flutter_asset_build_dir,
-            identifier,
-            dart_args,
-            engine_args,
-        )
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.init(
+                swap_chain,
+                flutter_asset_build_dir,
+                identifier,
+                dart_args,
+                engine_args,
+            )
+        } else {
+            false
+        }
     }
 
     /// Renders all latched 3D primitives for all visible overlays.
@@ -808,7 +811,9 @@ impl FlutterOverlayManagerHandle {
         view_projection_matrix: &XMMatrix,
         depth_stencil_view: &Option<ID3D11DepthStencilView>,
     ) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
 
         let context = match manager.shared_d3d_context.clone() {
             Some(ctx) => ctx,
@@ -858,7 +863,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.render_ui();
     /// ```
     pub fn render_ui(&self) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
 
         let context = match manager.shared_d3d_context.clone() {
             Some(ctx) => ctx,
@@ -920,7 +927,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.composite_overlays();
     /// ```
     pub fn tick_overlays(&self) {
-        let manager = self.manager.lock();
+        let Some(manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Some(context) = manager.shared_d3d_context.clone() {
             for overlay in manager.active_instances.values() {
                 if overlay.is_visible() {
@@ -946,7 +955,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.composite_overlays(); // Draws the UI on top of the world
     /// ```
     pub fn composite_overlays(&self, view_projection_matrix: &XMMatrix) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Some(context) = manager.shared_d3d_context.clone() {
             let time = if manager.is_paused {
                 manager.time_at_pause
@@ -995,9 +1006,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.update_screen_size(new_width, new_height);
     /// ```
     pub fn update_screen_size(&self, width: u32, height: u32) {
-        let mut manager = self.manager.lock();
-        manager.screen_width = width;
-        manager.screen_height = height;
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.screen_width = width;
+            manager.screen_height = height;
+        }
     }
 
     /// Pauses all shader animations for all overlays.
@@ -1012,63 +1024,54 @@ impl FlutterOverlayManagerHandle {
     /// manager.pause_animations();
     /// ```
     pub fn pause_animations(&self) {
-        let mut manager = self.manager.lock();
-        if !manager.is_paused {
-            manager.time_at_pause = manager.start_time.elapsed().as_secs_f32();
-            manager.is_paused = true;
-        }
-    }
-
-    /// Atomically replaces an entire group of 3D primitives for a specific overlay.
-    ///
-    /// This is the recommended method for pushing 3D geometry to the system. Instead of
-    /// adding primitives, this function replaces all primitives for a given `group_id`
-    /// with the new set of vertices. This prevents stale data from persisting and
-    /// simplifies per-frame logic.
-    ///
-    /// # Arguments
-    /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
-    /// * `group_id`: A string slice that identifies this group of primitives (e.g., "entity_highlights", "debug_boxes").
-    /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
-    /// * `topology`: A `PrimitiveType` enum that specifies how the vertices should be connected.
-    pub fn replace_primitives_in_group(
-        &self,
-        identifier: Option<&str>,
-        group_id: &str,
-        vertices: &[Vertex3D],
-        topology: PrimitiveType,
-    ) {
         if let Some(mut manager) = self.manager.try_lock() {
-            if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.replace_queued_primitives_in_group(group_id, vertices, topology);
+            if !manager.is_paused {
+                manager.time_at_pause = manager.start_time.elapsed().as_secs_f32();
+                manager.is_paused = true;
             }
         }
     }
 
-    /// Atomically replaces an entire group of 3D primitives and applies a specific built-in effect.
-    ///
-    /// This functions similarly to `replace_primitives_in_group`, but allows specifying a
-    /// `PrimitiveEffect` to be applied to the geometry, such as `Hologram` or `Warp`.
+    /// Sets 3D primitives for a specific group in an overlay.
     ///
     /// # Arguments
     /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
     /// * `group_id`: A string slice that identifies this group of primitives.
     /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
     /// * `topology`: A `PrimitiveType` enum that specifies how the vertices should be connected.
-    /// * `effect`: The `PrimitiveEffect` to apply to this geometry.
-    pub fn replace_primitives_in_group_with_effect(
+    pub fn set_primitives(
         &self,
         identifier: Option<&str>,
         group_id: &str,
         vertices: &[Vertex3D],
         topology: PrimitiveType,
-        effect: PrimitiveEffect,
     ) {
         if let Some(mut manager) = self.manager.try_lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.replace_queued_primitives_in_group_with_effect(
-                    group_id, vertices, topology, effect,
-                );
+                overlay.set_primitives(group_id, vertices, topology);
+            }
+        }
+    }
+
+    /// Sets 3D primitives with rendering options.
+    ///
+    /// # Arguments
+    /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
+    /// * `group_id`: A string slice that identifies this group of primitives.
+    /// * `vertices`: A slice of `Vertex3D` points that define the geometry.
+    /// * `topology`: A `PrimitiveType` enum that specifies how the vertices should be connected.
+    /// * `options`: Rendering options like depth stencil, blend mode, etc.
+    pub fn set_primitives_ex(
+        &self,
+        identifier: Option<&str>,
+        group_id: &str,
+        vertices: &[Vertex3D],
+        topology: PrimitiveType,
+        options: PrimitiveOptions,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_primitives_ex(group_id, vertices, topology, options);
             }
         }
     }
@@ -1088,22 +1091,15 @@ impl FlutterOverlayManagerHandle {
         }
     }
 
-    /// Clears all submitted 3D primitives from a specific group for a specific overlay.
+    /// Clears primitives from a specific group for a specific overlay.
     ///
     /// # Arguments
     /// * `identifier`: The unique name of the target overlay. `None` targets the single active overlay.
-    /// * `group_id`: The ID of the group to clear (e.g., "entity_highlights").
-    ///
-    /// # Example
-    /// ```rust,no_run
-    /// let manager = get_flutter_overlay_manager_handle().unwrap();
-    /// // Stop showing entity highlights without affecting other debug drawings.
-    /// manager.clear_primitives_in_group(None, "entity_highlights");
-    /// ```
-    pub fn clear_primitives_in_group(&self, identifier: Option<&str>, group_id: &str) {
+    /// * `group_id`: The ID of the group to clear.
+    pub fn clear_primitives(&self, identifier: Option<&str>, group_id: &str) {
         if let Some(mut manager) = self.manager.try_lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.clear_queued_primitives_in_group(group_id);
+                overlay.clear_primitives(group_id);
             }
         }
     }
@@ -1133,8 +1129,9 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn latch_all_queued_primitives(&self) {
-        let mut manager = self.manager.lock();
-        manager.latch_all_queued_primitives();
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.latch_all_queued_primitives();
+        }
     }
 
     /// Resumes all shader animations for all overlays.
@@ -1149,11 +1146,12 @@ impl FlutterOverlayManagerHandle {
     /// manager.resume_animations();
     /// ```
     pub fn resume_animations(&self) {
-        let mut manager = self.manager.lock();
-        if manager.is_paused {
-            manager.start_time =
-                Instant::now() - std::time::Duration::from_secs_f32(manager.time_at_pause);
-            manager.is_paused = false;
+        if let Some(mut manager) = self.manager.try_lock() {
+            if manager.is_paused {
+                manager.start_time =
+                    Instant::now() - std::time::Duration::from_secs_f32(manager.time_at_pause);
+                manager.is_paused = false;
+            }
         }
     }
 
@@ -1174,14 +1172,15 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_fullscreen_effect(Some("main_menu"), PostEffect::Hologram);
     /// ```
     pub fn set_fullscreen_effect(&self, identifier: Option<&str>, effect: PostEffect) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.effect_config.params = match effect {
-                PostEffect::Passthrough => EffectParams::None,
-                PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
-                PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
-            };
-            overlay.effect_config.target = EffectTarget::Fullscreen;
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.effect_config.params = match effect {
+                    PostEffect::Passthrough => EffectParams::None,
+                    PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
+                    PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                };
+                overlay.effect_config.target = EffectTarget::Fullscreen;
+            }
         }
     }
 
@@ -1204,14 +1203,15 @@ impl FlutterOverlayManagerHandle {
         effect: PostEffect,
         bounds: [f32; 4],
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.effect_config.params = match effect {
-                PostEffect::Passthrough => EffectParams::None,
-                PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
-                PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
-            };
-            overlay.effect_config.target = EffectTarget::Widget(bounds);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.effect_config.params = match effect {
+                    PostEffect::Passthrough => EffectParams::None,
+                    PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
+                    PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                };
+                overlay.effect_config.target = EffectTarget::Widget(bounds);
+            }
         }
     }
 
@@ -1225,9 +1225,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.clear_effect(Some("main_menu"));
     /// ```
     pub fn clear_effect(&self, identifier: Option<&str>) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.effect_config = EffectConfig::default();
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.effect_config = EffectConfig::default();
+            }
         }
     }
 
@@ -1246,9 +1247,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.update_effect_config(Some("main_menu"), config);
     /// ```
     pub fn update_effect_config(&self, identifier: Option<&str>, config: EffectConfig) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.effect_config = config;
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.effect_config = config;
+            }
         }
     }
 
@@ -1280,8 +1282,11 @@ impl FlutterOverlayManagerHandle {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> bool {
-        let mut manager = self.manager.lock();
-        manager.handle_input_event(hwnd, msg, wparam, lparam)
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.handle_input_event(hwnd, msg, wparam, lparam)
+        } else {
+            false
+        }
     }
 
     /// Requests that the topmost active overlay under the cursor set the mouse cursor style.
@@ -1312,8 +1317,11 @@ impl FlutterOverlayManagerHandle {
         lparam: LPARAM,
         original_hwnd: HWND,
     ) -> Option<LRESULT> {
-        let manager = self.manager.lock();
-        manager.handle_set_cursor(hwnd_for_setcursor_message, lparam, original_hwnd)
+        if let Some(manager) = self.manager.try_lock() {
+            manager.handle_set_cursor(hwnd_for_setcursor_message, lparam, original_hwnd)
+        } else {
+            None
+        }
     }
 
     /// Notifies all active overlays of a window or render area resize.
@@ -1335,20 +1343,22 @@ impl FlutterOverlayManagerHandle {
         width: u32,
         height: u32,
     ) {
-        let mut manager = self.manager.lock();
-        manager.handle_resize(swap_chain, x_pos, y_pos, width, height);
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.handle_resize(swap_chain, x_pos, y_pos, width, height);
+        }
     }
 
     /// Shuts down a specific Flutter overlay instance, releasing all its resources.
     /// # Arguments
     /// * `identifier`: The unique identifier of the overlay to shut down.
     pub fn shutdown_instance(&self, identifier: &str) {
-        let mut manager = self.manager.lock();
-        if let Err(e) = manager.shutdown_instance(identifier) {
-            error!(
-                "[OverlayManagerHandle] Error during shutdown of instance {}: {}",
-                identifier, e
-            );
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Err(e) = manager.shutdown_instance(identifier) {
+                error!(
+                    "[OverlayManagerHandle] Error during shutdown of instance {}: {}",
+                    identifier, e
+                );
+            }
         }
     }
 
@@ -1361,8 +1371,9 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn shutdown_all_instances(&self) {
-        let mut manager = self.manager.lock();
-        manager.shutdown_all_instances();
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.shutdown_all_instances();
+        }
     }
 
     /// Brings the specified overlay to the top of the rendering order (Z-order).
@@ -1373,8 +1384,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.bring_to_front(Some("popup_dialog"));
     /// ```
     pub fn bring_to_front(&self, identifier: Option<&str>) {
-        let mut manager = self.manager.lock();
-        manager.bring_to_front(identifier);
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.bring_to_front(identifier);
+        }
     }
 
     /// Sets keyboard focus to the specified overlay, which also brings it to the front.
@@ -1385,8 +1397,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_focus(Some("chat_ui"));
     /// ```
     pub fn set_focus(&self, identifier: Option<&str>) {
-        let mut manager = self.manager.lock();
-        manager.set_keyboard_focus(identifier);
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.set_keyboard_focus(identifier);
+        }
     }
 
     /// Checks if the specified overlay currently has keyboard focus.
@@ -1398,11 +1411,11 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn is_focused(&self, identifier: Option<&str>) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return manager.focused_overlay_id.as_deref() == Some(overlay.name.as_str());
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return manager.focused_overlay_id.as_deref() == Some(overlay.name.as_str());
+            }
         }
-
         false
     }
 
@@ -1418,9 +1431,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_visibility(Some("pause_menu"), true);
     /// ```
     pub fn set_visibility(&self, identifier: Option<&str>, is_visible: bool) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.set_visibility(is_visible);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_visibility(is_visible);
+            }
         }
     }
 
@@ -1436,9 +1450,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_position(Some("player_health_bar"), player.x + 10, player.y - 50);
     /// ```
     pub fn set_position(&self, identifier: Option<&str>, x: i32, y: i32) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.set_position(x, y);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_position(x, y);
+            }
         }
     }
 
@@ -1450,8 +1465,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.broadcast_message("game/events", "saving".as_bytes());
     /// ```
     pub fn broadcast_message(&self, channel: &str, message: &[u8]) {
-        let manager = self.manager.lock();
-        manager.broadcast_platform_message(channel, message);
+        if let Some(manager) = self.manager.try_lock() {
+            manager.broadcast_platform_message(channel, message);
+        }
     }
 
     /// Registers a custom message handler for a specific channel on an overlay.
@@ -1476,8 +1492,9 @@ impl FlutterOverlayManagerHandle {
     where
         F: Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static,
     {
-        let mut manager = self.manager.lock();
-        manager.register_channel_handler_for_instance(identifier, channel, handler);
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.register_channel_handler_for_instance(identifier, channel, handler);
+        }
     }
 
     /// Gets the dimensions (width, height) of all active overlays.
@@ -1494,8 +1511,11 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn get_all_dimensions(&self) -> HashMap<String, (u32, u32)> {
-        let manager = self.manager.lock();
-        manager.get_all_overlay_dimensions()
+        if let Some(manager) = self.manager.try_lock() {
+            manager.get_all_overlay_dimensions()
+        } else {
+            HashMap::new()
+        }
     }
 
     /// Gets a clone of the shared Direct3D device context used by the manager.
@@ -1511,14 +1531,12 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
-        let manager = self.manager.lock();
-        manager.shared_d3d_context.clone()
+        self.manager.try_lock().and_then(|m| m.shared_d3d_context.clone())
     }
 
     /// Finds the identifier of the topmost, visible overlay at a given screen coordinate.
     pub fn find_at_position(&self, x: i32, y: i32) -> Option<String> {
-        let manager = self.manager.lock();
-        manager.find_topmost_overlay_at_position(x, y)
+        self.manager.try_lock().and_then(|m| m.find_topmost_overlay_at_position(x, y))
     }
 
     /// Registers a Dart `SendPort` with an overlay for Rust-to-Dart communication.
@@ -1542,9 +1560,10 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn register_dart_port(&self, identifier: Option<&str>, port: i64) {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            overlay.register_dart_port(port);
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                overlay.register_dart_port(port);
+            }
         }
     }
 
@@ -1561,11 +1580,11 @@ impl FlutterOverlayManagerHandle {
     /// manager.post_bool(Some("main_hud"), true); // e.g., show "In Combat" indicator
     /// ```
     pub fn post_bool(&self, identifier: Option<&str>, value: bool) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return overlay.post_bool(value).is_ok();
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_bool(value).is_ok();
+            }
         }
-
         false
     }
 
@@ -1583,11 +1602,11 @@ impl FlutterOverlayManagerHandle {
     /// manager.post_i64(Some("main_hud"), current_score);
     /// ```
     pub fn post_i64(&self, identifier: Option<&str>, value: i64) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return overlay.post_i64(value).is_ok();
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_i64(value).is_ok();
+            }
         }
-
         false
     }
 
@@ -1605,11 +1624,11 @@ impl FlutterOverlayManagerHandle {
     /// manager.post_f64(Some("main_hud"), time_remaining);
     /// ```
     pub fn post_f64(&self, identifier: Option<&str>, value: f64) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return overlay.post_f64(value).is_ok();
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_f64(value).is_ok();
+            }
         }
-
         false
     }
 
@@ -1627,11 +1646,11 @@ impl FlutterOverlayManagerHandle {
     /// manager.post_string(Some("main_hud"), "New quest: Defeat the dragon!");
     /// ```
     pub fn post_string(&self, identifier: Option<&str>, value: &str) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return overlay.post_string(value).is_ok();
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_string(value).is_ok();
+            }
         }
-
         false
     }
 
@@ -1647,9 +1666,10 @@ impl FlutterOverlayManagerHandle {
     /// manager.post_buffer(Some("main_hud"), &minimap_data);
     /// ```
     pub fn post_buffer(&self, identifier: Option<&str>, buffer: &[u8]) -> bool {
-        let manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance(identifier) {
-            return overlay.post_buffer(buffer).is_ok();
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.post_buffer(buffer).is_ok();
+            }
         }
         false
     }
@@ -1687,17 +1707,18 @@ impl FlutterOverlayManagerHandle {
         constant_buffer_size: Option<u32>,
         blend_mode: BlendMode,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            let device = unsafe { overlay.srv.GetDevice().unwrap() };
-            overlay.register_custom_pixel_shader(
-                &device,
-                effect_id,
-                vs_bytes,
-                ps_bytes,
-                constant_buffer_size,
-                blend_mode,
-            );
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                let device = unsafe { overlay.srv.GetDevice().unwrap() };
+                overlay.register_custom_pixel_shader(
+                    &device,
+                    effect_id,
+                    vs_bytes,
+                    ps_bytes,
+                    constant_buffer_size,
+                    blend_mode,
+                );
+            }
         }
     }
 
@@ -1730,9 +1751,10 @@ impl FlutterOverlayManagerHandle {
         texture: ID3D11ShaderResourceView,
         sampler: windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.set_custom_effect_texture_at_slot(effect_id, slot, texture, sampler);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_custom_effect_texture_at_slot(effect_id, slot, texture, sampler);
+            }
         }
     }
 
@@ -1748,9 +1770,10 @@ impl FlutterOverlayManagerHandle {
         effect_id: &str,
         slot: u32,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.clear_custom_effect_texture_at_slot(effect_id, slot);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.clear_custom_effect_texture_at_slot(effect_id, slot);
+            }
         }
     }
 
@@ -1782,9 +1805,10 @@ impl FlutterOverlayManagerHandle {
             windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
         )>,
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.set_custom_effect_textures_bulk(effect_id, textures);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_custom_effect_textures_bulk(effect_id, textures);
+            }
         }
     }
 
@@ -1822,9 +1846,10 @@ impl FlutterOverlayManagerHandle {
         effect_id: &str,
         data: &[u8],
     ) {
-        let mut manager = self.manager.lock();
-        if let Ok(overlay) = manager.get_instance_mut(identifier) {
-            overlay.update_custom_effect_constants(effect_id, data);
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.update_custom_effect_constants(effect_id, data);
+            }
         }
     }
 
@@ -1849,7 +1874,7 @@ impl FlutterOverlayManagerHandle {
     ///     Vertex3D { pos: [-0.5, -0.5, 0.0], color: [0.0, 0.0, 1.0, 1.0] },
     /// ];
     ///
-    /// manager.replace_primitives_in_group_custom(
+    /// manager.set_custom_primitives(
     ///     None,
     ///     "my_group",
     ///     &triangle,
@@ -1857,7 +1882,7 @@ impl FlutterOverlayManagerHandle {
     ///     "my_custom_effect",
     /// );
     /// ```
-    pub fn replace_primitives_in_group_custom(
+    pub fn set_custom_primitives(
         &self,
         identifier: Option<&str>,
         group_id: &str,
@@ -1867,7 +1892,24 @@ impl FlutterOverlayManagerHandle {
     ) {
         if let Some(mut manager) = self.manager.try_lock() {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.replace_primitives_in_group_custom(group_id, triangles, lines, effect_id);
+                overlay.set_custom_primitives(group_id, triangles, lines, effect_id);
+            }
+        }
+    }
+
+    /// Sets custom primitives with rendering options.
+    pub fn set_custom_primitives_ex(
+        &self,
+        identifier: Option<&str>,
+        group_id: &str,
+        triangles: &[Vertex3D],
+        lines: &[Vertex3D],
+        effect_id: &str,
+        options: PrimitiveOptions,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_custom_primitives_ex(group_id, triangles, lines, effect_id, options);
             }
         }
     }
@@ -1882,8 +1924,11 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn get_all_overlay_textures(&self) -> Vec<(String, ID3D11ShaderResourceView)> {
-        let manager = self.manager.lock();
-        manager.get_all_overlay_textures()
+        if let Some(manager) = self.manager.try_lock() {
+            manager.get_all_overlay_textures()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Checks if any overlay has experienced a device lost condition.
@@ -1904,10 +1949,11 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn is_any_device_lost(&self) -> bool {
-        let manager = self.manager.lock();
-        for overlay in manager.active_instances.values() {
-            if overlay.is_device_lost() {
-                return true;
+        if let Some(manager) = self.manager.try_lock() {
+            for overlay in manager.active_instances.values() {
+                if overlay.is_device_lost() {
+                    return true;
+                }
             }
         }
         false
@@ -1917,7 +1963,9 @@ impl FlutterOverlayManagerHandle {
     /// Returns true if any device is lost AND we're not in a cooldown period.
     /// Also decrements the cooldown counter each call.
     pub fn should_attempt_recovery(&self) -> bool {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return false;
+        };
 
         if manager.recovery_cooldown > 0 {
             manager.recovery_cooldown -= 1;
@@ -1957,7 +2005,9 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn attempt_device_recovery(&self, swap_chain: &IDXGISwapChain) -> bool {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return false;
+        };
         let mut all_recovered = true;
 
         for (id, overlay) in manager.active_instances.iter_mut() {

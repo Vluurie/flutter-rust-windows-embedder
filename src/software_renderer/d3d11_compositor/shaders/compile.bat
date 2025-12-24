@@ -28,3 +28,11 @@ fxc "primitive_vs.hlsl" /nologo /T vs_4_0 /D VS /E VSMain /Fo "primitive_vs.cso"
 echo:
 echo === Electric Field PS Shader ===
 fxc "electric_field_ps.hlsl" /nologo /T ps_4_0 /D PS /E PSMain /Fo "electric_field_ps.cso"
+
+echo:
+echo === Text VS Shader ===
+fxc "text_vs.hlsl" /nologo /T vs_4_0 /D VS /E VSMain /Fo "text_vs.cso"
+
+echo:
+echo === Text PS Shader ===
+fxc "text_ps.hlsl" /nologo /T ps_4_0 /D PS /E PSMain /Fo "text_ps.cso"

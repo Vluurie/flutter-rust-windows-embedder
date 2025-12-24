@@ -20,6 +20,7 @@ use crate::{
         d3d11_compositor::{
             effects::EffectConfig, post_processing_renderer::PostProcessRenderer,
             primitive_3d_renderer::Primitive3DRenderer,
+            text_3d_renderer::Text3DRenderer,
         },
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         gl_renderer::angle_interop::SendableAngleState,
@@ -161,6 +162,8 @@ pub struct FlutterOverlay {
     /// The Direct3D 11 compositor responsible for rendering Flutter content to the texture.
     pub post_processor: PostProcessRenderer,
     pub primitive_renderer: Primitive3DRenderer,
+    /// The 3D text renderer for rendering text as textured quads in 3D space.
+    pub text_renderer: Text3DRenderer,
 
     // Crate-Internal API - Fields used within the embedder logic.
     // Not intended for modification by the end-user.
@@ -280,6 +283,7 @@ impl Clone for FlutterOverlay {
             srv: self.srv.clone(),
             post_processor: self.post_processor.clone(),
             primitive_renderer: self.primitive_renderer.clone(),
+            text_renderer: self.text_renderer.clone(),
             desired_cursor: self.desired_cursor.clone(),
             name: self.name.clone(),
             dart_send_port: self.dart_send_port.clone(),

@@ -3,6 +3,7 @@ use crate::software_renderer::api::RendererType;
 use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
 use crate::software_renderer::d3d11_compositor::post_processing_renderer::PostProcessRenderer;
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Primitive3DRenderer;
+use crate::software_renderer::d3d11_compositor::text_3d_renderer::Text3DRenderer;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
 
 use crate::software_renderer::gl_renderer::angle_interop::{
@@ -197,6 +198,7 @@ pub(crate) fn init_overlay(
         };
         let post_processor = PostProcessRenderer::new(device);
         let primitive_renderer = Primitive3DRenderer::new(device);
+        let text_renderer = Text3DRenderer::new(device);
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
 
@@ -221,6 +223,7 @@ pub(crate) fn init_overlay(
             gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
             post_processor,
             primitive_renderer,
+            text_renderer,
             desired_cursor: Arc::new(Mutex::new(None)),
             task_queue_state: task_queue_arc,
             task_runner_thread: None,

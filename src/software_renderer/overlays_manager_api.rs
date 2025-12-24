@@ -31,6 +31,9 @@ use crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage;
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
     BlendMode, PrimitiveOptions, PrimitiveType, Vertex3D,
 };
+use crate::software_renderer::d3d11_compositor::text_3d_renderer::{
+    FontAtlas, GlyphInfo, TexturedVertex3D,
+};
 use crate::software_renderer::d3d11_compositor::traits::{FrameParams, Renderer};
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::semantics_handler::update_interactive_widget_hover_state;
@@ -199,6 +202,13 @@ impl OverlayManager {
     pub fn latch_all_queued_primitives(&mut self) {
         for overlay in self.active_instances.values_mut() {
             overlay.latch_queued_primitives();
+        }
+    }
+
+    /// Latches all queued text for all overlay instances.
+    pub fn latch_all_queued_text(&mut self) {
+        for overlay in self.active_instances.values_mut() {
+            overlay.latch_queued_text();
         }
     }
 
@@ -836,6 +846,7 @@ impl FlutterOverlayManagerHandle {
         for overlay in manager.active_instances.values_mut() {
             if overlay.is_visible() {
                 overlay.primitive_renderer.draw(&mut frame_params);
+                overlay.text_renderer.draw(&mut frame_params);
             }
         }
     }
@@ -979,8 +990,9 @@ impl FlutterOverlayManagerHandle {
                     if overlay.is_visible() {
                         update_interactive_widget_hover_state(overlay);
 
-                        // Draw 3D primitives
+                        // Draw 3D primitives and text
                         overlay.primitive_renderer.draw(&mut frame_params);
+                        overlay.text_renderer.draw(&mut frame_params);
 
                         // Queue and draw the 2D Flutter UI
                         overlay.post_processor.queue_texture_render(
@@ -1132,6 +1144,171 @@ impl FlutterOverlayManagerHandle {
         if let Some(mut manager) = self.manager.try_lock() {
             manager.latch_all_queued_primitives();
         }
+    }
+
+    /// Latches all queued 3D text for all visible overlays.
+    ///
+    /// Call this once per frame, typically alongside `latch_all_queued_primitives()`,
+    /// to prepare text geometry for rendering.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// // in dxgi_present_hook.rs
+    /// pub(crate) extern "system" fn new_present(...) -> HRESULT {
+    ///     if let Some(om) = get_flutter_overlay_manager_handle() {
+    ///         om.latch_all_queued_primitives();
+    ///         om.latch_all_queued_text();
+    ///     }
+    ///     // ... rest of the render hook ...
+    /// }
+    /// ```
+    pub fn latch_all_queued_text(&self) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.latch_all_queued_text();
+        }
+    }
+
+    /// Registers a font atlas for 3D text rendering on a specific overlay.
+    ///
+    /// A font atlas is a texture containing all the glyphs for a font, along with
+    /// metadata about each glyph's position, size, and spacing. Must be called before
+    /// any `set_text` calls that use this font.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - Unique identifier for this font (used in subsequent text calls)
+    /// * `texture` - The font atlas texture as a shader resource view
+    /// * `sampler` - The sampler state for the texture
+    /// * `glyphs` - A HashMap mapping characters to their glyph information
+    /// * `line_height` - The height of a line in font units (normalized)
+    /// * `base_font_size` - The base font size in pixels (used for scaling)
+    pub fn register_font_atlas(
+        &self,
+        identifier: Option<&str>,
+        font_id: &str,
+        texture: ID3D11ShaderResourceView,
+        sampler: windows::Win32::Graphics::Direct3D11::ID3D11SamplerState,
+        glyphs: std::collections::HashMap<char, GlyphInfo>,
+        line_height: f32,
+        base_font_size: f32,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.register_font_atlas(
+                    font_id,
+                    texture,
+                    sampler,
+                    glyphs,
+                    line_height,
+                    base_font_size,
+                );
+            }
+        }
+    }
+
+    /// Unregisters a font atlas and clears all text using it.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - The font identifier to unregister.
+    pub fn unregister_font_atlas(&self, identifier: Option<&str>, font_id: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.unregister_font_atlas(font_id);
+            }
+        }
+    }
+
+    /// Sets pre-built 3D text vertices for rendering.
+    ///
+    /// Use the `text_presets::generate_text_vertices` helper to create the vertices
+    /// from a text string and font atlas.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - The font atlas to use (must be registered first)
+    /// * `group_id` - Unique identifier for this text group (for updates/removal)
+    /// * `vertices` - Pre-built text vertices (from `generate_text_vertices`)
+    /// * `options` - Rendering options (depth, blend mode, etc.)
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use flutter_embedder::software_renderer::d3d11_compositor::text_presets;
+    /// use flutter_embedder::software_renderer::d3d11_compositor::primitive_3d_renderer::PrimitiveOptions;
+    ///
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // Generate vertices using the text_presets module (requires font atlas reference)
+    /// manager.set_text(None, "my_font", "label_1", &vertices, PrimitiveOptions::default());
+    /// ```
+    pub fn set_text(
+        &self,
+        identifier: Option<&str>,
+        font_id: &str,
+        group_id: &str,
+        vertices: &[TexturedVertex3D],
+        options: PrimitiveOptions,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.set_text(font_id, group_id, vertices, options);
+            }
+        }
+    }
+
+    /// Clears text for a specific group.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - The font the text was registered with.
+    /// * `group_id` - The group identifier to clear.
+    pub fn clear_text(&self, identifier: Option<&str>, font_id: &str, group_id: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.clear_text(font_id, group_id);
+            }
+        }
+    }
+
+    /// Clears all text for a specific font on an overlay.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - The font identifier whose text should be cleared.
+    pub fn clear_font_text(&self, identifier: Option<&str>, font_id: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance_mut(identifier) {
+                overlay.clear_font_text(font_id);
+            }
+        }
+    }
+
+    /// Clears all text from all fonts on all overlays.
+    pub fn clear_all_text(&self) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            for overlay in manager.active_instances.values_mut() {
+                overlay.clear_all_text();
+            }
+        }
+    }
+
+    /// Returns a reference to a registered font atlas, if it exists.
+    ///
+    /// This is useful for generating text vertices using the `text_presets` helpers.
+    /// Note: This acquires the manager lock briefly to clone the font atlas.
+    ///
+    /// # Arguments
+    /// * `identifier` - The target overlay. `None` targets the single active overlay.
+    /// * `font_id` - The font identifier to retrieve.
+    ///
+    /// # Returns
+    /// A cloned `FontAtlas` if found, otherwise `None`.
+    pub fn get_font_atlas(&self, identifier: Option<&str>, font_id: &str) -> Option<FontAtlas> {
+        if let Some(manager) = self.manager.try_lock() {
+            if let Ok(overlay) = manager.get_instance(identifier) {
+                return overlay.get_font_atlas(font_id).cloned();
+            }
+        }
+        None
     }
 
     /// Resumes all shader animations for all overlays.
@@ -1531,12 +1708,16 @@ impl FlutterOverlayManagerHandle {
     /// }
     /// ```
     pub fn get_d3d_context(&self) -> Option<ID3D11DeviceContext> {
-        self.manager.try_lock().and_then(|m| m.shared_d3d_context.clone())
+        self.manager
+            .try_lock()
+            .and_then(|m| m.shared_d3d_context.clone())
     }
 
     /// Finds the identifier of the topmost, visible overlay at a given screen coordinate.
     pub fn find_at_position(&self, x: i32, y: i32) -> Option<String> {
-        self.manager.try_lock().and_then(|m| m.find_topmost_overlay_at_position(x, y))
+        self.manager
+            .try_lock()
+            .and_then(|m| m.find_topmost_overlay_at_position(x, y))
     }
 
     /// Registers a Dart `SendPort` with an overlay for Rust-to-Dart communication.

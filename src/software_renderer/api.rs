@@ -568,6 +568,134 @@ impl FlutterOverlay {
             .set_custom_primitives_ex(group_id, triangles, lines, effect_id, options);
     }
 
+    /// Registers a font atlas for 3D text rendering.
+    ///
+    /// A font atlas is a texture containing all the glyphs for a font, along with
+    /// metadata about each glyph's position, size, and spacing.
+    ///
+    /// # Arguments
+    /// * `font_id` - Unique identifier for this font (used in subsequent text calls)
+    /// * `texture` - The font atlas texture as a shader resource view
+    /// * `sampler` - The sampler state for the texture
+    /// * `glyphs` - A HashMap mapping characters to their glyph information
+    /// * `line_height` - The height of a line in font units (normalized)
+    /// * `base_font_size` - The base font size in pixels (used for scaling)
+    ///
+    /// # Example
+    /// ```rust
+    /// use std::collections::HashMap;
+    /// use flutter_embedder::software_renderer::d3d11_compositor::text_3d_renderer::GlyphInfo;
+    ///
+    /// let mut glyphs = HashMap::new();
+    /// glyphs.insert('A', GlyphInfo {
+    ///     uv_rect: [0.0, 0.0, 0.0625, 0.0625],  // UV coords in atlas
+    ///     bearing_x: 0.0,
+    ///     bearing_y: 14.0,
+    ///     width: 12.0,
+    ///     height: 14.0,
+    ///     advance: 14.0,
+    /// });
+    /// // ... add more glyphs
+    ///
+    /// overlay.register_font_atlas("default", texture_srv, sampler, glyphs, 20.0, 16.0);
+    /// ```
+    pub fn register_font_atlas(
+        &mut self,
+        font_id: &str,
+        texture: ID3D11ShaderResourceView,
+        sampler: ID3D11SamplerState,
+        glyphs: std::collections::HashMap<
+            char,
+            crate::software_renderer::d3d11_compositor::text_3d_renderer::GlyphInfo,
+        >,
+        line_height: f32,
+        base_font_size: f32,
+    ) {
+        self.text_renderer.register_font_atlas(
+            font_id,
+            texture,
+            sampler,
+            glyphs,
+            line_height,
+            base_font_size,
+        );
+    }
+
+    /// Unregisters a font atlas and clears all text using it.
+    pub fn unregister_font_atlas(&mut self, font_id: &str) {
+        self.text_renderer.unregister_font_atlas(font_id);
+    }
+
+    /// Returns a reference to a registered font atlas, if it exists.
+    /// Useful for generating text vertices using the text_presets helpers.
+    pub fn get_font_atlas(
+        &self,
+        font_id: &str,
+    ) -> Option<&crate::software_renderer::d3d11_compositor::text_3d_renderer::FontAtlas> {
+        self.text_renderer.get_font_atlas(font_id)
+    }
+
+    /// Sets pre-built text vertices for rendering.
+    ///
+    /// Use the `text_presets::generate_text_vertices` helper to create the vertices
+    /// from a text string and font atlas.
+    ///
+    /// # Arguments
+    /// * `font_id` - The font atlas to use (must be registered first)
+    /// * `group_id` - Unique identifier for this text group (for updates/removal)
+    /// * `vertices` - Pre-built text vertices (from `generate_text_vertices`)
+    /// * `options` - Rendering options (depth, blend mode, etc.)
+    ///
+    /// # Example
+    /// ```rust
+    /// use flutter_embedder::software_renderer::d3d11_compositor::text_presets;
+    /// use flutter_embedder::software_renderer::d3d11_compositor::primitive_3d_renderer::PrimitiveOptions;
+    ///
+    /// if let Some(font) = overlay.get_font_atlas("default") {
+    ///     let vertices = text_presets::generate_text_vertices(
+    ///         "Hello World",
+    ///         [0.0, 5.0, 10.0],  // 3D position
+    ///         font,
+    ///         1.0,               // scale
+    ///         [1.0, 1.0, 1.0, 1.0], // white color
+    ///         [1.0, 0.0, 0.0],   // right direction
+    ///         [0.0, 1.0, 0.0],   // up direction
+    ///     );
+    ///     overlay.set_text("default", "greeting", &vertices, PrimitiveOptions::default());
+    /// }
+    /// ```
+    pub fn set_text(
+        &mut self,
+        font_id: &str,
+        group_id: &str,
+        vertices: &[crate::software_renderer::d3d11_compositor::text_3d_renderer::TexturedVertex3D],
+        options: PrimitiveOptions,
+    ) {
+        self.text_renderer
+            .set_text(font_id, group_id, vertices, options);
+    }
+
+    /// Clears text for a specific group.
+    pub fn clear_text(&mut self, font_id: &str, group_id: &str) {
+        self.text_renderer.clear_text(font_id, group_id);
+    }
+
+    /// Clears all text for a specific font.
+    pub fn clear_font_text(&mut self, font_id: &str) {
+        self.text_renderer.clear_font_text(font_id);
+    }
+
+    /// Clears all text from all fonts.
+    pub fn clear_all_text(&mut self) {
+        self.text_renderer.clear_all_text();
+    }
+
+    /// Latches the current text buffers for rendering.
+    /// Must be called before rendering to prepare the text geometry.
+    pub fn latch_queued_text(&mut self) {
+        self.text_renderer.latch_buffers();
+    }
+
     /// Processes a Windows keyboard message for this overlay.
     /// # Returns
     /// `true` if Flutter handled the event, `false` otherwise.

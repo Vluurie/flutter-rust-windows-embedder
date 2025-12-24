@@ -41,7 +41,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11ShaderResourceView, ID3D11Texture2D,
+    D3D11_QUERY_DESC, D3D11_QUERY_EVENT, ID3D11Device, ID3D11Query, ID3D11ShaderResourceView,
+    ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
 
@@ -102,6 +103,7 @@ pub(crate) fn init_overlay(
             angle_state_for_struct,
             d3d11_shared_handle_for_struct,
             angle_shared_texture_for_struct,
+            angle_query_for_struct,
             final_renderer_type,
         ) = {
             if OPENGL_CONTEXT_CREATED
@@ -134,6 +136,31 @@ pub(crate) fn init_overlay(
                             create_compositing_texture(game_device, width, height);
                         let texture = local_texture_on_game_device;
                         let srv = create_srv(game_device, &texture);
+
+                        // Create a D3D11 event query on ANGLE's device for GPU synchronization.
+                        // This query will be used to ensure the host doesn't copy from the
+                        // shared texture while ANGLE is still rendering to it.
+                        let angle_query: Option<ID3D11Query> = {
+                            let query_desc = D3D11_QUERY_DESC {
+                                Query: D3D11_QUERY_EVENT,
+                                MiscFlags: 0,
+                            };
+                            let mut query_opt: Option<ID3D11Query> = None;
+                            if angle_state
+                                .angle_d3d11_device
+                                .CreateQuery(&query_desc, Some(&mut query_opt))
+                                .is_ok()
+                            {
+                                info!("[InitOverlay] Created D3D11 event query for GPU sync.");
+                                query_opt
+                            } else {
+                                error!(
+                                    "[InitOverlay] Failed to create D3D11 event query - flickering may occur!"
+                                );
+                                None
+                            }
+                        };
+
                         let angle_state = Some(SendableAngleState(angle_state));
                         let rdr_cfg = build_opengl_renderer_config();
 
@@ -146,6 +173,7 @@ pub(crate) fn init_overlay(
                             angle_state,
                             Some(SendableHandle(shared_handle)),
                             Some(angle_texture_on_game_device),
+                            angle_query,
                             RendererType::OpenGL,
                         )
                     }
@@ -218,10 +246,14 @@ pub(crate) fn init_overlay(
             windows_handler: SendHwnd(hwnd),
             is_debug_build: initial_is_debug,
             angle_shared_texture: angle_shared_texture_for_struct,
+            angle_shared_texture_back: None, // Reserved for future double-buffering
             dart_send_port: Arc::new(AtomicI64::new(0)),
             renderer_type: final_renderer_type,
             angle_state: angle_state_for_struct,
             d3d11_shared_handle: d3d11_shared_handle_for_struct,
+            angle_frame_complete_query: angle_query_for_struct,
+            angle_frame_presented: std::sync::atomic::AtomicU64::new(0),
+            angle_frame_copied: std::sync::atomic::AtomicU64::new(0),
         });
 
         let user_data_for_engine: *mut c_void = &mut *overlay_box as *mut _ as *mut c_void;
@@ -397,6 +429,7 @@ fn build_software_renderer_config_tuple(
     Option<SendableAngleState>,
     Option<SendableHandle>,
     Option<ID3D11Texture2D>,
+    Option<ID3D11Query>,
     RendererType,
 ) {
     let texture = create_texture(game_device, width, height);
@@ -413,6 +446,7 @@ fn build_software_renderer_config_tuple(
         None,
         None,
         None,
+        None, // No GPU sync query needed for software renderer
         RendererType::Software,
     )
 }

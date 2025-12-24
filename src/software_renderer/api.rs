@@ -236,7 +236,7 @@ impl FlutterOverlay {
 
     /// Performs per-frame updates, preparing the GPU texture with the latest Flutter content.
     /// - For `Software` mode, it uploads pixel data from the CPU.
-    /// - For `OpenGL` mode, it copies the frame from the shared ANGLE texture.
+    /// - For `OpenGL` mode, it waits for ANGLE to finish rendering, then copies from the shared texture.
     pub fn tick(&self, context: &ID3D11DeviceContext) {
         if !self.visible || self.width == 0 || self.height == 0 {
             return;
@@ -254,8 +254,24 @@ impl FlutterOverlay {
                 }
 
                 if let Some(angle_texture) = &self.angle_shared_texture {
-                    unsafe {
-                        context.CopyResource(&self.texture, angle_texture);
+                    // Check if a new frame has been presented by Flutter.
+                    // We use Acquire ordering to ensure we see all memory writes
+                    // that happened before the Release in present_callback.
+                    let presented = self
+                        .angle_frame_presented
+                        .load(std::sync::atomic::Ordering::Acquire);
+                    let copied = self
+                        .angle_frame_copied
+                        .load(std::sync::atomic::Ordering::Relaxed);
+
+                    if presented > copied {
+                        unsafe {
+                            context.Flush();
+
+                            context.CopyResource(&self.texture, angle_texture);
+                        }
+                        self.angle_frame_copied
+                            .store(presented, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }

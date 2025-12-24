@@ -3,14 +3,14 @@ use std::{
     ffi::{CStr, CString},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr},
+        atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU64},
     },
     thread,
 };
 
 use windows::Win32::{
     Foundation::{HANDLE, HWND},
-    Graphics::Direct3D11::{ID3D11ShaderResourceView, ID3D11Texture2D},
+    Graphics::Direct3D11::{ID3D11Query, ID3D11ShaderResourceView, ID3D11Texture2D},
 };
 
 use crate::{
@@ -231,7 +231,20 @@ pub struct FlutterOverlay {
     /// The internal texture that Flutter (via ANGLE) renders into.
     pub(crate) gl_internal_linear_texture: Option<ID3D11Texture2D>,
     /// A D3D11 texture on the host device that shares the resource created by ANGLE.
+    /// With double buffering, this is the front buffer (index 0).
     pub(crate) angle_shared_texture: Option<ID3D11Texture2D>,
+    /// Second shared texture for double buffering (back buffer, index 1).
+    pub(crate) angle_shared_texture_back: Option<ID3D11Texture2D>,
+    /// D3D11 event query used for GPU synchronization between ANGLE and host device.
+    /// This query is signaled after ANGLE finishes rendering to ensure the host
+    /// doesn't copy from the shared texture while it's still being written to.
+    pub(crate) angle_frame_complete_query: Option<ID3D11Query>,
+    /// Frame counter incremented by Flutter's render thread after each present.
+    /// The host checks this to know when a new frame is available and GPU-ready.
+    pub(crate) angle_frame_presented: AtomicU64,
+    /// Frame counter for the last frame copied by the host. Used with angle_frame_presented
+    /// to detect when a new frame is available.
+    pub(crate) angle_frame_copied: AtomicU64,
 
     // --- FFI argument storage ---
     // These fields hold C-compatible strings and argument structures for the lifetime
@@ -310,6 +323,10 @@ impl Clone for FlutterOverlay {
             _custom_task_runners_struct: None,
             angle_state: None,
             d3d11_shared_handle: None,
+            angle_frame_complete_query: None,
+            angle_frame_presented: AtomicU64::new(0),
+            angle_frame_copied: AtomicU64::new(0),
+            angle_shared_texture_back: None,
 
             _assets_c: self._assets_c.clone(),
             _icu_c: self._icu_c.clone(),

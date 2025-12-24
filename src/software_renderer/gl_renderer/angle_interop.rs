@@ -878,6 +878,24 @@ unsafe impl Sync for SendableAngleState {}
 extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
+
+        // Wait for the host to copy the previous frame before starting a new one.
+        // This prevents the race condition where Flutter overwrites the shared texture
+        // while the host is still copying it. We use a short spin-wait with a timeout.
+        let presented = overlay
+            .angle_frame_presented
+            .load(std::sync::atomic::Ordering::Acquire);
+        let mut attempts = 0u32;
+        while overlay
+            .angle_frame_copied
+            .load(std::sync::atomic::Ordering::Relaxed)
+            < presented
+            && attempts < 50000
+        {
+            std::hint::spin_loop();
+            attempts += 1;
+        }
+
         if let Some(angle_state) = &mut overlay.angle_state {
             let state = &mut angle_state.0;
 
@@ -1088,7 +1106,8 @@ extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
 
 ///
 /// FFI callback for the Flutter engine to signal that a frame should be presented.
-/// For offscreen rendering, this typically just ensures all GL commands are flushed.
+/// For offscreen rendering, this ensures all GL commands are flushed and signals
+/// a D3D11 event query for cross-device GPU synchronization.
 ///
 /// # Arguments
 ///
@@ -1100,7 +1119,54 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
+            // Ensure all GL commands are completed on the GPU.
+            // This blocks until all GL rendering is done.
             (state.gl_finish)();
+
+            if let Ok(context) = state.angle_d3d11_device.GetImmediateContext() {
+                // Flush ANGLE's D3D11 context to submit all commands to the GPU driver.
+                // This is necessary because glFinish() only syncs at the GL level,
+                // but ANGLE may buffer D3D11 commands internally.
+                context.Flush();
+
+                // Use the D3D11 event query to create a GPU-side fence and wait for it.
+                // This ensures all GPU work is truly complete before we signal the host.
+                if let Some(query) = &overlay.angle_frame_complete_query {
+                    // End() inserts a fence into the command stream
+                    context.End(query);
+
+                    // Flush again to submit the fence
+                    context.Flush();
+
+                    // Poll until the fence is signaled (GPU work complete)
+                    let mut attempts = 0u32;
+                    loop {
+                        let mut query_data: i32 = 0;
+                        let result = context.GetData(
+                            query,
+                            Some(&mut query_data as *mut i32 as *mut std::ffi::c_void),
+                            std::mem::size_of::<i32>() as u32,
+                            0,
+                        );
+                        if result.is_ok() {
+                            break;
+                        }
+                        attempts += 1;
+                        if attempts > 100000 {
+                            // Safety valve - don't spin forever
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+            }
+
+            // Increment the frame counter AFTER GPU work is complete to signal
+            // to the host that a new frame is ready and safe to copy.
+            overlay
+                .angle_frame_presented
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+
             return true;
         }
         false

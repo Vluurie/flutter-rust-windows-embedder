@@ -881,19 +881,18 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
 
         // Wait for the host to copy the previous frame before starting a new one.
         // This prevents the race condition where Flutter overwrites the shared texture
-        // while the host is still copying it. We use a short spin-wait with a timeout.
+        // while the host is still copying it.
         let presented = overlay
             .angle_frame_presented
             .load(std::sync::atomic::Ordering::Acquire);
-        let mut attempts = 0u32;
+
+        // Spin-wait until the game has copied the previous frame
         while overlay
             .angle_frame_copied
-            .load(std::sync::atomic::Ordering::Relaxed)
+            .load(std::sync::atomic::Ordering::Acquire)
             < presented
-            && attempts < 50000
         {
             std::hint::spin_loop();
-            attempts += 1;
         }
 
         if let Some(angle_state) = &mut overlay.angle_state {

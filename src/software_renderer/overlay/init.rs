@@ -5,6 +5,7 @@ use crate::software_renderer::d3d11_compositor::post_processing_renderer::PostPr
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Primitive3DRenderer;
 use crate::software_renderer::d3d11_compositor::text_3d_renderer::Text3DRenderer;
 use crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll;
+use windows::core::Interface;
 
 use crate::software_renderer::gl_renderer::angle_interop::{
     AngleInteropState, SendableAngleState, build_opengl_renderer_config,
@@ -37,7 +38,7 @@ use crate::software_renderer::ticker::task_scheduler::{
 
 use log::{error, info};
 use std::collections::{HashMap, VecDeque};
-use std::ffi::c_char;
+use std::ffi::{CString, c_char};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{ffi::c_void, path::PathBuf, ptr};
@@ -45,7 +46,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_QUERY_DESC, D3D11_QUERY_EVENT, ID3D11Device, ID3D11Query, ID3D11ShaderResourceView,
     ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGISwapChain};
+use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIKeyedMutex, IDXGISwapChain};
 
 use super::overlay_impl::FlutterOverlay;
 
@@ -81,7 +82,7 @@ pub(crate) fn init_overlay(
         let (assets, icu, aot_opt) = load_flutter_build_paths(data_dir.clone());
         let initial_is_debug = aot_opt.is_none();
 
-        let (assets_c_temp, icu_c_temp, engine_argv_cs_temp, dart_argv_cs_temp) =
+        let (assets_c_temp, icu_c_temp, engine_argv_cs_temp, mut dart_argv_cs_temp) =
             build_project_args_and_strings(
                 &assets.to_string_lossy(),
                 &icu.to_string_lossy(),
@@ -99,12 +100,16 @@ pub(crate) fn init_overlay(
             rdr_cfg,
             texture_for_struct,
             srv_for_struct,
+            completed_texture_for_struct,
+            completed_srv_for_struct,
             gl_internal_linear_texture_for_struct,
             pixel_buffer_for_struct,
             angle_state_for_struct,
             d3d11_shared_handle_for_struct,
             angle_shared_texture_for_struct,
             angle_query_for_struct,
+            angle_keyed_mutex_for_struct,
+            game_keyed_mutex_for_struct,
             final_renderer_type,
         ) = {
             if OPENGL_CONTEXT_CREATED
@@ -133,10 +138,27 @@ pub(crate) fn init_overlay(
                             opt.unwrap()
                         };
 
+                        let angle_km: Option<IDXGIKeyedMutex> =
+                            angle_texture_on_angle_device.cast().ok();
+                        let game_km: Option<IDXGIKeyedMutex> =
+                            angle_texture_on_game_device.cast().ok();
+
+                        if angle_km.is_some() && game_km.is_some() {
+                            info!("[InitOverlay] IDXGIKeyedMutex acquired on both devices.");
+                        } else {
+                            error!(
+                                "[InitOverlay] Failed to get IDXGIKeyedMutex - cross-device sync unavailable!"
+                            );
+                        }
+
                         let local_texture_on_game_device =
                             create_compositing_texture(game_device, width, height);
                         let texture = local_texture_on_game_device;
                         let srv = create_srv(game_device, &texture);
+
+                        let completed_texture =
+                            create_compositing_texture(game_device, width, height);
+                        let completed_srv = create_srv(game_device, &completed_texture);
 
                         // Create a D3D11 event query on ANGLE's device for GPU synchronization.
                         // This query will be used to ensure the host doesn't copy from the
@@ -169,12 +191,16 @@ pub(crate) fn init_overlay(
                             rdr_cfg,
                             texture,
                             srv,
+                            completed_texture,
+                            completed_srv,
                             Some(angle_texture_on_angle_device),
                             None,
                             angle_state,
                             Some(SendableHandle(shared_handle)),
                             Some(angle_texture_on_game_device),
                             angle_query,
+                            angle_km,
+                            game_km,
                             RendererType::OpenGL,
                         )
                     }
@@ -199,6 +225,29 @@ pub(crate) fn init_overlay(
         let post_processor = PostProcessRenderer::new(device);
         let primitive_renderer = Primitive3DRenderer::new(device);
         let text_renderer = Text3DRenderer::new(device);
+
+        let game_copy_query: Option<ID3D11Query> = {
+            let query_desc = D3D11_QUERY_DESC {
+                Query: D3D11_QUERY_EVENT,
+                MiscFlags: 0,
+            };
+            let mut query_opt: Option<ID3D11Query> = None;
+            if game_device
+                .CreateQuery(&query_desc, Some(&mut query_opt))
+                .is_ok()
+            {
+                query_opt
+            } else {
+                error!("[InitOverlay] Failed to create game-side D3D11 event query.");
+                None
+            }
+        };
+        let renderer_arg = match final_renderer_type {
+            RendererType::OpenGL => "--renderer=opengl",
+            RendererType::Software => "--renderer=software",
+        };
+        dart_argv_cs_temp.push(CString::new(renderer_arg).unwrap());
+
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
 
@@ -220,6 +269,11 @@ pub(crate) fn init_overlay(
             y,
             texture: texture_for_struct,
             srv: srv_for_struct,
+            completed_texture: completed_texture_for_struct,
+            completed_srv: completed_srv_for_struct,
+            frame_ready: AtomicBool::new(false),
+            keyed_mutex_held: AtomicBool::new(false),
+            game_copy_complete_query: game_copy_query,
             gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
             post_processor,
             primitive_renderer,
@@ -249,7 +303,9 @@ pub(crate) fn init_overlay(
             windows_handler: SendHwnd(hwnd),
             is_debug_build: initial_is_debug,
             angle_shared_texture: angle_shared_texture_for_struct,
-            angle_shared_texture_back: None, // Reserved for future double-buffering
+            angle_shared_texture_back: None,
+            angle_keyed_mutex: angle_keyed_mutex_for_struct,
+            game_keyed_mutex: game_keyed_mutex_for_struct,
             dart_send_port: Arc::new(AtomicI64::new(0)),
             renderer_type: final_renderer_type,
             angle_state: angle_state_for_struct,
@@ -427,16 +483,22 @@ fn build_software_renderer_config_tuple(
     embedder::FlutterRendererConfig,
     ID3D11Texture2D,
     ID3D11ShaderResourceView,
+    ID3D11Texture2D,
+    ID3D11ShaderResourceView,
     Option<ID3D11Texture2D>,
     Option<Vec<u8>>,
     Option<SendableAngleState>,
     Option<SendableHandle>,
     Option<ID3D11Texture2D>,
     Option<ID3D11Query>,
+    Option<IDXGIKeyedMutex>,
+    Option<IDXGIKeyedMutex>,
     RendererType,
 ) {
     let texture = create_texture(game_device, width, height);
     let srv = create_srv(game_device, &texture);
+    let completed_texture = create_texture(game_device, width, height);
+    let completed_srv = create_srv(game_device, &completed_texture);
     let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
     let rdr_cfg = build_software_renderer_config();
 
@@ -444,12 +506,16 @@ fn build_software_renderer_config_tuple(
         rdr_cfg,
         texture,
         srv,
+        completed_texture,
+        completed_srv,
         None,
         pixel_buffer,
         None,
         None,
         None,
         None, // No GPU sync query needed for software renderer
+        None, // No keyed mutex for software renderer
+        None,
         RendererType::Software,
     )
 }

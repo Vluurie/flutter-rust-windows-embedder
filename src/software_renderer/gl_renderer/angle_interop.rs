@@ -2,7 +2,7 @@ use crate::bindings::embedder;
 
 use crate::software_renderer::gl_renderer::nvidia_aftermath;
 use crate::software_renderer::overlay::d3d::create_shared_texture_and_get_handle;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+use crate::software_renderer::overlay::overlay_impl::{FlutterOverlay, SendableHandle};
 
 use libloading::{Library, Symbol};
 use log::{error, info, warn};
@@ -346,6 +346,15 @@ pub struct AngleInteropState {
     /// Flag indicating that a device lost condition has been detected and recovery is needed.
     /// When true, the next call to make_current should attempt to reinitialize.
     pub device_lost: bool,
+
+    /// Pending resize dimensions. When set, make_current_callback will call
+    /// recreate_resources on the render thread (where it's safe) before proceeding.
+    pub pending_resize: Option<(u32, u32)>,
+
+    /// Old pbuffer surface pending deferred destruction. Set by cleanup_surface_resources
+    /// (called from the resize thread) and destroyed in make_current_callback (on the
+    /// render thread where the context is current).
+    pub old_pbuffer_surface: Option<*mut c_void>,
 }
 
 impl AngleInteropState {
@@ -534,6 +543,8 @@ impl AngleInteropState {
                 main_thread_id: None,
                 resource_thread_id: None,
                 device_lost: false,
+                pending_resize: None,
+                old_pbuffer_surface: None,
             }))
         }
     }
@@ -755,19 +766,10 @@ impl AngleInteropState {
     /// This is typically called before recreating resources for a new size.
     ///
     pub fn cleanup_surface_resources(&mut self) {
-        unsafe {
-            if self.pbuffer_surface != EGL_NO_SURFACE {
-                info!("[AngleInterop] Cleaning up EGLSurface.");
-
-                (self.egl_make_current)(
-                    self.display,
-                    EGL_NO_SURFACE,
-                    EGL_NO_SURFACE,
-                    EGL_NO_CONTEXT,
-                );
-                (self.egl_destroy_surface)(self.display, self.pbuffer_surface);
-                self.pbuffer_surface = EGL_NO_SURFACE;
-            }
+        if self.pbuffer_surface != EGL_NO_SURFACE {
+            info!("[AngleInterop] Deferring old EGLSurface cleanup to render thread.");
+            self.old_pbuffer_surface = Some(self.pbuffer_surface);
+            self.pbuffer_surface = EGL_NO_SURFACE;
         }
     }
 
@@ -835,6 +837,10 @@ impl Drop for AngleInteropState {
                 "[AngleInterop] Dropping AngleInteropState on thread {:?}.",
                 std::thread::current().id()
             );
+            // Destroy any pending old surface
+            if let Some(old_surface) = self.old_pbuffer_surface.take() {
+                (self.egl_destroy_surface)(self.display, old_surface);
+            }
             self.cleanup_surface_resources();
             (self.egl_make_current)(self.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
             if self.context != EGL_NO_CONTEXT {
@@ -879,20 +885,48 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
 
-        // Wait for the host to copy the previous frame before starting a new one.
-        // This prevents the race condition where Flutter overwrites the shared texture
-        // while the host is still copying it.
-        let presented = overlay
-            .angle_frame_presented
-            .load(std::sync::atomic::Ordering::Acquire);
+        if let Some(angle_state) = &mut overlay.angle_state {
+            if let Some((w, h)) = angle_state.0.pending_resize.take() {
+                info!(
+                    "[AngleInterop] Executing deferred resize {}x{} on render thread.",
+                    w, h
+                );
 
-        // Spin-wait until the game has copied the previous frame
-        while overlay
-            .angle_frame_copied
-            .load(std::sync::atomic::Ordering::Acquire)
-            < presented
-        {
-            std::hint::spin_loop();
+                match angle_state.0.recreate_resources(w, h) {
+                    Ok((new_angle_texture, new_shared_handle)) => {
+                        overlay.angle_keyed_mutex = new_angle_texture.cast().ok();
+
+                        overlay.gl_internal_linear_texture = Some(new_angle_texture);
+                        overlay.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
+
+                        // Stash old game-side shared texture so the NVIDIA driver's
+                        // internal threads don't access freed memory. It will be dropped
+                        // when reopen_shared_texture_if_needed() replaces it.
+                        overlay.angle_shared_texture_back = overlay.angle_shared_texture.take();
+                        overlay.game_keyed_mutex = None;
+                        let counter = overlay
+                            .angle_frame_presented
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        overlay
+                            .angle_frame_copied
+                            .store(counter, std::sync::atomic::Ordering::Relaxed);
+                        overlay
+                            .frame_ready
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+                        info!("[AngleInterop] Deferred resize completed successfully.");
+                    }
+                    Err(e) => {
+                        error!("[AngleInterop] Deferred resize failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Acquire the shared texture so ANGLE can write to it.
+        // Key 0 = "ANGLE can write". Blocks until game side calls ReleaseSync(0).
+        if let Some(mutex) = &overlay.angle_keyed_mutex {
+            let _ = mutex.AcquireSync(0, u32::MAX);
         }
 
         if let Some(angle_state) = &mut overlay.angle_state {
@@ -936,6 +970,20 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
             if state.main_thread_id != Some(current().id()) {
                 error!("FATAL: make_current_callback on wrong thread!");
                 return false;
+            }
+
+            // Deferred cleanup: destroy the old surface from the render thread
+            // where it was current. This is safe because eglMakeCurrent below
+            // will detach it before we destroy.
+            if let Some(old_surface) = state.old_pbuffer_surface.take() {
+                (state.egl_make_current)(
+                    state.display,
+                    EGL_NO_SURFACE,
+                    EGL_NO_SURFACE,
+                    EGL_NO_CONTEXT,
+                );
+                (state.egl_destroy_surface)(state.display, old_surface);
+                info!("[AngleInterop] Destroyed old EGLSurface on render thread.");
             }
 
             let result: EGLBoolean = (state.egl_make_current)(
@@ -1118,53 +1166,20 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
-            // Ensure all GL commands are completed on the GPU.
-            // This blocks until all GL rendering is done.
             (state.gl_finish)();
 
-            if let Ok(context) = state.angle_d3d11_device.GetImmediateContext() {
-                // Flush ANGLE's D3D11 context to submit all commands to the GPU driver.
-                // This is necessary because glFinish() only syncs at the GL level,
-                // but ANGLE may buffer D3D11 commands internally.
-                context.Flush();
-
-                // Use the D3D11 event query to create a GPU-side fence and wait for it.
-                // This ensures all GPU work is truly complete before we signal the host.
-                if let Some(query) = &overlay.angle_frame_complete_query {
-                    // End() inserts a fence into the command stream
-                    context.End(query);
-
-                    // Flush again to submit the fence
-                    context.Flush();
-
-                    // Poll until the fence is signaled (GPU work complete)
-                    let mut attempts = 0u32;
-                    loop {
-                        let mut query_data: i32 = 0;
-                        let result = context.GetData(
-                            query,
-                            Some(&mut query_data as *mut i32 as *mut std::ffi::c_void),
-                            std::mem::size_of::<i32>() as u32,
-                            0,
-                        );
-                        if result.is_ok() {
-                            break;
-                        }
-                        attempts += 1;
-                        if attempts > 100000 {
-                            // Safety valve - don't spin forever
-                            break;
-                        }
-                        std::hint::spin_loop();
-                    }
-                }
+            // Release the shared texture so the game device can read it.
+            if let Some(mutex) = &overlay.angle_keyed_mutex {
+                let _ = mutex.ReleaseSync(1);
             }
 
-            // Increment the frame counter AFTER GPU work is complete to signal
-            // to the host that a new frame is ready and safe to copy.
             overlay
                 .angle_frame_presented
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
+
+            overlay
+                .frame_ready
+                .store(true, std::sync::atomic::Ordering::Release);
 
             return true;
         }

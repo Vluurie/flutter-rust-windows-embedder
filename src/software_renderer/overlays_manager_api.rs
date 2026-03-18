@@ -821,9 +821,7 @@ impl FlutterOverlayManagerHandle {
         view_projection_matrix: &XMMatrix,
         depth_stencil_view: &Option<ID3D11DepthStencilView>,
     ) {
-        let Some(mut manager) = self.manager.try_lock() else {
-            return;
-        };
+        let mut manager = self.manager.lock();
 
         let context = match manager.shared_d3d_context.clone() {
             Some(ctx) => ctx,
@@ -874,9 +872,7 @@ impl FlutterOverlayManagerHandle {
     /// manager.render_ui();
     /// ```
     pub fn render_ui(&self) {
-        let Some(mut manager) = self.manager.try_lock() else {
-            return;
-        };
+        let mut manager = self.manager.lock();
 
         let context = match manager.shared_d3d_context.clone() {
             Some(ctx) => ctx,
@@ -896,13 +892,13 @@ impl FlutterOverlayManagerHandle {
         };
 
         let mut rendered_any = false;
+
         for overlay in manager.active_instances.values_mut() {
             if overlay.is_visible() {
-                overlay.tick(&context);
                 update_interactive_widget_hover_state(overlay);
 
                 overlay.post_processor.queue_texture_render(
-                    &overlay.srv,
+                    &overlay.completed_srv,
                     &overlay.effect_config,
                     overlay.x,
                     overlay.y,
@@ -914,8 +910,35 @@ impl FlutterOverlayManagerHandle {
             }
         }
 
+        let null_srvs: [Option<ID3D11ShaderResourceView>; 1] = [None];
+        unsafe {
+            context.PSSetShaderResources(0, Some(&null_srvs));
+        }
+
+        for overlay in manager.active_instances.values_mut() {
+            if overlay.is_visible() {
+                if overlay
+                    .frame_ready
+                    .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    overlay.reopen_shared_texture_if_needed(&context);
+                    overlay.tick(&context);
+                    unsafe {
+                        context.CopyResource(&overlay.completed_texture, &overlay.texture);
+                    }
+                }
+            }
+        }
+
         if rendered_any && !OVERLAY_SYSTEM_READY.load(Ordering::Acquire) {
             OVERLAY_SYSTEM_READY.store(true, Ordering::Release);
+            for (id, overlay) in manager.active_instances.iter() {
+                info!(
+                    "[OverlayManager] Overlay '{}' using renderer: {:?}",
+                    id, overlay.renderer_type
+                );
+            }
             manager.broadcast_platform_message("overlay/system_ready", b"true");
         }
     }
@@ -938,13 +961,26 @@ impl FlutterOverlayManagerHandle {
     /// manager.composite_overlays();
     /// ```
     pub fn tick_overlays(&self) {
-        let Some(manager) = self.manager.try_lock() else {
-            return;
-        };
+        let mut manager = self.manager.lock();
         if let Some(context) = manager.shared_d3d_context.clone() {
-            for overlay in manager.active_instances.values() {
+            let null_srvs: [Option<ID3D11ShaderResourceView>; 1] = [None];
+            unsafe {
+                context.PSSetShaderResources(0, Some(&null_srvs));
+            }
+
+            for overlay in manager.active_instances.values_mut() {
                 if overlay.is_visible() {
-                    overlay.tick(&context);
+                    if overlay
+                        .frame_ready
+                        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+                        .is_ok()
+                    {
+                        overlay.reopen_shared_texture_if_needed(&context);
+                        overlay.tick(&context);
+                        unsafe {
+                            context.CopyResource(&overlay.completed_texture, &overlay.texture);
+                        }
+                    }
                 }
             }
         }
@@ -966,9 +1002,7 @@ impl FlutterOverlayManagerHandle {
     /// manager.composite_overlays(); // Draws the UI on top of the world
     /// ```
     pub fn composite_overlays(&self, view_projection_matrix: &XMMatrix) {
-        let Some(mut manager) = self.manager.try_lock() else {
-            return;
-        };
+        let mut manager = self.manager.lock();
         if let Some(context) = manager.shared_d3d_context.clone() {
             let time = if manager.is_paused {
                 manager.time_at_pause
@@ -994,9 +1028,9 @@ impl FlutterOverlayManagerHandle {
                         overlay.primitive_renderer.draw(&mut frame_params);
                         overlay.text_renderer.draw(&mut frame_params);
 
-                        // Queue and draw the 2D Flutter UI
+                        // Queue and draw the 2D Flutter UI from the front buffer
                         overlay.post_processor.queue_texture_render(
-                            &overlay.srv,
+                            &overlay.completed_srv,
                             &overlay.effect_config,
                             overlay.x,
                             overlay.y,

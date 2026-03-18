@@ -12,7 +12,7 @@ use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
-use crate::software_renderer::overlay::overlay_impl::{FlutterOverlay, SendableHandle};
+use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;
@@ -28,6 +28,7 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+use windows::core::Interface;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RendererType {
@@ -170,44 +171,27 @@ impl FlutterOverlay {
                 if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
                     self.texture = create_texture(&game_device, self.width, self.height);
                     self.srv = create_srv(&game_device, &self.texture);
+                    self.completed_texture = create_texture(&game_device, self.width, self.height);
+                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
                     let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
                     pixel_buffer.resize(new_buffer_size, 0);
                 }
             }
             RendererType::OpenGL => {
                 if let Some(angle_state) = self.angle_state.as_mut() {
-                    info!("[handle_window_resize] Recreating ANGLE surface resources...");
-                    match angle_state.0.recreate_resources(self.width, self.height) {
-                        Ok((new_angle_texture, new_shared_handle)) => {
-                            let angle_texture_on_game_device: ID3D11Texture2D = unsafe {
-                                let mut opened_resource_option: Option<ID3D11Texture2D> = None;
-                                game_device
-                                .OpenSharedResource(new_shared_handle, &mut opened_resource_option)
-                                .expect("Failed to open new shared texture on game device after resize");
-                                opened_resource_option
-                                    .expect("Opened shared resource was null after resize")
-                            };
+                    info!(
+                        "[handle_window_resize] Deferring ANGLE resize to render thread ({}x{})",
+                        self.width, self.height
+                    );
 
-                            let local_compositing_texture =
-                                create_compositing_texture(&game_device, self.width, self.height);
+                    angle_state.0.pending_resize = Some((self.width, self.height));
 
-                            self.texture = local_compositing_texture;
-                            self.srv = create_srv(&game_device, &self.texture);
-                            self.gl_internal_linear_texture = Some(new_angle_texture);
-                            self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
-                            // Update angle_shared_texture with the opened shared resource
-                            self.angle_shared_texture = Some(angle_texture_on_game_device);
-                            info!(
-                                "[handle_window_resize] ANGLE surface resources recreated successfully."
-                            );
-                        }
-                        Err(e) => {
-                            error!(
-                                "[handle_window_resize] Failed to recreate ANGLE resources: {}",
-                                e
-                            );
-                        }
-                    }
+                    self.texture =
+                        create_compositing_texture(&game_device, self.width, self.height);
+                    self.srv = create_srv(&game_device, &self.texture);
+                    self.completed_texture =
+                        create_compositing_texture(&game_device, self.width, self.height);
+                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
                 } else {
                     warn!(
                         "[handle_window_resize] ANGLE state not found for OpenGL renderer during resize."
@@ -234,6 +218,30 @@ impl FlutterOverlay {
         start_task_runner(self);
     }
 
+    /// After a deferred resize, the game-side shared texture needs to be re-opened.
+    /// Call this before tick() when the overlay has mutable access.
+    pub fn reopen_shared_texture_if_needed(&mut self, context: &ID3D11DeviceContext) {
+        if self.angle_shared_texture.is_none() {
+            if let Some(handle) = &self.d3d11_shared_handle {
+                unsafe {
+                    let game_device: ID3D11Device = context.GetDevice().unwrap();
+                    let mut opt: Option<ID3D11Texture2D> = None;
+                    if game_device.OpenSharedResource(handle.0, &mut opt).is_ok() {
+                        if let Some(tex) = opt {
+                            self.game_keyed_mutex = tex.cast().ok();
+                            self.angle_shared_texture = Some(tex);
+                            // Now safe to drop the old shared texture
+                            self.angle_shared_texture_back = None;
+                            info!(
+                                "[FlutterOverlay] Re-opened shared texture on game device after resize."
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Performs per-frame updates, preparing the GPU texture with the latest Flutter content.
     /// - For `Software` mode, it uploads pixel data from the CPU.
     /// - For `OpenGL` mode, it waits for ANGLE to finish rendering, then copies from the shared texture.
@@ -254,9 +262,6 @@ impl FlutterOverlay {
                 }
 
                 if let Some(angle_texture) = &self.angle_shared_texture {
-                    // Check if a new frame has been presented by Flutter.
-                    // We use Acquire ordering to ensure we see all memory writes
-                    // that happened before the Release in present_callback.
                     let presented = self
                         .angle_frame_presented
                         .load(std::sync::atomic::Ordering::Acquire);
@@ -266,9 +271,15 @@ impl FlutterOverlay {
 
                     if presented > copied {
                         unsafe {
-                            context.Flush();
+                            if let Some(mutex) = &self.game_keyed_mutex {
+                                let _ = mutex.AcquireSync(1, u32::MAX);
+                            }
 
                             context.CopyResource(&self.texture, angle_texture);
+
+                            if let Some(mutex) = &self.game_keyed_mutex {
+                                let _ = mutex.ReleaseSync(0);
+                            }
                         }
                         self.angle_frame_copied
                             .store(presented, std::sync::atomic::Ordering::Relaxed);
@@ -309,6 +320,17 @@ impl FlutterOverlay {
                 );
                 return false;
             }
+
+            self.game_keyed_mutex.take();
+            self.angle_keyed_mutex.take();
+
+            let counter = self
+                .angle_frame_presented
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.angle_frame_copied
+                .store(counter, std::sync::atomic::Ordering::Relaxed);
+            self.frame_ready
+                .store(false, std::sync::atomic::Ordering::Relaxed);
 
             match angle_state.0.recreate_resources(self.width, self.height) {
                 Ok((new_angle_texture, new_shared_handle)) => {
@@ -353,6 +375,14 @@ impl FlutterOverlay {
 
                     self.texture = local_compositing_texture;
                     self.srv = create_srv(&game_device, &self.texture);
+                    self.completed_texture =
+                        create_compositing_texture(&game_device, self.width, self.height);
+                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
+                    // Recreate keyed mutexes before moving textures.
+                    // New mutex defaults to "released with key 0".
+                    self.angle_keyed_mutex = new_angle_texture.cast().ok();
+                    self.game_keyed_mutex = angle_texture_on_game_device.cast().ok();
+
                     self.gl_internal_linear_texture = Some(new_angle_texture);
                     self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
                     self.angle_shared_texture = Some(angle_texture_on_game_device);

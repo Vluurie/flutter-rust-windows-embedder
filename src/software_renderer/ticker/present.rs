@@ -15,7 +15,6 @@ pub extern "C" fn on_present(
     }
     let ov = unsafe { &mut *(user_data as *mut FlutterOverlay) };
 
-    // FIX: Use `if let Some(...)` to safely get the pixel_buffer
     if let Some(pixel_buffer) = ov.pixel_buffer.as_mut() {
         if allocation.is_null() {
             error!("on_present: allocation is null");
@@ -47,6 +46,10 @@ pub extern "C" fn on_present(
                 ptr::copy_nonoverlapping(src, dst, bytes);
             }
         }
+
+        // Signal that a completed frame is ready for the double-buffer swap.
+        ov.frame_ready
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     true

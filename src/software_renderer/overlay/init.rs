@@ -100,8 +100,6 @@ pub(crate) fn init_overlay(
             rdr_cfg,
             texture_for_struct,
             srv_for_struct,
-            completed_texture_for_struct,
-            completed_srv_for_struct,
             gl_internal_linear_texture_for_struct,
             pixel_buffer_for_struct,
             angle_state_for_struct,
@@ -156,10 +154,6 @@ pub(crate) fn init_overlay(
                         let texture = local_texture_on_game_device;
                         let srv = create_srv(game_device, &texture);
 
-                        let completed_texture =
-                            create_compositing_texture(game_device, width, height);
-                        let completed_srv = create_srv(game_device, &completed_texture);
-
                         // Create a D3D11 event query on ANGLE's device for GPU synchronization.
                         // This query will be used to ensure the host doesn't copy from the
                         // shared texture while ANGLE is still rendering to it.
@@ -191,8 +185,6 @@ pub(crate) fn init_overlay(
                             rdr_cfg,
                             texture,
                             srv,
-                            completed_texture,
-                            completed_srv,
                             Some(angle_texture_on_angle_device),
                             None,
                             angle_state,
@@ -226,22 +218,6 @@ pub(crate) fn init_overlay(
         let primitive_renderer = Primitive3DRenderer::new(device);
         let text_renderer = Text3DRenderer::new(device);
 
-        let game_copy_query: Option<ID3D11Query> = {
-            let query_desc = D3D11_QUERY_DESC {
-                Query: D3D11_QUERY_EVENT,
-                MiscFlags: 0,
-            };
-            let mut query_opt: Option<ID3D11Query> = None;
-            if game_device
-                .CreateQuery(&query_desc, Some(&mut query_opt))
-                .is_ok()
-            {
-                query_opt
-            } else {
-                error!("[InitOverlay] Failed to create game-side D3D11 event query.");
-                None
-            }
-        };
         let renderer_arg = match final_renderer_type {
             RendererType::OpenGL => "--renderer=opengl",
             RendererType::Software => "--renderer=software",
@@ -269,11 +245,6 @@ pub(crate) fn init_overlay(
             y,
             texture: texture_for_struct,
             srv: srv_for_struct,
-            completed_texture: completed_texture_for_struct,
-            completed_srv: completed_srv_for_struct,
-            frame_ready: AtomicBool::new(false),
-            keyed_mutex_held: AtomicBool::new(false),
-            game_copy_complete_query: game_copy_query,
             gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
             post_processor,
             primitive_renderer,
@@ -483,8 +454,6 @@ fn build_software_renderer_config_tuple(
     embedder::FlutterRendererConfig,
     ID3D11Texture2D,
     ID3D11ShaderResourceView,
-    ID3D11Texture2D,
-    ID3D11ShaderResourceView,
     Option<ID3D11Texture2D>,
     Option<Vec<u8>>,
     Option<SendableAngleState>,
@@ -497,8 +466,6 @@ fn build_software_renderer_config_tuple(
 ) {
     let texture = create_texture(game_device, width, height);
     let srv = create_srv(game_device, &texture);
-    let completed_texture = create_texture(game_device, width, height);
-    let completed_srv = create_srv(game_device, &completed_texture);
     let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
     let rdr_cfg = build_software_renderer_config();
 
@@ -506,8 +473,6 @@ fn build_software_renderer_config_tuple(
         rdr_cfg,
         texture,
         srv,
-        completed_texture,
-        completed_srv,
         None,
         pixel_buffer,
         None,

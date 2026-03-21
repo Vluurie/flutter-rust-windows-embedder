@@ -910,9 +910,6 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                         overlay
                             .angle_frame_copied
                             .store(counter, std::sync::atomic::Ordering::Relaxed);
-                        overlay
-                            .frame_ready
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
 
                         info!("[AngleInterop] Deferred resize completed successfully.");
                     }
@@ -1176,10 +1173,6 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
             overlay
                 .angle_frame_presented
                 .fetch_add(1, std::sync::atomic::Ordering::Release);
-
-            overlay
-                .frame_ready
-                .store(true, std::sync::atomic::Ordering::Release);
 
             return true;
         }

@@ -171,8 +171,6 @@ impl FlutterOverlay {
                 if let Some(pixel_buffer) = self.pixel_buffer.as_mut() {
                     self.texture = create_texture(&game_device, self.width, self.height);
                     self.srv = create_srv(&game_device, &self.texture);
-                    self.completed_texture = create_texture(&game_device, self.width, self.height);
-                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
                     let new_buffer_size = (self.width as usize) * (self.height as usize) * 4;
                     pixel_buffer.resize(new_buffer_size, 0);
                 }
@@ -189,9 +187,6 @@ impl FlutterOverlay {
                     self.texture =
                         create_compositing_texture(&game_device, self.width, self.height);
                     self.srv = create_srv(&game_device, &self.texture);
-                    self.completed_texture =
-                        create_compositing_texture(&game_device, self.width, self.height);
-                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
                 } else {
                     warn!(
                         "[handle_window_resize] ANGLE state not found for OpenGL renderer during resize."
@@ -329,8 +324,6 @@ impl FlutterOverlay {
                 .load(std::sync::atomic::Ordering::Relaxed);
             self.angle_frame_copied
                 .store(counter, std::sync::atomic::Ordering::Relaxed);
-            self.frame_ready
-                .store(false, std::sync::atomic::Ordering::Relaxed);
 
             match angle_state.0.recreate_resources(self.width, self.height) {
                 Ok((new_angle_texture, new_shared_handle)) => {
@@ -375,9 +368,6 @@ impl FlutterOverlay {
 
                     self.texture = local_compositing_texture;
                     self.srv = create_srv(&game_device, &self.texture);
-                    self.completed_texture =
-                        create_compositing_texture(&game_device, self.width, self.height);
-                    self.completed_srv = create_srv(&game_device, &self.completed_texture);
                     // Recreate keyed mutexes before moving textures.
                     // New mutex defaults to "released with key 0".
                     self.angle_keyed_mutex = new_angle_texture.cast().ok();

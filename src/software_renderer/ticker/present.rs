@@ -46,10 +46,6 @@ pub extern "C" fn on_present(
                 ptr::copy_nonoverlapping(src, dst, bytes);
             }
         }
-
-        // Signal that a completed frame is ready for the double-buffer swap.
-        ov.frame_ready
-            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     true

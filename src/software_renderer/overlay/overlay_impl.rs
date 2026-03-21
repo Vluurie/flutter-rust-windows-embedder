@@ -109,26 +109,6 @@ pub struct FlutterOverlay {
     /// **IMPORTANT: Must be a valid SRV, initialized by `init_overlay`.**
     pub srv: ID3D11ShaderResourceView,
 
-    /// Double-buffer front texture — the completed frame safe to read from.
-    /// While `texture`/`srv` are the back buffer (being written to by tick),
-    /// these are the front buffer (last completed frame, safe to composite).
-    pub completed_texture: ID3D11Texture2D,
-    pub completed_srv: ID3D11ShaderResourceView,
-
-    /// Set to `true` by the GL present callback when ANGLE finishes rendering a frame.
-    /// The compositor checks this before swapping buffers — if false, the swap is skipped
-    /// and the previous completed frame is shown again (avoiding half-rendered textures).
-    pub frame_ready: AtomicBool,
-
-    /// Set to true by make_current_callback when it successfully acquires the keyed mutex.
-    /// Checked by present_callback to know whether it should release the mutex.
-    pub(crate) keyed_mutex_held: AtomicBool,
-
-    /// D3D11 event query on the game device. Used in `tick()` to fence the
-    /// CopyResource from the shared texture, ensuring the GPU finishes reading
-    /// before `angle_frame_copied` unblocks Flutter's next frame.
-    pub game_copy_complete_query: Option<ID3D11Query>,
-
     /// Current width of the overlay in pixels.
     /// Can be read by other parts of the crate for layout purposes.
     /// Updated by `handle_window_resize`. Must be > 0 for rendering.
@@ -307,11 +287,6 @@ impl Clone for FlutterOverlay {
             engine_atomic_ptr: self.engine_atomic_ptr.clone(),
             texture: self.texture.clone(),
             srv: self.srv.clone(),
-            completed_texture: self.completed_texture.clone(),
-            completed_srv: self.completed_srv.clone(),
-            frame_ready: AtomicBool::new(false),
-            keyed_mutex_held: AtomicBool::new(false),
-            game_copy_complete_query: None,
             post_processor: self.post_processor.clone(),
             primitive_renderer: self.primitive_renderer.clone(),
             text_renderer: self.text_renderer.clone(),

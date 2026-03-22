@@ -1,6 +1,7 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Once;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -73,6 +74,156 @@ fn get_overlay_manager() -> Option<&'static Mutex<OverlayManager>> {
     }
 }
 
+/// Callback invoked when a visibility toggle keybind fires.
+/// Receives `(overlay_id, new_visibility)` and returns whether the event was consumed.
+pub type VisibilityToggleCallback = Arc<dyn Fn(&str, bool) -> bool + Send + Sync + 'static>;
+
+/// Callback for a generic keybind action. Receives the action_id.
+pub type KeybindCallback = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
+/// A parsed keybind with optional modifier requirements.
+#[derive(Clone, Debug)]
+struct Keybind {
+    /// The primary virtual key code.
+    vk: u16,
+    /// Required modifier state.
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+}
+
+impl Keybind {
+    /// Checks if the required modifiers are currently held down.
+    fn modifiers_match(&self) -> bool {
+        use winapi::um::winuser::{GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT};
+        unsafe {
+            let ctrl_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000u16 as i16) != 0;
+            let shift_down = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+            let alt_down = (GetAsyncKeyState(VK_MENU) & 0x8000u16 as i16) != 0;
+            self.ctrl == ctrl_down && self.shift == shift_down && self.alt == alt_down
+        }
+    }
+}
+
+/// Converts a single key token (no modifiers) to a Windows virtual key code.
+fn single_key_to_vk(name: &str) -> Option<u16> {
+    match name {
+        // Function keys
+        "F1" => Some(0x70),   "F2" => Some(0x71),   "F3" => Some(0x72),
+        "F4" => Some(0x73),   "F5" => Some(0x74),   "F6" => Some(0x75),
+        "F7" => Some(0x76),   "F8" => Some(0x77),   "F9" => Some(0x78),
+        "F10" => Some(0x79),  "F11" => Some(0x7A),  "F12" => Some(0x7B),
+        "F13" => Some(0x7C),  "F14" => Some(0x7D),  "F15" => Some(0x7E),
+        "F16" => Some(0x7F),  "F17" => Some(0x80),  "F18" => Some(0x81),
+        "F19" => Some(0x82),  "F20" => Some(0x83),  "F21" => Some(0x84),
+        "F22" => Some(0x85),  "F23" => Some(0x86),  "F24" => Some(0x87),
+        // Common keys
+        "ESCAPE" | "ESC" => Some(0x1B),
+        "SPACE" => Some(0x20),
+        "TAB" => Some(0x09),
+        "ENTER" | "RETURN" => Some(0x0D),
+        "BACKSPACE" | "BACK" => Some(0x08),
+        "DELETE" | "DEL" => Some(0x2E),
+        "INSERT" | "INS" => Some(0x2D),
+        "HOME" => Some(0x24),
+        "END" => Some(0x23),
+        "PAGEUP" | "PGUP" => Some(0x21),
+        "PAGEDOWN" | "PGDN" => Some(0x22),
+        // Arrow keys
+        "UP" => Some(0x26),
+        "DOWN" => Some(0x28),
+        "LEFT" => Some(0x25),
+        "RIGHT" => Some(0x27),
+        // Lock/toggle keys
+        "PAUSE" => Some(0x13),
+        "CAPSLOCK" | "CAPS" => Some(0x14),
+        "NUMLOCK" => Some(0x90),
+        "SCROLLLOCK" => Some(0x91),
+        "PRINTSCREEN" | "PRTSC" => Some(0x2C),
+        // Numpad
+        "NUMPAD0" | "NUM0" => Some(0x60),
+        "NUMPAD1" | "NUM1" => Some(0x61),
+        "NUMPAD2" | "NUM2" => Some(0x62),
+        "NUMPAD3" | "NUM3" => Some(0x63),
+        "NUMPAD4" | "NUM4" => Some(0x64),
+        "NUMPAD5" | "NUM5" => Some(0x65),
+        "NUMPAD6" | "NUM6" => Some(0x66),
+        "NUMPAD7" | "NUM7" => Some(0x67),
+        "NUMPAD8" | "NUM8" => Some(0x68),
+        "NUMPAD9" | "NUM9" => Some(0x69),
+        "NUMPADMULTIPLY" | "NUMMUL" => Some(0x6A),
+        "NUMPADADD" | "NUMADD" => Some(0x6B),
+        "NUMPADSUBTRACT" | "NUMSUB" => Some(0x6D),
+        "NUMPADDECIMAL" | "NUMDEC" => Some(0x6E),
+        "NUMPADDIVIDE" | "NUMDIV" => Some(0x6F),
+        "NUMPADENTER" => Some(0x0D),
+        // Punctuation / OEM
+        "SEMICOLON" => Some(0xBA),
+        "EQUAL" | "EQUALS" => Some(0xBB),
+        "COMMA" => Some(0xBC),
+        "MINUS" => Some(0xBD),
+        "PERIOD" | "DOT" => Some(0xBE),
+        "SLASH" => Some(0xBF),
+        "BACKQUOTE" | "TILDE" | "GRAVE" => Some(0xC0),
+        "BRACKETLEFT" => Some(0xDB),
+        "BACKSLASH" => Some(0xDC),
+        "BRACKETRIGHT" => Some(0xDD),
+        "QUOTE" | "APOSTROPHE" => Some(0xDE),
+        // Media keys
+        "MEDIAPLAYPAUSE" | "PLAYPAUSE" => Some(0xB3),
+        "MEDIASTOP" | "STOP" => Some(0xB2),
+        "MEDIANEXTTRACK" | "NEXT" => Some(0xB0),
+        "MEDIAPREVTRACK" | "PREV" | "PREVIOUS" => Some(0xB1),
+        "VOLUMEUP" | "VOLUP" => Some(0xAF),
+        "VOLUMEDOWN" | "VOLDOWN" => Some(0xAE),
+        "VOLUMEMUTE" | "MUTE" => Some(0xAD),
+        // Browser keys
+        "BROWSERBACK" => Some(0xA6),
+        "BROWSERFORWARD" => Some(0xA7),
+        "BROWSERREFRESH" => Some(0xA8),
+        // Single character: A-Z, 0-9
+        s if s.len() == 1 => {
+            let ch = s.as_bytes()[0];
+            match ch {
+                b'A'..=b'Z' => Some(ch as u16),
+                b'0'..=b'9' => Some(ch as u16),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Parses a keybind string like `"Ctrl+Shift+F1"`, `"Alt+T"`, or just `"F1"` into a `Keybind`.
+fn parse_keybind(input: &str) -> Option<Keybind> {
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut alt = false;
+    let mut primary_vk: Option<u16> = None;
+
+    for part in input.split('+') {
+        let token = part.trim().to_uppercase();
+        match token.as_str() {
+            "CTRL" | "CONTROL" => ctrl = true,
+            "SHIFT" => shift = true,
+            "ALT" => alt = true,
+            _ => {
+                if primary_vk.is_some() {
+                    warn!("[Keybind] Multiple non-modifier keys in '{}', ignoring", input);
+                    return None;
+                }
+                primary_vk = single_key_to_vk(&token);
+                if primary_vk.is_none() {
+                    warn!("[Keybind] Unknown key '{}' in '{}'", token, input);
+                    return None;
+                }
+            }
+        }
+    }
+
+    primary_vk.map(|vk| Keybind { vk, ctrl, shift, alt })
+}
+
 /// Manages all active Flutter overlay instances.
 ///
 /// This struct is the central point for creating, tracking, rendering, and managing the lifecycle
@@ -99,6 +250,13 @@ pub struct OverlayManager {
     time_at_pause: f32,
     /// Cooldown counter for device recovery attempts. When > 0, recovery won't be attempted.
     recovery_cooldown: u32,
+    /// Keybind-to-overlay visibility toggles. Key: original keybind string, Value: (parsed keybind, overlay_id, optional callback).
+    /// Processed *before* the visibility gate so hidden overlays can be toggled back on.
+    visibility_toggles: Vec<(String, Keybind, String, Option<VisibilityToggleCallback>)>,
+    /// Generic keybind actions. (key_string, keybind, action_id, overlay_id, callback, allow_repeat).
+    /// Fired at the manager level so they work even when overlays are invisible.
+    /// The callback fires directly on the input thread — no platform message involved.
+    keybind_actions: Vec<(String, Keybind, String, String, Option<KeybindCallback>, bool)>,
 }
 
 impl OverlayManager {
@@ -115,6 +273,8 @@ impl OverlayManager {
             is_paused: false,
             time_at_pause: 0.0,
             recovery_cooldown: 0,
+            visibility_toggles: Vec::new(),
+            keybind_actions: Vec::new(),
         }
     }
 
@@ -342,6 +502,48 @@ impl OverlayManager {
             return false;
         }
 
+        // Visibility toggle keybinds — processed BEFORE the visibility gate
+        // so that hidden overlays can be toggled back on. Only fires on key-down.
+        if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN) {
+            let vk = wparam.0 as u16;
+            let is_repeat = (lparam.0 >> 30) & 1 != 0;
+            for (_key_str, keybind, overlay_id, callback) in &self.visibility_toggles {
+                if keybind.vk == vk && keybind.modifiers_match() {
+                    if is_repeat {
+                        return true;
+                    }
+                    if let Some(overlay) = self.active_instances.get_mut(overlay_id) {
+                        let new_visible = !overlay.is_visible();
+                        overlay.set_visibility(new_visible);
+
+                        let msg_payload = if new_visible { b"true" as &[u8] } else { b"false" };
+                        let _ = overlay.send_platform_message("overlay/visibility", msg_payload);
+                        if let Some(cb) = callback {
+                            cb(overlay_id, new_visible);
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Generic keybind actions — also processed before the visibility gate.
+        if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN) {
+            let vk = wparam.0 as u16;
+            let is_repeat = (lparam.0 >> 30) & 1 != 0;
+            for (_key_str, keybind, action_id, _overlay_id, callback, allow_repeat) in &self.keybind_actions {
+                if keybind.vk == vk && keybind.modifiers_match() {
+                    if is_repeat && !allow_repeat {
+                        return true;
+                    }
+                    if let Some(cb) = callback {
+                        cb(action_id);
+                    }
+                    return true;
+                }
+            }
+        }
+
         let is_pointer_event = matches!(
             msg,
             WM_MOUSEMOVE
@@ -383,10 +585,8 @@ impl OverlayManager {
         } else if is_key_event {
             if let Some(focused_id) = &self.focused_overlay_id {
                 if let Some(overlay_instance) = self.active_instances.get(focused_id) {
-                    if overlay_instance.is_visible() {
-                        if overlay_instance.handle_keyboard_event(msg, wparam, lparam) {
-                            return true;
-                        }
+                    if overlay_instance.handle_keyboard_event(msg, wparam, lparam) {
+                        return true;
                     }
                 }
             }
@@ -558,6 +758,106 @@ impl OverlayManager {
         match self.get_instance_mut(identifier) {
             Ok(overlay) => overlay.set_visibility(is_visible),
             Err(e) => warn!("[OverlayManager] set_overlay_visibility failed: {}", e),
+        }
+    }
+
+    /// Registers a keybind that toggles an overlay's visibility.
+    ///
+    /// The toggle is processed *before* the visibility gate in input handling,
+    /// which solves the chicken-and-egg problem: a hidden overlay can't receive
+    /// the key event that would make it visible again, so the manager handles it.
+    ///
+    /// # Arguments
+    /// * `key_name` - A human-readable key name (e.g., `"F1"`, `"Escape"`, `"T"`).
+    /// * `overlay_id` - The identifier of the overlay to toggle.
+    /// * `callback` - Optional callback invoked after toggling with `(overlay_id, new_visibility)`.
+    ///   Return `true` to consume the event.
+    pub fn register_visibility_toggle(
+        &mut self,
+        key_name: &str,
+        overlay_id: &str,
+        callback: Option<VisibilityToggleCallback>,
+    ) {
+        if let Some(keybind) = parse_keybind(key_name) {
+            // Remove any existing toggle for the same key string
+            self.visibility_toggles.retain(|(k, _, _, _)| k != key_name);
+            info!(
+                "[OverlayManager] Registered visibility toggle: '{}' (VK 0x{:X}, ctrl={}, shift={}, alt={}) → overlay '{}'",
+                key_name, keybind.vk, keybind.ctrl, keybind.shift, keybind.alt, overlay_id
+            );
+            self.visibility_toggles.push((
+                key_name.to_string(),
+                keybind,
+                overlay_id.to_string(),
+                callback,
+            ));
+        } else {
+            warn!(
+                "[OverlayManager] Failed to parse keybind '{}' for visibility toggle",
+                key_name
+            );
+        }
+    }
+
+    /// Removes a previously registered visibility toggle keybind.
+    pub fn unregister_visibility_toggle(&mut self, key_name: &str) {
+        let before = self.visibility_toggles.len();
+        self.visibility_toggles.retain(|(k, _, _, _)| k != key_name);
+        if self.visibility_toggles.len() == before {
+            warn!(
+                "[OverlayManager] No visibility toggle found for '{}' to unregister",
+                key_name
+            );
+        }
+    }
+
+    /// Registers a generic keybind action that fires a callback.
+    /// Works regardless of overlay visibility.
+    pub fn register_keybind_action(
+        &mut self,
+        key_name: &str,
+        action_id: &str,
+        overlay_id: &str,
+        callback: Option<KeybindCallback>,
+        allow_repeat: bool,
+    ) {
+        if let Some(keybind) = parse_keybind(key_name) {
+            self.keybind_actions.retain(|(k, _, a, _, _, _)| !(k == key_name && a == action_id));
+            self.keybind_actions.push((
+                key_name.to_string(),
+                keybind,
+                action_id.to_string(),
+                overlay_id.to_string(),
+                callback,
+                allow_repeat,
+            ));
+        } else {
+            warn!(
+                "[OverlayManager] Failed to parse keybind '{}' for action '{}'",
+                key_name, action_id
+            );
+        }
+    }
+
+    /// Removes a keybind action by action_id.
+    pub fn unregister_keybind_action(&mut self, action_id: &str) {
+        self.keybind_actions.retain(|(_, _, a, _, _, _)| a != action_id);
+    }
+
+    /// Updates the key for an existing keybind action (rebind).
+    pub fn rebind_keybind_action(&mut self, action_id: &str, new_key_name: &str) {
+        if let Some(new_keybind) = parse_keybind(new_key_name) {
+            for (key_str, keybind, a, _, _, _) in &mut self.keybind_actions {
+                if a == action_id {
+                    *key_str = new_key_name.to_string();
+                    *keybind = new_keybind.clone();
+                }
+            }
+        } else {
+            warn!(
+                "[OverlayManager] Failed to parse keybind '{}' for rebind of '{}'",
+                new_key_name, action_id
+            );
         }
     }
 
@@ -844,7 +1144,7 @@ impl FlutterOverlayManagerHandle {
         };
 
         for overlay in manager.active_instances.values_mut() {
-            if overlay.is_visible() {
+            {
                 overlay.primitive_renderer.draw(&mut frame_params);
                 overlay.text_renderer.draw(&mut frame_params);
             }
@@ -1621,6 +1921,91 @@ impl FlutterOverlayManagerHandle {
             if let Ok(overlay) = manager.get_instance_mut(identifier) {
                 overlay.set_visibility(is_visible);
             }
+        }
+    }
+
+    /// Registers a keybind that toggles an overlay's visibility.
+    ///
+    /// Solves the chicken-and-egg problem: when an overlay is hidden, it can't receive
+    /// input events — so it can never process the key that would show it again. This
+    /// registration moves the toggle logic to the manager level, *before* the visibility
+    /// gate, so the key always works regardless of overlay state.
+    ///
+    /// # Arguments
+    /// * `key_name` - A human-readable key name (e.g., `"F1"`, `"Escape"`, `"T"`).
+    /// * `overlay_id` - The identifier of the overlay to toggle.
+    /// * `callback` - Optional callback `(overlay_id, new_visibility) -> consumed`.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// use std::sync::Arc;
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// // F1 toggles the HUD overlay
+    /// manager.register_visibility_toggle("F1", "hud", None);
+    /// // F2 toggles debug panel with a callback
+    /// manager.register_visibility_toggle("F2", "debug_panel", Some(Arc::new(|id, visible| {
+    ///     println!("Debug panel '{}' is now {}", id, if visible { "shown" } else { "hidden" });
+    ///     true
+    /// })));
+    /// ```
+    pub fn register_visibility_toggle(
+        &self,
+        key_name: &str,
+        overlay_id: &str,
+        callback: Option<VisibilityToggleCallback>,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.register_visibility_toggle(key_name, overlay_id, callback);
+        }
+    }
+
+    /// Removes a previously registered visibility toggle keybind.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.unregister_visibility_toggle("F1");
+    /// ```
+    pub fn unregister_visibility_toggle(&self, key_name: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.unregister_visibility_toggle(key_name);
+        }
+    }
+
+    /// Registers a generic keybind action. When the key is pressed, the optional Rust
+    /// callback fires and a platform message is sent to the overlay on channel
+    /// Works even when the overlay is invisible — the callback fires directly on the input thread.
+    ///
+    /// # Example
+    /// ```rust, no_run
+    /// let manager = get_flutter_overlay_manager_handle().unwrap();
+    /// manager.register_keybind_action("F5", "freeze_time", "main_hud", None, false);
+    /// manager.register_keybind_action("F6", "speed_up", "main_hud", None, true);
+    /// ```
+    pub fn register_keybind_action(
+        &self,
+        key_name: &str,
+        action_id: &str,
+        overlay_id: &str,
+        callback: Option<KeybindCallback>,
+        allow_repeat: bool,
+    ) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.register_keybind_action(key_name, action_id, overlay_id, callback, allow_repeat);
+        }
+    }
+
+    /// Removes a keybind action by action_id.
+    pub fn unregister_keybind_action(&self, action_id: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.unregister_keybind_action(action_id);
+        }
+    }
+
+    /// Changes the key for an existing keybind action without re-registering.
+    pub fn rebind_keybind_action(&self, action_id: &str, new_key_name: &str) {
+        if let Some(mut manager) = self.manager.try_lock() {
+            manager.rebind_keybind_action(action_id, new_key_name);
         }
     }
 

@@ -284,6 +284,9 @@ pub(crate) fn init_overlay(
             angle_frame_complete_query: angle_query_for_struct,
             angle_frame_presented: std::sync::atomic::AtomicU64::new(0),
             angle_frame_copied: std::sync::atomic::AtomicU64::new(0),
+            damage_rects: std::sync::Mutex::new(Vec::new()),
+            frame_damage_rects: std::sync::Mutex::new(Vec::new()),
+            full_repaint_needed: std::sync::atomic::AtomicBool::new(true),
         });
 
         let user_data_for_engine: *mut c_void = &mut *overlay_box as *mut _ as *mut c_void;

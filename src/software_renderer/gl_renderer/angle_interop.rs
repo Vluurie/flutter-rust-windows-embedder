@@ -166,6 +166,9 @@ type EglQueryDeviceAttribEXT = unsafe extern "C" fn(*mut c_void, i32, *mut isize
 /// Defines the signature for `glFinish`, an OpenGL command that blocks the calling
 /// thread until all previously submitted rendering commands have been fully completed by the GPU.
 type GlFinish = unsafe extern "C" fn();
+/// Defines the signature for `glFlush`, an OpenGL command that ensures all previously
+/// submitted commands are dispatched to the GPU without waiting for completion.
+type GlFlush = unsafe extern "C" fn();
 /// Defines the signature for `eglCreatePbufferFromClientBuffer`, used to create an
 /// EGL pbuffer surface that wraps an existing native graphics resource, such as a Direct3D texture.
 /// This is a key function for GPU-level interoperability.
@@ -292,10 +295,11 @@ pub struct AngleInteropState {
     /// the shared `resource_context` for background asset loading.
     egl_create_context: EglCreateContext,
 
-    /// Function pointer to `glFinish`, called by the `present_callback` to create a crucial
-    /// synchronization point. It ensures that all rendering commands from the GL client
-    /// are fully executed on the GPU before the host application uses the backing D3D11 texture.
+    /// Function pointer to `glFinish`, used during device recovery and resize to ensure
+    /// all GL commands complete before recreating resources.
     gl_finish: GlFinish,
+    /// Function pointer to `glFlush`, non-blocking variant used in the present callback.
+    gl_flush: GlFlush,
 
     /// Function pointer to `eglCreatePbufferFromClientBuffer`, the most critical function
     /// for this interoperability. It is used to create the `pbuffer_surface` by wrapping a
@@ -486,6 +490,7 @@ impl AngleInteropState {
                 mem::transmute(get_proc_assert("eglDestroyContext"));
             let egl_terminate: EglTerminate = mem::transmute(get_proc_assert("eglTerminate"));
             let gl_finish: GlFinish = mem::transmute(get_proc_assert("glFinish"));
+            let gl_flush: GlFlush = mem::transmute(get_proc_assert("glFlush"));
             let egl_create_pbuffer_from_client_buffer: EglCreatePbufferFromClientBuffer =
                 mem::transmute(get_proc_assert("eglCreatePbufferFromClientBuffer"));
             let egl_destroy_surface: EglDestroySurface =
@@ -532,6 +537,7 @@ impl AngleInteropState {
                 egl_terminate,
                 egl_create_context,
                 gl_finish,
+                gl_flush,
                 egl_create_pbuffer_from_client_buffer,
                 egl_destroy_surface,
                 display,
@@ -1149,21 +1155,49 @@ extern "C" fn clear_current_callback(user_data: *mut c_void) -> bool {
 }
 
 ///
-/// FFI callback for the Flutter engine to signal that a frame should be presented.
-/// For offscreen rendering, this ensures all GL commands are flushed and signals
-/// a D3D11 event query for cross-device GPU synchronization.
+/// FFI callback for the Flutter engine to signal that a frame should be presented,
+/// with damage information for dirty region management.
 ///
-/// # Arguments
+/// Replaces the simpler `present` callback. Flutter passes `FlutterPresentInfo` containing
+/// `buffer_damage` — the regions that were modified in this frame. We store these rects
+/// so `populate_existing_damage_callback` can feed them back next frame, telling Flutter
+/// which parts of the FBO are already dirty.
 ///
-/// * `user_data`: A raw pointer to the `FlutterOverlay` instance associated with this engine.
-///
-extern "C" fn present_callback(user_data: *mut c_void) -> bool {
+extern "C" fn present_with_info_callback(
+    user_data: *mut c_void,
+    present_info: *const embedder::FlutterPresentInfo,
+) -> bool {
     unsafe {
         let overlay = &*(user_data as *mut FlutterOverlay);
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
-            (state.gl_finish)();
+            // Non-blocking flush. GPU sync is handled by the keyed mutex.
+            (state.gl_flush)();
+
+            if !present_info.is_null() {
+                let info = &*present_info;
+
+                // Buffer damage → fed back via populate_existing_damage next frame.
+                if let Ok(mut rects) = overlay.damage_rects.lock() {
+                    rects.clear();
+                    let num = info.buffer_damage.num_rects;
+                    if num > 0 && !info.buffer_damage.damage.is_null() {
+                        let slice = std::slice::from_raw_parts(info.buffer_damage.damage, num);
+                        rects.extend_from_slice(slice);
+                    }
+                }
+
+                // Frame damage → accumulated until tick() drains it for partial copy.
+                // Multiple presents can fire between tick() calls during fast interaction.
+                if let Ok(mut rects) = overlay.frame_damage_rects.lock() {
+                    let num = info.frame_damage.num_rects;
+                    if num > 0 && !info.frame_damage.damage.is_null() {
+                        let slice = std::slice::from_raw_parts(info.frame_damage.damage, num);
+                        rects.extend_from_slice(slice);
+                    }
+                }
+            }
 
             // Release the shared texture so the game device can read it.
             if let Some(mutex) = &overlay.angle_keyed_mutex {
@@ -1177,6 +1211,53 @@ extern "C" fn present_callback(user_data: *mut c_void) -> bool {
             return true;
         }
         false
+    }
+}
+
+///
+/// FFI callback that tells Flutter which regions of the FBO are already dirty
+/// (i.e. were modified since the FBO was last used). Flutter uses this to avoid
+/// re-rasterizing unchanged areas.
+///
+/// With a single FBO (always ID 0), we feed back the buffer damage rects that
+/// Flutter gave us in the previous `present_with_info` call.
+///
+extern "C" fn populate_existing_damage_callback(
+    user_data: *mut c_void,
+    _fbo_id: isize,
+    existing_damage: *mut embedder::FlutterDamage,
+) {
+    unsafe {
+        let overlay = &*(user_data as *mut FlutterOverlay);
+
+        if existing_damage.is_null() {
+            return;
+        }
+
+        // If a full repaint is needed (resize, device recovery), report zero existing
+        // damage — Flutter interprets this as "the entire FBO is clean, repaint everything".
+        if overlay
+            .full_repaint_needed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            (*existing_damage).num_rects = 0;
+            (*existing_damage).damage = ptr::null_mut();
+            return;
+        }
+
+        if let Ok(rects) = overlay.damage_rects.lock() {
+            if rects.is_empty() {
+                (*existing_damage).num_rects = 0;
+                (*existing_damage).damage = ptr::null_mut();
+            } else {
+                (*existing_damage).num_rects = rects.len();
+                (*existing_damage).damage = rects.as_ptr() as *mut embedder::FlutterRect;
+            }
+        } else {
+            // Mutex poisoned — force full repaint.
+            (*existing_damage).num_rects = 0;
+            (*existing_damage).damage = ptr::null_mut();
+        }
     }
 }
 
@@ -1277,7 +1358,7 @@ pub fn build_opengl_renderer_config() -> embedder::FlutterRendererConfig {
                 struct_size: std::mem::size_of::<embedder::FlutterOpenGLRendererConfig>(),
                 make_current: Some(make_current_callback),
                 clear_current: Some(clear_current_callback),
-                present: Some(present_callback),
+                present: None,
                 fbo_callback: Some(fbo_callback),
                 make_resource_current: Some(make_resource_current_callback),
                 fbo_reset_after_present: false,
@@ -1285,8 +1366,8 @@ pub fn build_opengl_renderer_config() -> embedder::FlutterRendererConfig {
                 surface_transformation: None,
                 gl_external_texture_frame_callback: None,
                 fbo_with_frame_info_callback: None,
-                present_with_info: None,
-                populate_existing_damage: None,
+                present_with_info: Some(present_with_info_callback),
+                populate_existing_damage: Some(populate_existing_damage_callback),
             },
         },
     }

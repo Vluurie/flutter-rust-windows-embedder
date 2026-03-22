@@ -15,7 +15,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    bindings::embedder::{self, FlutterEngine, FlutterKeyEventType},
+    bindings::embedder::{self, FlutterEngine, FlutterKeyEventType, FlutterRect},
     software_renderer::{
         api::RendererType,
         d3d11_compositor::{
@@ -255,6 +255,15 @@ pub struct FlutterOverlay {
     /// to detect when a new frame is available.
     pub(crate) angle_frame_copied: AtomicU64,
 
+    /// Buffer damage rects from `present_with_info`. Fed back to Flutter via
+    /// `populate_existing_damage` so it can skip re-rasterizing unchanged areas.
+    pub(crate) damage_rects: Mutex<Vec<FlutterRect>>,
+    /// Frame damage rects from `present_with_info`. Consumed by `tick()` to
+    /// copy only the changed regions from the shared texture.
+    pub(crate) frame_damage_rects: Mutex<Vec<FlutterRect>>,
+    /// When true, forces a full repaint on the next frame. Set on resize and device recovery.
+    pub(crate) full_repaint_needed: AtomicBool,
+
     // --- FFI argument storage ---
     // These fields hold C-compatible strings and argument structures for the lifetime
     // of the engine, as the engine may read from this memory at any time.
@@ -336,6 +345,9 @@ impl Clone for FlutterOverlay {
             angle_frame_complete_query: None,
             angle_frame_presented: AtomicU64::new(0),
             angle_frame_copied: AtomicU64::new(0),
+            damage_rects: Mutex::new(Vec::new()),
+            frame_damage_rects: Mutex::new(Vec::new()),
+            full_repaint_needed: AtomicBool::new(true),
             angle_shared_texture_back: None,
             angle_keyed_mutex: None,
             game_keyed_mutex: None,

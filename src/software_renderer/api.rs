@@ -24,7 +24,7 @@ use std::sync::atomic::Ordering;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Direct3D11::{
-    ID3D11Device, ID3D11DeviceContext, ID3D11SamplerState, ID3D11ShaderResourceView,
+    D3D11_BOX, ID3D11Device, ID3D11DeviceContext, ID3D11SamplerState, ID3D11ShaderResourceView,
     ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
@@ -187,6 +187,10 @@ impl FlutterOverlay {
                     self.texture =
                         create_compositing_texture(&game_device, self.width, self.height);
                     self.srv = create_srv(&game_device, &self.texture);
+
+                    // Force full repaint after resize since the FBO dimensions changed.
+                    self.full_repaint_needed
+                        .store(true, std::sync::atomic::Ordering::Release);
                 } else {
                     warn!(
                         "[handle_window_resize] ANGLE state not found for OpenGL renderer during resize."
@@ -265,19 +269,63 @@ impl FlutterOverlay {
                         .load(std::sync::atomic::Ordering::Relaxed);
 
                     if presented > copied {
+                        let damage: Vec<_> = self
+                            .frame_damage_rects
+                            .lock()
+                            .map(|mut r| r.drain(..).collect())
+                            .unwrap_or_default();
+
+                        // No damage → nothing changed, reuse previous texture as-is.
+                        if damage.is_empty() {
+                            self.angle_frame_copied
+                                .store(presented, Ordering::Relaxed);
+                            return;
+                        }
+
                         unsafe {
                             if let Some(mutex) = &self.game_keyed_mutex {
                                 let _ = mutex.AcquireSync(1, u32::MAX);
                             }
 
-                            context.CopyResource(&self.texture, angle_texture);
+                            let w = self.width;
+                            let h = self.height;
+
+                            for rect in &damage {
+                                let left = (rect.left as u32).min(w);
+                                let top = (rect.top as u32).min(h);
+                                let right = (rect.right as u32).min(w);
+                                let bottom = (rect.bottom as u32).min(h);
+
+                                if left >= right || top >= bottom {
+                                    continue;
+                                }
+
+                                let src_box = D3D11_BOX {
+                                    left,
+                                    top,
+                                    front: 0,
+                                    right,
+                                    bottom,
+                                    back: 1,
+                                };
+                                context.CopySubresourceRegion(
+                                    &self.texture,
+                                    0,
+                                    left,
+                                    top,
+                                    0,
+                                    angle_texture,
+                                    0,
+                                    Some(&src_box),
+                                );
+                            }
 
                             if let Some(mutex) = &self.game_keyed_mutex {
                                 let _ = mutex.ReleaseSync(0);
                             }
                         }
                         self.angle_frame_copied
-                            .store(presented, std::sync::atomic::Ordering::Relaxed);
+                            .store(presented, Ordering::Relaxed);
                     }
                 }
             }
@@ -376,6 +424,10 @@ impl FlutterOverlay {
                     self.gl_internal_linear_texture = Some(new_angle_texture);
                     self.d3d11_shared_handle = Some(SendableHandle(new_shared_handle));
                     self.angle_shared_texture = Some(angle_texture_on_game_device);
+
+                    // Force full repaint after device recovery since all FBO content is lost.
+                    self.full_repaint_needed
+                        .store(true, Ordering::Release);
 
                     info!(
                         "[FlutterOverlay:'{}'] Device recovery successful!",

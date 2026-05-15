@@ -136,9 +136,12 @@ pub struct FlutterOverlay {
     /// Self::paint_flutter_overlay(overlay_instance, painter, id);
     /// ```
     pub visible: bool,
+    pub keep_alive: bool,
+    pub ui_hidden: bool,
 
-    /// Configuration for shader effects applied to the overlay.
     pub effect_config: EffectConfig,
+    pub effect_frames_remaining: u32,
+    pub effect_total_frames: u32,
 
     /// A user-defined name for this overlay instance. Useful for identification,
     /// logging, or debugging purposes by any part of the crate.
@@ -316,7 +319,11 @@ impl Clone for FlutterOverlay {
             height: self.height,
             renderer_type: self.renderer_type.clone(),
             visible: self.visible,
+            keep_alive: self.keep_alive,
+            ui_hidden: self.ui_hidden,
             effect_config: self.effect_config,
+            effect_frames_remaining: self.effect_frames_remaining,
+            effect_total_frames: self.effect_total_frames,
             x: self.x,
             y: self.y,
             windows_handler: self.windows_handler,

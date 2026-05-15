@@ -238,6 +238,7 @@ pub struct OverlayManager {
     pub focused_overlay_id: Option<String>,
     /// Shared Direct3D device context for ticking overlays.
     shared_d3d_context: Option<ID3D11DeviceContext>,
+    swap_chain: Option<IDXGISwapChain>,
     /// The width of the screen in pixels.
     screen_width: u32,
     /// The height of the screen in pixels.
@@ -267,6 +268,7 @@ impl OverlayManager {
             overlay_order: Vec::new(),
             focused_overlay_id: None,
             shared_d3d_context: None,
+            swap_chain: None,
             screen_width: 0,
             screen_height: 0,
             start_time: Instant::now(),
@@ -497,9 +499,9 @@ impl OverlayManager {
     }
 
     /// Handles input events, routing them based on Z-order and focus.
-    fn handle_input_event(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    fn handle_input_event(&mut self, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> (bool, Option<(String, bool, VisibilityToggleCallback)>) {
         if self.active_instances.is_empty() {
-            return false;
+            return (false, None);
         }
 
         // Visibility toggle keybinds — processed BEFORE the visibility gate
@@ -510,18 +512,32 @@ impl OverlayManager {
             for (_key_str, keybind, overlay_id, callback) in &self.visibility_toggles {
                 if keybind.vk == vk && keybind.modifiers_match() {
                     if is_repeat {
-                        return true;
+                        return (true, None);
                     }
                     if let Some(overlay) = self.active_instances.get_mut(overlay_id) {
-                        let new_visible = !overlay.is_visible();
+                        if overlay.keep_alive {
+                            let ui_hidden = !overlay.ui_hidden;
+                            overlay.ui_hidden = ui_hidden;
+                            let msg_payload = if ui_hidden { b"false" as &[u8] } else { b"true" };
+                            let _ = overlay.send_platform_message("overlay/visibility", msg_payload);
+                            let deferred = callback.as_ref().map(|cb| (overlay_id.clone(), !ui_hidden, cb.clone()));
+                            return (true, deferred);
+                        }
+
+                        let was_visible = overlay.is_visible();
+                        let new_visible = !was_visible;
                         overlay.set_visibility(new_visible);
+
+                        if new_visible && !was_visible {
+                            if let Some(sc) = &self.swap_chain {
+                                overlay.handle_window_resize_force(0, 0, self.screen_width, self.screen_height, sc);
+                            }
+                        }
 
                         let msg_payload = if new_visible { b"true" as &[u8] } else { b"false" };
                         let _ = overlay.send_platform_message("overlay/visibility", msg_payload);
-                        if let Some(cb) = callback {
-                            cb(overlay_id, new_visible);
-                        }
-                        return true;
+                        let deferred = callback.as_ref().map(|cb| (overlay_id.clone(), new_visible, cb.clone()));
+                        return (true, deferred);
                     }
                 }
             }
@@ -534,12 +550,12 @@ impl OverlayManager {
             for (_key_str, keybind, action_id, _overlay_id, callback, allow_repeat) in &self.keybind_actions {
                 if keybind.vk == vk && keybind.modifiers_match() {
                     if is_repeat && !allow_repeat {
-                        return true;
+                        return (true, None);
                     }
                     if let Some(cb) = callback {
                         cb(action_id);
                     }
-                    return true;
+                    return (true, None);
                 }
             }
         }
@@ -578,7 +594,7 @@ impl OverlayManager {
                         .load(Ordering::SeqCst)
                     {
                         self.bring_to_front(Some(identifier));
-                        return true;
+                        return (true, None);
                     }
                 }
             }
@@ -586,13 +602,13 @@ impl OverlayManager {
             if let Some(focused_id) = &self.focused_overlay_id {
                 if let Some(overlay_instance) = self.active_instances.get(focused_id) {
                     if overlay_instance.handle_keyboard_event(msg, wparam, lparam) {
-                        return true;
+                        return (true, None);
                     }
                 }
             }
         }
 
-        false
+        (false, None)
     }
 
     /// Handles WM_SETCURSOR, respecting Z-order and hover states.
@@ -633,6 +649,7 @@ impl OverlayManager {
     ) {
         self.screen_width = width;
         self.screen_height = height;
+        self.swap_chain = Some(swap_chain.clone());
 
         if self.active_instances.is_empty() {
             return;
@@ -1203,6 +1220,20 @@ impl FlutterOverlayManagerHandle {
                 overlay.tick(&context);
                 update_interactive_widget_hover_state(overlay);
 
+                if overlay.effect_frames_remaining > 0 {
+                    overlay.effect_frames_remaining -= 1;
+                    let t = 1.0 - (overlay.effect_frames_remaining as f32 / overlay.effect_total_frames.max(1) as f32);
+                    let fade = 1.0 - t;
+                    overlay.effect_config.params = EffectParams::Glitch(HologramParams {
+                        aberration_amount: 0.005 * fade,
+                        glitch_speed: 10.0 * fade,
+                        scanline_intensity: 0.1 * fade,
+                    });
+                    if overlay.effect_frames_remaining == 0 {
+                        overlay.effect_config = EffectConfig::default();
+                    }
+                }
+
                 overlay.post_processor.queue_texture_render(
                     &overlay.srv,
                     &overlay.effect_config,
@@ -1658,15 +1689,15 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_fullscreen_effect(Some("main_menu"), PostEffect::Hologram);
     /// ```
     pub fn set_fullscreen_effect(&self, identifier: Option<&str>, effect: PostEffect) {
-        if let Some(mut manager) = self.manager.try_lock() {
-            if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.effect_config.params = match effect {
-                    PostEffect::Passthrough => EffectParams::None,
-                    PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
-                    PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
-                };
-                overlay.effect_config.target = EffectTarget::Fullscreen;
-            }
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.effect_config.params = match effect {
+                PostEffect::Passthrough => EffectParams::None,
+                PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
+                PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                PostEffect::Glitch => EffectParams::Glitch(HologramParams::default()),
+            };
+            overlay.effect_config.target = EffectTarget::Fullscreen;
         }
     }
 
@@ -1695,6 +1726,7 @@ impl FlutterOverlayManagerHandle {
                     PostEffect::Passthrough => EffectParams::None,
                     PostEffect::Hologram => EffectParams::Hologram(HologramParams::default()),
                     PostEffect::WarpField => EffectParams::WarpField(WarpFieldParams::default()),
+                    PostEffect::Glitch => EffectParams::Glitch(HologramParams::default()),
                 };
                 overlay.effect_config.target = EffectTarget::Widget(bounds);
             }
@@ -1710,11 +1742,30 @@ impl FlutterOverlayManagerHandle {
     /// let manager = get_flutter_overlay_manager_handle().unwrap();
     /// manager.clear_effect(Some("main_menu"));
     /// ```
+    pub fn set_keep_alive(&self, identifier: Option<&str>, keep_alive: bool) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.keep_alive = keep_alive;
+        }
+    }
+
+    /// Triggers a frame-based glitch effect that auto-fades and auto-clears.
+    /// NOTE: Currently hardcoded to the Glitch shader. Should be refactored
+    /// to accept a dynamic EffectParams for any effect type.
+    pub fn trigger_glitch_effect(&self, identifier: Option<&str>, frames: u32) {
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.effect_frames_remaining = frames;
+            overlay.effect_total_frames = frames;
+            overlay.effect_config.params = EffectParams::Glitch(HologramParams::default());
+            overlay.effect_config.target = EffectTarget::Fullscreen;
+        }
+    }
+
     pub fn clear_effect(&self, identifier: Option<&str>) {
-        if let Some(mut manager) = self.manager.try_lock() {
-            if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.effect_config = EffectConfig::default();
-            }
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.effect_config = EffectConfig::default();
         }
     }
 
@@ -1733,10 +1784,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.update_effect_config(Some("main_menu"), config);
     /// ```
     pub fn update_effect_config(&self, identifier: Option<&str>, config: EffectConfig) {
-        if let Some(mut manager) = self.manager.try_lock() {
-            if let Ok(overlay) = manager.get_instance_mut(identifier) {
-                overlay.effect_config = config;
-            }
+        let mut manager = self.manager.lock();
+        if let Ok(overlay) = manager.get_instance_mut(identifier) {
+            overlay.effect_config = config;
         }
     }
 
@@ -1768,11 +1818,17 @@ impl FlutterOverlayManagerHandle {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> bool {
-        if let Some(mut manager) = self.manager.try_lock() {
-            manager.handle_input_event(hwnd, msg, wparam, lparam)
-        } else {
-            false
+        type DeferredCb = (String, bool, VisibilityToggleCallback);
+        let (result, deferred_cb): (bool, Option<DeferredCb>) =
+            if let Some(mut manager) = self.manager.try_lock() {
+                manager.handle_input_event(hwnd, msg, wparam, lparam)
+            } else {
+                (false, None)
+            };
+        if let Some((overlay_id, visible, cb)) = deferred_cb {
+            cb(&overlay_id, visible);
         }
+        result
     }
 
     /// Requests that the topmost active overlay under the cursor set the mouse cursor style.
@@ -1901,6 +1957,16 @@ impl FlutterOverlayManagerHandle {
             if let Ok(overlay) = manager.get_instance(identifier) {
                 return manager.focused_overlay_id.as_deref() == Some(overlay.name.as_str());
             }
+        }
+        false
+    }
+
+    pub fn has_rendered_frame(&self) -> bool {
+        if let Some(manager) = self.manager.try_lock() {
+            return manager
+                .active_instances
+                .values()
+                .any(|o| o.is_visible() && o.angle_frame_presented.load(std::sync::atomic::Ordering::Relaxed) > 0);
         }
         false
     }

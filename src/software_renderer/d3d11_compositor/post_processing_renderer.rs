@@ -120,6 +120,12 @@ impl PostProcessRenderer {
                 gpu_params.scanline_intensity = p.scanline_intensity;
                 PostEffect::Hologram
             }
+            EffectParams::Glitch(p) => {
+                gpu_params.aberration_amount = p.aberration_amount;
+                gpu_params.glitch_speed = p.glitch_speed;
+                gpu_params.scanline_intensity = p.scanline_intensity;
+                PostEffect::Glitch
+            }
             EffectParams::WarpField(p) => {
                 gpu_params.speed = p.speed;
                 gpu_params.density = p.density;
@@ -262,6 +268,15 @@ impl PostProcessRenderer {
                 .expect("CreatePixelShader for warp_field failed");
         }
         shaders.insert(PostEffect::WarpField, warp_field_ps.unwrap());
+
+        let glitch_bytes = include_bytes!("./shaders/glitch_ps.cso");
+        let mut glitch_ps: Option<ID3D11PixelShader> = None;
+        unsafe {
+            device
+                .CreatePixelShader(glitch_bytes, None, Some(&mut glitch_ps))
+                .expect("CreatePixelShader for glitch failed");
+        }
+        shaders.insert(PostEffect::Glitch, glitch_ps.unwrap());
 
         shaders
     }

@@ -137,7 +137,31 @@ impl FlutterOverlay {
         new_height: u32,
         swap_chain: &IDXGISwapChain,
     ) {
-        if self.width == new_width
+        self.handle_window_resize_inner(new_x, new_y, new_width, new_height, swap_chain, false);
+    }
+
+    pub fn handle_window_resize_force(
+        &mut self,
+        new_x: i32,
+        new_y: i32,
+        new_width: u32,
+        new_height: u32,
+        swap_chain: &IDXGISwapChain,
+    ) {
+        self.handle_window_resize_inner(new_x, new_y, new_width, new_height, swap_chain, true);
+    }
+
+    fn handle_window_resize_inner(
+        &mut self,
+        new_x: i32,
+        new_y: i32,
+        new_width: u32,
+        new_height: u32,
+        swap_chain: &IDXGISwapChain,
+        force: bool,
+    ) {
+        if !force
+            && self.width == new_width
             && self.height == new_height
             && self.x == new_x
             && self.y == new_y

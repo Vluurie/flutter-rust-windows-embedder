@@ -4,6 +4,7 @@ pub enum PostEffect {
     Passthrough,
     Hologram,
     WarpField,
+    Glitch,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,6 +38,7 @@ pub enum EffectParams {
     None,
     Hologram(HologramParams),
     WarpField(WarpFieldParams),
+    Glitch(HologramParams),
 }
 
 #[derive(Clone, Copy, Debug, Default)]

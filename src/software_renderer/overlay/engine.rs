@@ -34,10 +34,13 @@ pub(crate) fn run_engine(
             return Err(err_msg);
         }
 
-        assert_eq!(
-            user_data as *mut FlutterOverlay, overlay_raw_ptr,
-            "user_data and overlay_raw_ptr should match if user_data is the overlay pointer"
-        );
+        if user_data as *mut FlutterOverlay != overlay_raw_ptr {
+            let err_msg =
+                "[Engine] user_data and overlay_raw_ptr mismatch — cannot safely proceed."
+                    .to_string();
+            error!("{}", err_msg);
+            return Err(err_msg);
+        }
 
         let init_result = (engine_dll_arc.FlutterEngineInitialize)(
             version,

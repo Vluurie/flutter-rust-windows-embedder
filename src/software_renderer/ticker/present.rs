@@ -1,5 +1,6 @@
 use log::error;
 use std::ptr;
+use std::sync::atomic::Ordering;
 
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
@@ -46,6 +47,9 @@ pub extern "C" fn on_present(
                 ptr::copy_nonoverlapping(src, dst, bytes);
             }
         }
+
+        ov.software_frame_dirty.store(true, Ordering::Release);
+        ov.software_first_frame_rendered.store(true, Ordering::Release);
     }
 
     true

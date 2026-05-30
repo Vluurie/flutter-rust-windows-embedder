@@ -111,16 +111,17 @@ impl FlutterOverlay {
             engine_args_opt.as_deref(),
         );
 
-        if overlay_box.engine.0.is_null() {
-            error!(
-                "[FlutterOverlay::create] Initialization failed: Engine handle is null after init."
-            );
-            return Err(FlutterEmbedderError::InitializationFailed(
-                "Engine handle was null after internal init.".to_string(),
-            ));
+        match overlay_box {
+            Some(ob) if !ob.engine.0.is_null() => Ok(ob),
+            _ => {
+                error!(
+                    "[FlutterOverlay::create] Initialization failed: Engine handle is null after init."
+                );
+                Err(FlutterEmbedderError::InitializationFailed(
+                    "Engine handle was null after internal init.".to_string(),
+                ))
+            }
         }
-
-        Ok(overlay_box)
     }
 
     /// Returns the raw `FlutterEngine` pointer. **USE WITH CAUTION.**
@@ -301,8 +302,7 @@ impl FlutterOverlay {
 
                         // No damage → nothing changed, reuse previous texture as-is.
                         if damage.is_empty() {
-                            self.angle_frame_copied
-                                .store(presented, Ordering::Relaxed);
+                            self.angle_frame_copied.store(presented, Ordering::Relaxed);
                             return;
                         }
 
@@ -348,8 +348,7 @@ impl FlutterOverlay {
                                 let _ = mutex.ReleaseSync(0);
                             }
                         }
-                        self.angle_frame_copied
-                            .store(presented, Ordering::Relaxed);
+                        self.angle_frame_copied.store(presented, Ordering::Relaxed);
                     }
                 }
             }
@@ -450,8 +449,7 @@ impl FlutterOverlay {
                     self.angle_shared_texture = Some(angle_texture_on_game_device);
 
                     // Force full repaint after device recovery since all FBO content is lost.
-                    self.full_repaint_needed
-                        .store(true, Ordering::Release);
+                    self.full_repaint_needed.store(true, Ordering::Release);
 
                     info!(
                         "[FlutterOverlay:'{}'] Device recovery successful!",
@@ -959,6 +957,20 @@ impl FlutterOverlay {
     /// Checks if the overlay is currently marked as visible.
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Returns true once the renderer has produced at least one frame.
+    pub fn has_first_frame(&self) -> bool {
+        match self.renderer_type {
+            RendererType::OpenGL => {
+                self.angle_frame_presented
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    > 0
+            }
+            RendererType::Software => self
+                .software_first_frame_rendered
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
     }
 
     /// Registers a custom handler for a platform channel.

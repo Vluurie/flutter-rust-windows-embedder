@@ -13,7 +13,9 @@ use crate::software_renderer::gl_renderer::angle_interop::{
 use crate::software_renderer::overlay::d3d::{
     create_compositing_texture, create_srv, create_texture,
 };
-use crate::software_renderer::overlay::engine::{on_root_isolate_created, run_engine};
+use crate::software_renderer::overlay::engine::{
+    on_root_isolate_created, run_engine, update_flutter_window_metrics,
+};
 use crate::software_renderer::overlay::overlay_impl::{
     FLUTTER_LOG_TAG, SendHwnd, SendableFlutterEngine, SendableHandle,
 };
@@ -36,7 +38,7 @@ use crate::software_renderer::ticker::task_scheduler::{
     runs_task_on_current_thread_callback,
 };
 
-use log::{error, info};
+use log::error;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CString, c_char};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, Ordering};
@@ -66,18 +68,27 @@ pub(crate) fn init_overlay(
     y: i32,
     dart_args_opt: Option<&[String]>,
     engine_args_opt: Option<&[String]>,
-) -> Box<FlutterOverlay> {
+) -> Option<Box<FlutterOverlay>> {
     unsafe {
         let engine_dll_load_dir = data_dir.as_deref();
-        let engine_dll_arc = FlutterEngineDll::get_for(engine_dll_load_dir).unwrap_or_else(|e| {
-            error!(
-                "Failed to load flutter_engine.dll from `{:?}`: {:?}",
-                engine_dll_load_dir, e
-            );
-            std::process::exit(1);
-        });
+        let engine_dll_arc = match FlutterEngineDll::get_for(engine_dll_load_dir) {
+            Ok(dll) => dll,
+            Err(e) => {
+                error!(
+                    "Failed to load flutter_engine.dll from `{:?}`: {:?}",
+                    engine_dll_load_dir, e
+                );
+                return None;
+            }
+        };
 
-        assert!(width > 0 && height > 0, "Width and height must be non-zero");
+        if width == 0 || height == 0 {
+            error!(
+                "Width and height must be non-zero, got {}x{}",
+                width, height
+            );
+            return None;
+        }
 
         let (assets, icu, aot_opt) = load_flutter_build_paths(data_dir.clone());
         let initial_is_debug = aot_opt.is_none();
@@ -92,7 +103,13 @@ pub(crate) fn init_overlay(
 
         let aot_c_temp = maybe_load_aot_path_to_cstring(aot_opt.as_deref());
 
-        let swap_chain_desc: DXGI_SWAP_CHAIN_DESC = swap_chain.GetDesc().unwrap();
+        let swap_chain_desc: DXGI_SWAP_CHAIN_DESC = match swap_chain.GetDesc() {
+            Ok(desc) => desc,
+            Err(e) => {
+                error!("Failed to get swap chain description: {}", e);
+                return None;
+            }
+        };
         let hwnd = swap_chain_desc.OutputWindow;
         let game_device: &ID3D11Device = device;
 
@@ -109,7 +126,7 @@ pub(crate) fn init_overlay(
             angle_keyed_mutex_for_struct,
             game_keyed_mutex_for_struct,
             final_renderer_type,
-        ) = {
+        ) = 'opengl_attempt: {
             if OPENGL_CONTEXT_CREATED
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
@@ -123,17 +140,26 @@ pub(crate) fn init_overlay(
 
                 match opengl_init_result {
                     Ok((angle_state, angle_texture_on_angle_device, shared_handle)) => {
-                        info!(
-                            "[InitOverlay] OpenGL renderer initialized successfully for '{}'.",
-                            name
-                        );
-
-                        let angle_texture_on_game_device: ID3D11Texture2D = {
-                            let mut opt = None;
-                            game_device
-                                .OpenSharedResource(shared_handle, &mut opt)
-                                .unwrap();
-                            opt.unwrap()
+                        let mut opt: Option<ID3D11Texture2D> = None;
+                        let angle_texture_on_game_device: ID3D11Texture2D = match game_device
+                            .OpenSharedResource(shared_handle, &mut opt)
+                            .ok()
+                            .and(opt)
+                        {
+                            Some(tex) => tex,
+                            None => {
+                                error!(
+                                    "[InitOverlay] OpenSharedResource failed for '{}'. Falling back to software renderer.",
+                                    name,
+                                );
+                                drop(angle_state);
+                                OPENGL_CONTEXT_CREATED.store(false, Ordering::SeqCst);
+                                break 'opengl_attempt build_software_renderer_config_tuple(
+                                    game_device,
+                                    width,
+                                    height,
+                                );
+                            }
                         };
 
                         let angle_km: Option<IDXGIKeyedMutex> =
@@ -141,9 +167,7 @@ pub(crate) fn init_overlay(
                         let game_km: Option<IDXGIKeyedMutex> =
                             angle_texture_on_game_device.cast().ok();
 
-                        if angle_km.is_some() && game_km.is_some() {
-                            info!("[InitOverlay] IDXGIKeyedMutex acquired on both devices.");
-                        } else {
+                        if angle_km.is_none() || game_km.is_none() {
                             error!(
                                 "[InitOverlay] Failed to get IDXGIKeyedMutex - cross-device sync unavailable!"
                             );
@@ -154,9 +178,6 @@ pub(crate) fn init_overlay(
                         let texture = local_texture_on_game_device;
                         let srv = create_srv(game_device, &texture);
 
-                        // Create a D3D11 event query on ANGLE's device for GPU synchronization.
-                        // This query will be used to ensure the host doesn't copy from the
-                        // shared texture while ANGLE is still rendering to it.
                         let angle_query: Option<ID3D11Query> = {
                             let query_desc = D3D11_QUERY_DESC {
                                 Query: D3D11_QUERY_EVENT,
@@ -168,7 +189,6 @@ pub(crate) fn init_overlay(
                                 .CreateQuery(&query_desc, Some(&mut query_opt))
                                 .is_ok()
                             {
-                                info!("[InitOverlay] Created D3D11 event query for GPU sync.");
                                 query_opt
                             } else {
                                 error!(
@@ -207,10 +227,6 @@ pub(crate) fn init_overlay(
                     }
                 }
             } else {
-                info!(
-                    "[InitOverlay] Active OpenGL context exists. Forcing software renderer for '{}'.",
-                    name
-                );
                 build_software_renderer_config_tuple(game_device, width, height)
             }
         };
@@ -222,7 +238,9 @@ pub(crate) fn init_overlay(
             RendererType::OpenGL => "--renderer=opengl",
             RendererType::Software => "--renderer=software",
         };
-        dart_argv_cs_temp.push(CString::new(renderer_arg).unwrap());
+        if let Ok(arg) = CString::new(renderer_arg) {
+            dart_argv_cs_temp.push(arg);
+        }
 
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
         let task_queue_arc = Arc::new(TaskQueueState::new());
@@ -237,6 +255,8 @@ pub(crate) fn init_overlay(
             engine: SendableFlutterEngine(ptr::null_mut()),
             engine_atomic_ptr: engine_atomic_ptr_instance.clone(),
             pixel_buffer: pixel_buffer_for_struct,
+            software_frame_dirty: AtomicBool::new(false),
+            software_first_frame_rendered: AtomicBool::new(false),
             width,
             height,
             visible: true,
@@ -299,11 +319,13 @@ pub(crate) fn init_overlay(
 
         let platform_description = FlutterTaskRunnerDescription {
             struct_size: std::mem::size_of::<FlutterTaskRunnerDescription>(),
-            user_data: overlay_box
-                ._platform_runner_context
-                .as_ref()
-                .unwrap()
-                .as_ref() as *const _ as *mut c_void,
+            user_data: match overlay_box._platform_runner_context.as_ref() {
+                Some(ctx) => ctx.as_ref() as *const _ as *mut c_void,
+                None => {
+                    error!("[InitOverlay] Platform runner context missing");
+                    return None;
+                }
+            },
             runs_task_on_current_thread_callback: Some(runs_task_on_current_thread_callback),
             post_task_callback: Some(post_task_callback),
             identifier: 1,
@@ -428,11 +450,11 @@ pub(crate) fn init_overlay(
             Ok(handle) => handle,
             Err(e) => {
                 error!(
-                    "[InitOverlay] CRITICAL: Engine initialization failed during run_engine: {}",
+                    "[InitOverlay] Engine initialization failed during run_engine: {}",
                     e
                 );
                 engine_atomic_ptr_instance.store(ptr::null_mut(), Ordering::SeqCst);
-                panic!("Engine initialization failed during run_engine: {}", e);
+                return None;
             }
         };
 
@@ -440,16 +462,10 @@ pub(crate) fn init_overlay(
 
         overlay_box.engine = SendableFlutterEngine(engine_handle);
         engine_atomic_ptr_instance.store(engine_handle, Ordering::SeqCst);
-        assert_eq!(
-            overlay_box.engine.0, engine_handle,
-            "Engine handle mismatch after storing."
-        );
 
-        info!(
-            "[InitOverlay] Initialization for '{}' completed successfully.",
-            overlay_box.name
-        );
-        overlay_box
+        update_flutter_window_metrics(engine_handle, x, y, width, height, engine_dll_arc.clone());
+
+        Some(overlay_box)
     }
 }
 

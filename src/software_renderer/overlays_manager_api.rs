@@ -465,6 +465,7 @@ impl OverlayManager {
 
         self.screen_width = width;
         self.screen_height = height;
+        self.swap_chain = Some(swap_chain.clone());
 
         init_logging();
 
@@ -1214,8 +1215,8 @@ impl FlutterOverlayManagerHandle {
 
         let mut rendered_any = false;
 
-        for overlay in manager.active_instances.values_mut() {
-            if overlay.is_visible() {
+        for (_id, overlay) in manager.active_instances.iter_mut() {
+            if overlay.is_visible() && overlay.has_first_frame() {
                 overlay.reopen_shared_texture_if_needed(&context);
                 overlay.tick(&context);
                 update_interactive_widget_hover_state(overlay);
@@ -1282,7 +1283,7 @@ impl FlutterOverlayManagerHandle {
         };
         if let Some(context) = manager.shared_d3d_context.clone() {
             for overlay in manager.active_instances.values_mut() {
-                if overlay.is_visible() {
+                if overlay.is_visible() && overlay.has_first_frame() {
                     overlay.reopen_shared_texture_if_needed(&context);
                     overlay.tick(&context);
                 }
@@ -1689,7 +1690,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.set_fullscreen_effect(Some("main_menu"), PostEffect::Hologram);
     /// ```
     pub fn set_fullscreen_effect(&self, identifier: Option<&str>, effect: PostEffect) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.effect_config.params = match effect {
                 PostEffect::Passthrough => EffectParams::None,
@@ -1743,7 +1746,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.clear_effect(Some("main_menu"));
     /// ```
     pub fn set_keep_alive(&self, identifier: Option<&str>, keep_alive: bool) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.keep_alive = keep_alive;
         }
@@ -1753,7 +1758,9 @@ impl FlutterOverlayManagerHandle {
     /// NOTE: Currently hardcoded to the Glitch shader. Should be refactored
     /// to accept a dynamic EffectParams for any effect type.
     pub fn trigger_glitch_effect(&self, identifier: Option<&str>, frames: u32) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.effect_frames_remaining = frames;
             overlay.effect_total_frames = frames;
@@ -1763,7 +1770,9 @@ impl FlutterOverlayManagerHandle {
     }
 
     pub fn clear_effect(&self, identifier: Option<&str>) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.effect_config = EffectConfig::default();
         }
@@ -1784,7 +1793,9 @@ impl FlutterOverlayManagerHandle {
     /// manager.update_effect_config(Some("main_menu"), config);
     /// ```
     pub fn update_effect_config(&self, identifier: Option<&str>, config: EffectConfig) {
-        let mut manager = self.manager.lock();
+        let Some(mut manager) = self.manager.try_lock() else {
+            return;
+        };
         if let Ok(overlay) = manager.get_instance_mut(identifier) {
             overlay.effect_config = config;
         }
@@ -1966,7 +1977,7 @@ impl FlutterOverlayManagerHandle {
             return manager
                 .active_instances
                 .values()
-                .any(|o| o.is_visible() && o.angle_frame_presented.load(std::sync::atomic::Ordering::Relaxed) > 0);
+                .any(|o| o.has_first_frame());
         }
         false
     }

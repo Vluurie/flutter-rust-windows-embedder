@@ -115,7 +115,7 @@ pub struct FlutterEngineDll {
             frame_target_time_nanos: u64,
         ) -> e::FlutterEngineResult,
     >,
-      pub FlutterEnginePostDartObject: Symbol<
+    pub FlutterEnginePostDartObject: Symbol<
         'static,
         unsafe extern "C" fn(
             engine: e::FlutterEngine,
@@ -142,10 +142,29 @@ impl FlutterEngineDll {
 
         let dll_path = dll_dir.join("flutter_engine.dll");
 
-        let lib_static: &'static Library = Box::leak(Box::new(
-            unsafe { Library::new(&dll_path) }
-                .with_context(|| format!("Failed to load {}", dll_path.display()))?,
-        ));
+        let lib = {
+            let mut attempt = 0;
+            loop {
+                match unsafe { Library::new(&dll_path) } {
+                    Ok(lib) => break lib,
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt >= 50 {
+                            return Err(anyhow::Error::new(e).context(format!(
+                                "Failed to load {} after {} attempts",
+                                dll_path.display(),
+                                attempt
+                            )));
+                        }
+                        log::warn!(
+                            "[FlutterEngineDll] LoadLibrary attempt {attempt}/50 failed: {e}, retrying..."
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+        };
+        let lib_static: &'static Library = Box::leak(Box::new(lib));
 
         macro_rules! load_symbol {
             ($lib:expr, $name:expr) => {
@@ -198,7 +217,7 @@ impl FlutterEngineDll {
             )?,
             FlutterEngineCreateAOTData: load_symbol!(lib_static, b"FlutterEngineCreateAOTData\0")?,
             FlutterEngineOnVsync: load_symbol!(lib_static, b"FlutterEngineOnVsync\0")?,
-             FlutterEnginePostDartObject: load_symbol!(
+            FlutterEnginePostDartObject: load_symbol!(
                 lib_static,
                 b"FlutterEnginePostDartObject\0"
             )?,

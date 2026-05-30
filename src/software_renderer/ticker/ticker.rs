@@ -1,4 +1,5 @@
 use log::error;
+use std::sync::atomic::Ordering;
 use std::{mem, ptr};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAP_WRITE_DISCARD, D3D11_MAPPED_SUBRESOURCE, ID3D11DeviceContext,
@@ -7,7 +8,10 @@ use windows::Win32::Graphics::Direct3D11::{
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 
 pub fn tick(overlay: &FlutterOverlay, context: &ID3D11DeviceContext) {
-    // Only proceed if we are in software rendering mode (pixel_buffer exists)
+    if !overlay.software_frame_dirty.swap(false, Ordering::Acquire) {
+        return;
+    }
+
     if let Some(pixel_buffer) = &overlay.pixel_buffer {
         if overlay.width == 0 || overlay.height == 0 {
             return;

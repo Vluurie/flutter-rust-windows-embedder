@@ -184,6 +184,10 @@ pub struct FlutterOverlay {
 
     /// CPU-side buffer storing RGBA pixel data. Managed by Flutter rendering callbacks and `tick` method.
     pub(crate) pixel_buffer: Option<Vec<u8>>,
+    /// Set by `on_present` when new pixel data is available, cleared by `tick` after uploading.
+    pub(crate) software_frame_dirty: AtomicBool,
+    /// Set once by `on_present` after the first frame is rendered. Never cleared.
+    pub(crate) software_first_frame_rendered: AtomicBool,
 
     /// The current cursor style requested by Flutter. Managed internally by `handle_set_cursor`
     /// and platform message callbacks.
@@ -329,6 +333,8 @@ impl Clone for FlutterOverlay {
             windows_handler: self.windows_handler,
             is_debug_build: self.is_debug_build,
             pixel_buffer: self.pixel_buffer.clone(),
+            software_frame_dirty: AtomicBool::new(false),
+            software_first_frame_rendered: AtomicBool::new(false),
 
             mouse_buttons_state: AtomicI32::new(
                 self.mouse_buttons_state

@@ -62,6 +62,24 @@ pub fn get_flutter_overlay_manager_handle() -> Option<FlutterOverlayManagerHandl
     })
 }
 
+/// Load the Flutter runtime DLLs from `engine_dir` ahead of overlay creation.
+pub fn preload_flutter_runtime_dlls(engine_dir: &std::path::Path) {
+    init_logging();
+
+    match crate::software_renderer::dynamic_flutter_engine_dll_loader::FlutterEngineDll::get_for(
+        Some(engine_dir),
+    ) {
+        Ok(_) => info!("[Preload] flutter_engine.dll loaded from {engine_dir:?}"),
+        Err(e) => warn!("[Preload] failed to load flutter_engine.dll: {e}"),
+    }
+
+    match crate::software_renderer::gl_renderer::angle_interop::preload_angle_dlls(Some(engine_dir))
+    {
+        Ok(()) => info!("[Preload] ANGLE DLLs loaded from {engine_dir:?}"),
+        Err(e) => warn!("[Preload] failed to load ANGLE DLLs: {e}"),
+    }
+}
+
 static OVERLAY_MANAGER: Once = Once::new();
 static mut GLOBAL_OVERLAY_MANAGER: Option<Mutex<OverlayManager>> = None;
 /// Provides access to the global `OverlayManager` singleton.

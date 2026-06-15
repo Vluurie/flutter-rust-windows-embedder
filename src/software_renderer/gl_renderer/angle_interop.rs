@@ -1302,6 +1302,11 @@ extern "C" fn gl_proc_resolver_callback(_user_data: *mut c_void, proc: *const i8
 /// A `Result` containing a static reference to the `SharedEglState` on success,
 /// or an error string on failure.
 ///
+/// Load the ANGLE DLLs (`libEGL.dll`, `libGLESv2.dll`) ahead of time.
+pub fn preload_angle_dlls(engine_dir: Option<&Path>) -> Result<(), String> {
+    get_or_init_shared_egl(engine_dir).map(|_| ())
+}
+
 fn get_or_init_shared_egl(engine_dir: Option<&Path>) -> Result<&'static SharedEglState, String> {
     SHARED_EGL.get_or_try_init(|| {
         let libegl_path = engine_dir

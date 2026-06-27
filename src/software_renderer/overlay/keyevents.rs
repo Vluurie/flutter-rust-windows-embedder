@@ -4,9 +4,10 @@ use serde_json::json;
 
 use winapi::shared::minwindef::{HKL, UINT};
 use winapi::um::winuser::{
-    GetAsyncKeyState, GetKeyboardLayout, GetKeyboardState, MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX,
-    MapVirtualKeyW, ToUnicodeEx, VK_BACK, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
-    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    GetAsyncKeyState, GetKeyboardLayout, GetKeyboardState, MapVirtualKeyW, ToUnicodeEx,
+    MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
+    VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
+    VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
 };
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -18,13 +19,13 @@ use crate::bindings::embedder::{
     FlutterKeyEventType, FlutterKeyEventType_kFlutterKeyEventTypeDown,
     FlutterKeyEventType_kFlutterKeyEventTypeRepeat, FlutterKeyEventType_kFlutterKeyEventTypeUp,
 };
-use crate::bindings::keyboard_layout::{KeyMapEntry, get_key_map};
+use crate::bindings::keyboard_layout::{get_key_map, KeyMapEntry};
 
 use crate::software_renderer::overlay::overlay_impl::{
     FlutterOverlay, PendingKeyEvent, PendingKeyEventQueue, PendingPlatformMessageQueue,
 };
 use crate::software_renderer::overlay::textinput::{
-    TextInputModel, send_perform_action_to_flutter, send_update_editing_state_to_flutter,
+    send_perform_action_to_flutter, send_update_editing_state_to_flutter, TextInputModel,
 };
 
 const LOGICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
@@ -159,6 +160,54 @@ pub fn handle_keyboard_event(
                             }
                             VK_BACK => {
                                 active_state.model.backspace();
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_DELETE => {
+                                active_state.model.delete_forward();
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_LEFT => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_left(extend);
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_RIGHT => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_right(extend);
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_HOME => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_home(extend);
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_END => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_end(extend);
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_UP => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_up(extend);
+                                send_update_args =
+                                    Some((active_state.client_id, active_state.model.clone()));
+                                event_handled_by_text_input = true;
+                            }
+                            VK_DOWN => {
+                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
+                                active_state.model.move_down(extend);
                                 send_update_args =
                                     Some((active_state.client_id, active_state.model.clone()));
                                 event_handled_by_text_input = true;

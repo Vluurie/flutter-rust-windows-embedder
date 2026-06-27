@@ -53,8 +53,10 @@ impl TextInputModel {
 
     pub(crate) fn sanitize_offsets(&mut self) {
         let byte_len = self.text.len();
-        self.selection_base_utf8 = self.selection_base_utf8.min(byte_len);
-        self.selection_extent_utf8 = self.selection_extent_utf8.min(byte_len);
+        self.selection_base_utf8 =
+            snap_to_char_boundary(&self.text, self.selection_base_utf8.min(byte_len));
+        self.selection_extent_utf8 =
+            snap_to_char_boundary(&self.text, self.selection_extent_utf8.min(byte_len));
     }
 
     fn get_ordered_selection_utf8(&self) -> (usize, usize) {
@@ -78,16 +80,9 @@ impl TextInputModel {
         let (sel_start, sel_end) = self.get_ordered_selection_utf8();
         if sel_start == sel_end {
             if sel_start > 0 {
-                let mut prev_char_boundary = 0;
-                for (idx, _) in self.text.char_indices() {
-                    if idx < sel_start {
-                        prev_char_boundary = idx;
-                    } else {
-                        break;
-                    }
-                }
-                self.text.replace_range(prev_char_boundary..sel_start, "");
-                self.selection_base_utf8 = prev_char_boundary;
+                let prev = self.prev_char_boundary(sel_start);
+                self.text.replace_range(prev..sel_start, "");
+                self.selection_base_utf8 = prev;
             }
         } else {
             self.text.replace_range(sel_start..sel_end, "");
@@ -95,6 +90,167 @@ impl TextInputModel {
         }
         self.selection_extent_utf8 = self.selection_base_utf8;
         self.sanitize_offsets();
+    }
+
+    pub(crate) fn delete_forward(&mut self) {
+        let (sel_start, sel_end) = self.get_ordered_selection_utf8();
+        if sel_start == sel_end {
+            if sel_start < self.text.len() {
+                let next = self.next_char_boundary(sel_start);
+                self.text.replace_range(sel_start..next, "");
+            }
+        } else {
+            self.text.replace_range(sel_start..sel_end, "");
+        }
+        self.selection_base_utf8 = sel_start;
+        self.selection_extent_utf8 = sel_start;
+        self.sanitize_offsets();
+    }
+
+    fn prev_char_boundary(&self, from: usize) -> usize {
+        let mut prev = 0;
+        for (idx, _) in self.text.char_indices() {
+            if idx < from {
+                prev = idx;
+            } else {
+                break;
+            }
+        }
+        prev
+    }
+
+    fn next_char_boundary(&self, from: usize) -> usize {
+        for (idx, _) in self.text.char_indices() {
+            if idx > from {
+                return idx;
+            }
+        }
+        self.text.len()
+    }
+
+    fn collapse_or(&self, pick_start: bool) -> Option<usize> {
+        if self.selection_base_utf8 != self.selection_extent_utf8 {
+            let (start, end) = self.get_ordered_selection_utf8();
+            Some(if pick_start { start } else { end })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn move_left(&mut self, extend: bool) {
+        if !extend {
+            if let Some(pos) = self.collapse_or(true) {
+                self.selection_base_utf8 = pos;
+                self.selection_extent_utf8 = pos;
+                return;
+            }
+        }
+        let pos = self.prev_char_boundary(self.selection_extent_utf8);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
+    }
+
+    pub(crate) fn move_right(&mut self, extend: bool) {
+        if !extend {
+            if let Some(pos) = self.collapse_or(false) {
+                self.selection_base_utf8 = pos;
+                self.selection_extent_utf8 = pos;
+                return;
+            }
+        }
+        let pos = self.next_char_boundary(self.selection_extent_utf8);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
+    }
+
+    fn line_start(&self, from: usize) -> usize {
+        self.text[..from].rfind('\n').map(|i| i + 1).unwrap_or(0)
+    }
+
+    fn line_end(&self, from: usize) -> usize {
+        self.text[from..]
+            .find('\n')
+            .map(|i| from + i)
+            .unwrap_or(self.text.len())
+    }
+
+    pub(crate) fn move_home(&mut self, extend: bool) {
+        let pos = self.line_start(self.selection_extent_utf8);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
+    }
+
+    pub(crate) fn move_end(&mut self, extend: bool) {
+        let pos = self.line_end(self.selection_extent_utf8);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
+    }
+
+    fn column_chars(&self, pos: usize) -> usize {
+        let start = self.line_start(pos);
+        self.text[start..pos].chars().count()
+    }
+
+    fn offset_at_column(&self, line_start: usize, line_end: usize, column: usize) -> usize {
+        let mut offset = line_start;
+        let mut col = 0;
+        for ch in self.text[line_start..line_end].chars() {
+            if col >= column {
+                break;
+            }
+            offset += ch.len_utf8();
+            col += 1;
+        }
+        offset
+    }
+
+    pub(crate) fn move_up(&mut self, extend: bool) {
+        let cur = self.selection_extent_utf8;
+        let cur_line_start = self.line_start(cur);
+        if cur_line_start == 0 {
+            self.selection_extent_utf8 = 0;
+            if !extend {
+                self.selection_base_utf8 = 0;
+            }
+            return;
+        }
+        let column = self.column_chars(cur);
+        let prev_line_end = cur_line_start - 1;
+        let prev_line_start = self.line_start(prev_line_end);
+        let pos = self.offset_at_column(prev_line_start, prev_line_end, column);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
+    }
+
+    pub(crate) fn move_down(&mut self, extend: bool) {
+        let cur = self.selection_extent_utf8;
+        let cur_line_end = self.line_end(cur);
+        if cur_line_end >= self.text.len() {
+            let end = self.text.len();
+            self.selection_extent_utf8 = end;
+            if !extend {
+                self.selection_base_utf8 = end;
+            }
+            return;
+        }
+        let column = self.column_chars(cur);
+        let next_line_start = cur_line_end + 1;
+        let next_line_end = self.line_end(next_line_start);
+        let pos = self.offset_at_column(next_line_start, next_line_end, column);
+        self.selection_extent_utf8 = pos;
+        if !extend {
+            self.selection_base_utf8 = pos;
+        }
     }
 }
 
@@ -116,6 +272,30 @@ fn utf8_byte_offset_to_utf16_code_unit_offset(s: &str, byte_offset: usize) -> i3
         current_byte_idx += ch.len_utf8();
     }
     utf16_offset
+}
+
+fn snap_to_char_boundary(s: &str, byte_offset: usize) -> usize {
+    if byte_offset >= s.len() {
+        return s.len();
+    }
+    let mut offset = byte_offset;
+    while offset > 0 && !s.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
+fn utf16_code_unit_offset_to_utf8_byte_offset(s: &str, utf16_offset: usize) -> usize {
+    let mut utf16_idx = 0;
+    let mut byte_idx = 0;
+    for ch in s.chars() {
+        if utf16_idx >= utf16_offset {
+            break;
+        }
+        utf16_idx += ch.encode_utf16(&mut [0u16; 2]).len();
+        byte_idx += ch.len_utf8();
+    }
+    byte_idx
 }
 
 fn send_to_flutter_text_input_method_call(
@@ -229,9 +409,15 @@ pub(crate) unsafe extern "C" fn custom_text_input_platform_message_handler(
                                     {
                                         current_state.model.text = flutter_state.text;
                                         current_state.model.selection_base_utf8 =
-                                            flutter_state.selection_base.max(0) as usize;
+                                            utf16_code_unit_offset_to_utf8_byte_offset(
+                                                &current_state.model.text,
+                                                flutter_state.selection_base.max(0) as usize,
+                                            );
                                         current_state.model.selection_extent_utf8 =
-                                            flutter_state.selection_extent.max(0) as usize;
+                                            utf16_code_unit_offset_to_utf8_byte_offset(
+                                                &current_state.model.text,
+                                                flutter_state.selection_extent.max(0) as usize,
+                                            );
                                         current_state.model.sanitize_offsets();
                                     }
                                 }

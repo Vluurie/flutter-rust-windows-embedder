@@ -239,6 +239,20 @@ impl WindowControls {
     }
 }
 
+/// A live secondary OS window backed by its own Flutter view.
+///
+/// Returned when you spawn an extra window for an overlay (OpenGL path only). The
+/// window runs on its own thread; dropping this handle, or calling [`close`], tears
+/// the window down. Use [`view_id`] to refer to the underlying Flutter view, and
+/// the control methods to drive standard window operations from native code (for
+/// example wiring a custom Flutter title bar to [`minimize`] / [`maximize`] /
+/// [`start_drag`]).
+///
+/// [`close`]: SatelliteWindow::close
+/// [`view_id`]: SatelliteWindow::view_id
+/// [`minimize`]: SatelliteWindow::minimize
+/// [`maximize`]: SatelliteWindow::maximize
+/// [`start_drag`]: SatelliteWindow::start_drag
 pub struct SatelliteWindow {
     view_id: Arc<AtomicI64>,
     controls: WindowControls,
@@ -246,33 +260,43 @@ pub struct SatelliteWindow {
 }
 
 impl SatelliteWindow {
+    /// The Flutter view id this window renders.
     pub fn view_id(&self) -> FlutterViewId {
         self.view_id.load(Ordering::Acquire)
     }
 
+    /// A cloneable handle to this window's controls, usable from other threads.
     pub fn controls(&self) -> WindowControls {
         self.controls.clone()
     }
 
+    /// Minimizes the window.
     pub fn minimize(&self) {
         self.controls.minimize();
     }
+    /// Maximizes the window.
     pub fn maximize(&self) {
         self.controls.maximize();
     }
+    /// Restores the window from a minimized or maximized state.
     pub fn restore(&self) {
         self.controls.restore();
     }
+    /// Returns `true` if the window is currently maximized.
     pub fn is_maximized(&self) -> bool {
         self.controls.is_maximized()
     }
+    /// Begins a drag-move of the window (for a custom, borderless title bar).
     pub fn start_drag(&self) {
         self.controls.start_drag();
     }
+    /// Sets the window's title-bar text.
     pub fn set_title(&self, title: &str) {
         self.controls.set_title(title);
     }
 
+    /// Closes the window and waits for its thread to finish. Dropping the handle
+    /// does the same close without joining.
     pub fn close(mut self) {
         self.controls.close();
         if let Some(t) = self.thread.take() {
@@ -287,13 +311,18 @@ impl Drop for SatelliteWindow {
     }
 }
 
+/// Describes a secondary window to spawn for an overlay. Implements [`Default`]
+/// (an 800x600 window titled "Flutter Window"), so override only what you need.
 pub struct WindowSpec {
+    /// Initial title-bar text.
     pub title: String,
+    /// Initial client width in logical pixels.
     pub width: u32,
+    /// Initial client height in logical pixels.
     pub height: u32,
-
+    /// Device pixel ratio for the view. `None` lets the embedder pick a default.
     pub pixel_ratio: Option<f64>,
-
+    /// Window chrome / style (borders, resizability).
     pub style: WindowStyle,
 }
 

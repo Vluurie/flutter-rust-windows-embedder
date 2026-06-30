@@ -23,7 +23,7 @@
 //! battle-tested overlay path untouched while satellite views get an isolated
 //! copy of the same machinery, minus the keyed mutex.
 //!
-//! [`FlutterOverlay`]: crate::software_renderer::overlay::overlay_impl::FlutterOverlay
+//! [`FlutterOverlay`]: crate::software_renderer::api::FlutterOverlay
 
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -63,7 +63,7 @@ unsafe impl Sync for ViewGlResources {}
 ///
 /// All raw-pointer / COM fields are only ever touched on the engine's platform
 /// (render) thread or under the registry lock, mirroring the safety contract of
-/// the implicit-view fields on [`FlutterOverlay`].
+/// the implicit-view fields on [`FlutterOverlay`](crate::software_renderer::api::FlutterOverlay).
 pub struct ViewSurface {
     /// The view id assigned by [`ViewRegistry::allocate_id`] and passed to
     /// `FlutterEngineAddView`.

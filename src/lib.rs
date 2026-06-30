@@ -1,3 +1,41 @@
+//! # Flutter Rust Windows Embedder
+//!
+//! A Rust library for hosting an existing Flutter Windows build from your own
+//! Rust process. Instead of shipping the C++ runner produced by
+//! `flutter build windows`, you link this crate and drive the engine yourself.
+//!
+//! There are two ways to use it, simplest first:
+//!
+//! ## 1. Standalone window
+//!
+//! Spin up a top-level Flutter window in its own HWND. This is the one-call path
+//! and needs no graphics knowledge. See [`init_flutter_window`] and
+//! [`init_flutter_window_from_dir`].
+//!
+//! ```no_run
+//! use flutter_rust_windows_embedder::init_flutter_window;
+//!
+//! // Blocking: loads the Flutter bundle next to the DLL/EXE and runs the window.
+//! init_flutter_window();
+//! ```
+//!
+//! ## 2. Embed into an existing D3D11 app or game
+//!
+//! Render Flutter into a texture on a host-owned Direct3D 11 device/swapchain
+//! (for example a game overlay injected through a present hook) and composite it
+//! yourself. This is the interesting part of the crate and lives under
+//! [`software_renderer`]. Start at
+//! [`software_renderer::overlays_manager_api`] for the high-level manager handle,
+//! or [`software_renderer::api`] for a single overlay.
+//!
+//! ## Module layout
+//!
+//! [`software_renderer`] is the D3D11 embedder (overlay manager, 3D primitive/text
+//! compositor, custom shaders, multi-view, and the ANGLE/OpenGL path). The
+//! remaining root modules ([`path_utils`], plus the internal `win32_utils`,
+//! `flutter_utils`, `plugin_loader`, and the DLL loaders) are plumbing for the
+//! standalone path above and are not the focus of the public API.
+
 #![allow(non_camel_case_types, non_upper_case_globals, non_snake_case)]
 #![allow(dead_code)]
 #![allow(static_mut_refs)]

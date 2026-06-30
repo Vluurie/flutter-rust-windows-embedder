@@ -1,3 +1,13 @@
+//! # Dynamic Flutter engine DLL loader
+//!
+//! Loads `flutter_engine.dll` at runtime and resolves the engine's C API entry
+//! points into the [`FlutterEngineDll`] table, so the crate does not link against
+//! the engine at build time and can find it next to the host's release bundle.
+//!
+//! Use [`FlutterEngineDll::get_for`] to obtain a process-wide cached, refcounted
+//! handle for a given directory; it loads on first request and returns the cached
+//! `Arc` afterwards. [`FlutterEngineDll::load`] performs an uncached load.
+
 use anyhow::{Context, Error, Result, anyhow};
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;
@@ -10,6 +20,11 @@ use std::{
 
 use crate::bindings::embedder as e;
 
+/// Resolved function-pointer table for the Flutter engine C API.
+///
+/// Each field is a symbol looked up from `flutter_engine.dll`. Obtain one through
+/// [`FlutterEngineDll::get_for`] (cached) or [`FlutterEngineDll::load`] (uncached)
+/// rather than constructing it directly.
 #[derive(Debug)]
 pub struct FlutterEngineDll {
     _lib: &'static Library,
@@ -150,6 +165,9 @@ static ENGINE_DLL_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<FlutterEngineDll>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 impl FlutterEngineDll {
+    /// Loads `flutter_engine.dll` from `dir` (or the current exe's folder when
+    /// `None`) and resolves every engine symbol. Uncached; prefer
+    /// [`get_for`](Self::get_for) for normal use.
     pub fn load(dir: Option<&Path>) -> Result<Self> {
         let dll_dir = if let Some(d) = dir {
             d.to_path_buf()
@@ -251,6 +269,9 @@ impl FlutterEngineDll {
         })
     }
 
+    /// Returns a process-wide cached, refcounted handle for the resolved engine
+    /// directory, loading the DLL on first request. Subsequent calls that resolve
+    /// to the same path return the cached `Arc`.
     pub fn get_for(dir: Option<&Path>) -> Result<Arc<Self>> {
         let key = compute_dll_search_path(dir)?;
 

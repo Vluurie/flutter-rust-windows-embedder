@@ -1,23 +1,22 @@
-//! The [`FlutterCompositor`] callbacks that drive multi-view rendering.
+//! The `FlutterCompositor` callbacks that drive multi-view rendering.
 //!
 //! All three callbacks receive `FlutterCompositor.user_data`, which we set to a
 //! raw pointer to the engine-host [`FlutterOverlay`]. From there we reach the
 //! [`ViewRegistry`] to look up per-view GPU resources by `view_id`.
 //!
-//! * [`create_backing_store_callback`] — engine asks for a render target for a
+//! * `create_backing_store_callback`: engine asks for a render target for a
 //!   layer of `config.view_id`; we hand back the view's GL framebuffer.
-//! * [`collect_backing_store_callback`] — engine releases a backing store.
-//! * [`present_view_callback`] — engine has finished compositing a view's layers;
+//! * `collect_backing_store_callback`: engine releases a backing store.
+//! * `present_view_callback`: engine has finished compositing a view's layers;
 //!   we flush GL, record damage, and bump the view's frame counter. Satellite
 //!   views have no keyed mutex (it does not work across the three device
-//!   round-trips), so there is nothing to release here — the bumped frame
+//!   round-trips), so there is nothing to release here; the bumped frame
 //!   counter is what tells the host a new frame is ready to read.
 //!
 //! View `0` (the implicit in-game overlay) is handled on the host overlay's own
 //! fields rather than through a [`ViewSurface`]; the callbacks special-case it.
 //!
-//! [`FlutterCompositor`]: crate::bindings::embedder::FlutterCompositor
-//! [`FlutterOverlay`]: crate::software_renderer::overlay::overlay_impl::FlutterOverlay
+//! [`FlutterOverlay`]: crate::software_renderer::api::FlutterOverlay
 //! [`ViewRegistry`]: super::ViewRegistry
 //! [`ViewSurface`]: super::view_surface::ViewSurface
 

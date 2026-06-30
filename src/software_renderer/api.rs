@@ -15,7 +15,11 @@ use crate::software_renderer::overlay::init::{self as internal_embedder_init};
 
 use crate::software_renderer::overlay::input::{handle_pointer_event, handle_set_cursor};
 use crate::software_renderer::overlay::keyevents::handle_keyboard_event;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+// Re-export so `FlutterOverlay` is reachable as a public type under this module
+// (its inherent `impl` and all public methods live in this file). Without this,
+// the type is only visible through the private `overlay` module and cannot be
+// named or linked from public docs.
+pub use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
 use crate::software_renderer::overlay::platform_message_callback::send_platform_message;
 use crate::software_renderer::ticker::spawn::start_task_runner;
 use crate::software_renderer::ticker::ticker::tick;

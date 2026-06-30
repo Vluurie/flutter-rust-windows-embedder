@@ -1,2 +1,10 @@
 /target
-/flutter_artifacts/test_libs
+
+# Engine-tests artifacts. The downloaded engine binaries and all generated
+# build output stay out of git; only the test_app source is tracked so the
+# engine-tests harness is reproducible.
+/flutter_artifacts/test_libs/flutter-engine-artifacts/
+/flutter_artifacts/test_libs/test_app/build/
+/flutter_artifacts/test_libs/test_app/.dart_tool/
+/flutter_artifacts/test_libs/test_app/.idea/
+/flutter_artifacts/test_libs/test_app/*.iml

@@ -3,17 +3,17 @@
 //! # Architecture
 //!
 //! A single Flutter engine (one isolate, shared Dart state) can drive multiple
-//! *views*. View `0` is the **implicit view** — in this crate that is the
+//! *views*. View `0` is the **implicit view**; in this crate that is the
 //! in-game overlay represented by [`FlutterOverlay`]. Additional views
 //! (`view_id > 0`) are created at runtime via [`FlutterEngineAddView`] and each
 //! renders into its own GPU texture, which the host composites into a separate
 //! top-level HWND/swapchain.
 //!
-//! The engine is told about views through a [`FlutterCompositor`] supplied in
+//! The engine is told about views through a `FlutterCompositor` supplied in
 //! `FlutterProjectArgs`. When a compositor is present, the engine no longer uses
 //! the renderer-config `present`/`present_with_info` path; instead it asks the
-//! embedder for a *backing store* per layer ([`create_backing_store_callback`])
-//! and then presents composed layers per view ([`present_view_callback`]). The
+//! embedder for a *backing store* per layer (`create_backing_store_callback`)
+//! and then presents composed layers per view (`present_view_callback`). The
 //! `FlutterBackingStoreConfig` and `FlutterPresentViewInfo` both carry a
 //! `view_id`, which is how we route frames to the right surface.
 //!
@@ -25,7 +25,7 @@
 //! so the callbacks can look up the correct GPU resources by `view_id`.
 //!
 //! [`FlutterEngineAddView`]: crate::bindings::embedder::FlutterEngineAddView
-//! [`FlutterOverlay`]: crate::software_renderer::overlay::overlay_impl::FlutterOverlay
+//! [`FlutterOverlay`]: crate::software_renderer::api::FlutterOverlay
 
 pub mod api;
 pub mod backing_store;
@@ -48,9 +48,9 @@ pub const IMPLICIT_VIEW_ID: FlutterViewId = 0;
 
 /// Thread-safe registry of secondary views keyed by `view_id`.
 ///
-/// The implicit view (`view_id == 0`) is **not** stored here — it is the owning
-/// [`FlutterOverlay`] itself. Only `add_window_view`-created satellite views live
-/// in the registry.
+/// The implicit view (`view_id == 0`) is **not** stored here; it is the owning
+/// [`FlutterOverlay`](crate::software_renderer::api::FlutterOverlay) itself. Only
+/// `add_window_view`-created satellite views live in the registry.
 #[derive(Default)]
 pub struct ViewRegistry {
     views: Mutex<HashMap<FlutterViewId, ViewSurface>>,

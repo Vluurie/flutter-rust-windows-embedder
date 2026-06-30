@@ -1,3 +1,133 @@
+//! # Overlay manager API (getting started)
+//!
+//! The high-level entry point for embedding Flutter into a host-owned D3D11
+//! application or game. [`FlutterOverlayManagerHandle`] is a small, copyable handle
+//! to a global manager that owns one or more overlays (for example a main UI plus
+//! one UI per plugin), routes input to the right one, and drives rendering each
+//! frame.
+//!
+//! Get the handle with [`get_flutter_overlay_manager_handle`]. It is cheap to clone
+//! and pass between threads.
+//!
+//! ## Path A: embed into an existing D3D11 app or game
+//!
+//! This is the realistic integration: you already have a host that owns a
+//! `ID3D11Device`, an `ID3D11DeviceContext`, and an `IDXGISwapChain` (a game you
+//! hook, or your own renderer). You pass those host objects straight in. The
+//! embedder does not create a proxy or dummy device; it renders onto the host's
+//! own device.
+//!
+//! Setup (once, early; before installing your present/render hook is a good time):
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use flutter_rust_windows_embedder::software_renderer::overlays_manager_api::{
+//!     get_flutter_overlay_manager_handle, preload_flutter_runtime_dlls,
+//! };
+//! use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+//!
+//! # fn demo(swap_chain: &IDXGISwapChain) {
+//! // Load the Flutter engine + ANGLE DLLs from your release bundle.
+//! let engine_dir = Path::new(r"C:\game\mods\flutter_main_overlay\Release");
+//! preload_flutter_runtime_dlls(engine_dir);
+//!
+//! let manager = get_flutter_overlay_manager_handle().unwrap();
+//!
+//! // Create the main overlay on the host's own swapchain. `identifier` names this
+//! // instance; `dart_args` / `engine_args` are optional Dart-VM and engine flags.
+//! let ok = manager.init_instance(
+//!     swap_chain,
+//!     engine_dir,        // folder containing data/flutter_assets, icudtl.dat, app.so
+//!     "main_ui",
+//!     None,              // dart_entrypoint_args
+//!     None,              // engine_args
+//! );
+//! assert!(ok);
+//! # }
+//! ```
+//!
+//! Per frame, from inside your present/render hook, in this order:
+//!
+//! ```no_run
+//! # use flutter_rust_windows_embedder::software_renderer::overlays_manager_api::FlutterOverlayManagerHandle;
+//! # use directx_math::XMMatrix;
+//! # use windows::Win32::Graphics::Direct3D11::ID3D11DepthStencilView;
+//! # use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+//! # fn frame(
+//! #     manager: FlutterOverlayManagerHandle,
+//! #     swap_chain: &IDXGISwapChain,
+//! #     view_proj: XMMatrix,
+//! #     game_dsv: Option<ID3D11DepthStencilView>,
+//! # ) {
+//! // Recover first if the D3D device was lost (for example after a mode switch).
+//! if manager.should_attempt_recovery() {
+//!     manager.attempt_device_recovery(swap_chain);
+//! }
+//!
+//! // Snapshot any 3D primitives/text submitted since last frame.
+//! manager.latch_all_queued_primitives();
+//! manager.latch_all_queued_text();
+//!
+//! // Draw world-space 3D primitives against the game's depth buffer. Do this
+//! // BEFORE any post-processing that flattens or rescales the game's render target.
+//! manager.render_primitives(&view_proj, &game_dsv);
+//!
+//! // ... game post-processing here, if any ...
+//!
+//! // Tick the engine(s) and composite the 2D Flutter UI on top.
+//! manager.render_ui();
+//! # }
+//! ```
+//!
+//! Wire up the host's window messages and resize:
+//!
+//! ```no_run
+//! # use flutter_rust_windows_embedder::software_renderer::overlays_manager_api::get_flutter_overlay_manager_handle;
+//! # use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+//! # use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
+//! // In your WndProc: forward input first; if Flutter consumed it, do not pass it
+//! // on to the game/host.
+//! # fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+//! if let Some(manager) = get_flutter_overlay_manager_handle() {
+//!     if manager.forward_input_to_flutter(hwnd, msg, wparam, lparam) {
+//!         return true; // consumed by Flutter
+//!     }
+//! }
+//! false
+//! # }
+//!
+//! // In your ResizeBuffers hook:
+//! # fn on_resize(swap_chain: &IDXGISwapChain, x: i32, y: i32, w: u32, h: u32) {
+//! if let Some(manager) = get_flutter_overlay_manager_handle() {
+//!     manager.resize_flutter_overlays(swap_chain, x, y, w, h);
+//! }
+//! # }
+//! ```
+//!
+//! ## Path B: standalone host window (no game swapchain)
+//!
+//! If you do not have a host swapchain to hook, create your own D3D11 device and a
+//! swapchain for a window you own, then drive a single overlay directly through
+//! [`crate::software_renderer::api::FlutterOverlay`]: build it with
+//! [`FlutterOverlay::create`], call [`FlutterOverlay::tick`] each frame, and read
+//! the result with [`FlutterOverlay::get_texture_srv`] to composite it yourself.
+//!
+//! For the very simplest case, where you just want a Flutter window and do not need
+//! to composite it into your own scene, skip this module entirely and use the
+//! crate-root [`crate::init_flutter_window_from_dir`].
+//!
+//! ## Beyond setup
+//!
+//! Once running, the same handle submits 3D geometry, text, and custom shaders, and
+//! exchanges messages with Dart. See the methods on [`FlutterOverlayManagerHandle`]
+//! and the renderers in [`crate::software_renderer::d3d11_compositor`]. Multiple
+//! Flutter views in their own OS windows are available on the OpenGL path via
+//! [`crate::software_renderer::multiview`].
+//!
+//! [`FlutterOverlay::create`]: crate::software_renderer::api::FlutterOverlay::create
+//! [`FlutterOverlay::tick`]: crate::software_renderer::api::FlutterOverlay::tick
+//! [`FlutterOverlay::get_texture_srv`]: crate::software_renderer::api::FlutterOverlay::get_texture_srv
+
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::Path;

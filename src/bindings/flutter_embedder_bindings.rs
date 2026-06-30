@@ -1123,6 +1123,110 @@ const _: () = {
     ["Offset of field: FlutterWindowMetricsEvent::view_id"]
         [::std::mem::offset_of!(FlutterWindowMetricsEvent, view_id) - 88usize];
 };
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterAddViewResult {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterAddViewResult)."]
+    pub struct_size: usize,
+    #[doc = " True if the add view operation succeeded."]
+    pub added: bool,
+    #[doc = " The |FlutterAddViewInfo.user_data|."]
+    pub user_data: *mut ::std::os::raw::c_void,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterAddViewResult"][::std::mem::size_of::<FlutterAddViewResult>() - 24usize];
+    ["Alignment of FlutterAddViewResult"][::std::mem::align_of::<FlutterAddViewResult>() - 8usize];
+    ["Offset of field: FlutterAddViewResult::struct_size"]
+        [::std::mem::offset_of!(FlutterAddViewResult, struct_size) - 0usize];
+    ["Offset of field: FlutterAddViewResult::added"]
+        [::std::mem::offset_of!(FlutterAddViewResult, added) - 8usize];
+    ["Offset of field: FlutterAddViewResult::user_data"]
+        [::std::mem::offset_of!(FlutterAddViewResult, user_data) - 16usize];
+};
+#[doc = " The callback invoked by the engine when the engine has attempted to add a\n view.\n\n The |FlutterAddViewResult| is only guaranteed to be valid during this\n callback."]
+pub type FlutterAddViewCallback =
+    ::std::option::Option<unsafe extern "C" fn(result: *const FlutterAddViewResult)>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterAddViewInfo {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterAddViewInfo)."]
+    pub struct_size: usize,
+    #[doc = " The identifier for the view to add. This must be unique."]
+    pub view_id: FlutterViewId,
+    #[doc = " The view's properties.\n\n The metric's |view_id| must match this struct's |view_id|."]
+    pub view_metrics: *const FlutterWindowMetricsEvent,
+    #[doc = " A baton that is not interpreted by the engine in any way. It will be given\n back to the embedder in |add_view_callback|. Embedder resources may be\n associated with this baton."]
+    pub user_data: *mut ::std::os::raw::c_void,
+    #[doc = " Called once the engine has attempted to add the view. This callback is\n required.\n\n The embedder/app must not use the view until the callback is invoked with\n an `added` value of `true`.\n\n This callback is invoked on an internal engine managed thread. Embedders\n must re-thread if necessary."]
+    pub add_view_callback: FlutterAddViewCallback,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterAddViewInfo"][::std::mem::size_of::<FlutterAddViewInfo>() - 40usize];
+    ["Alignment of FlutterAddViewInfo"][::std::mem::align_of::<FlutterAddViewInfo>() - 8usize];
+    ["Offset of field: FlutterAddViewInfo::struct_size"]
+        [::std::mem::offset_of!(FlutterAddViewInfo, struct_size) - 0usize];
+    ["Offset of field: FlutterAddViewInfo::view_id"]
+        [::std::mem::offset_of!(FlutterAddViewInfo, view_id) - 8usize];
+    ["Offset of field: FlutterAddViewInfo::view_metrics"]
+        [::std::mem::offset_of!(FlutterAddViewInfo, view_metrics) - 16usize];
+    ["Offset of field: FlutterAddViewInfo::user_data"]
+        [::std::mem::offset_of!(FlutterAddViewInfo, user_data) - 24usize];
+    ["Offset of field: FlutterAddViewInfo::add_view_callback"]
+        [::std::mem::offset_of!(FlutterAddViewInfo, add_view_callback) - 32usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterRemoveViewResult {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterRemoveViewResult)."]
+    pub struct_size: usize,
+    #[doc = " True if the remove view operation succeeded."]
+    pub removed: bool,
+    #[doc = " The |FlutterRemoveViewInfo.user_data|."]
+    pub user_data: *mut ::std::os::raw::c_void,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterRemoveViewResult"][::std::mem::size_of::<FlutterRemoveViewResult>() - 24usize];
+    ["Alignment of FlutterRemoveViewResult"]
+        [::std::mem::align_of::<FlutterRemoveViewResult>() - 8usize];
+    ["Offset of field: FlutterRemoveViewResult::struct_size"]
+        [::std::mem::offset_of!(FlutterRemoveViewResult, struct_size) - 0usize];
+    ["Offset of field: FlutterRemoveViewResult::removed"]
+        [::std::mem::offset_of!(FlutterRemoveViewResult, removed) - 8usize];
+    ["Offset of field: FlutterRemoveViewResult::user_data"]
+        [::std::mem::offset_of!(FlutterRemoveViewResult, user_data) - 16usize];
+};
+#[doc = " The callback invoked by the engine when the engine has attempted to remove\n a view.\n\n The |FlutterRemoveViewResult| is only guaranteed to be valid during this\n callback."]
+pub type FlutterRemoveViewCallback =
+    ::std::option::Option<unsafe extern "C" fn(arg1: *const FlutterRemoveViewResult)>;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterRemoveViewInfo {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterRemoveViewInfo)."]
+    pub struct_size: usize,
+    #[doc = " The identifier for the view to remove.\n\n The implicit view cannot be removed if it is enabled."]
+    pub view_id: FlutterViewId,
+    #[doc = " A baton that is not interpreted by the engine in any way.\n It will be given back to the embedder in |remove_view_callback|.\n Embedder resources may be associated with this baton."]
+    pub user_data: *mut ::std::os::raw::c_void,
+    #[doc = " Called once the engine has attempted to remove the view.\n This callback is required.\n\n The embedder must not destroy the underlying surface until the callback is\n invoked with a `removed` value of `true`.\n\n This callback is invoked on an internal engine managed thread.\n Embedders must re-thread if necessary.\n\n The |result| argument will be deallocated when the callback returns."]
+    pub remove_view_callback: FlutterRemoveViewCallback,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterRemoveViewInfo"][::std::mem::size_of::<FlutterRemoveViewInfo>() - 32usize];
+    ["Alignment of FlutterRemoveViewInfo"]
+        [::std::mem::align_of::<FlutterRemoveViewInfo>() - 8usize];
+    ["Offset of field: FlutterRemoveViewInfo::struct_size"]
+        [::std::mem::offset_of!(FlutterRemoveViewInfo, struct_size) - 0usize];
+    ["Offset of field: FlutterRemoveViewInfo::view_id"]
+        [::std::mem::offset_of!(FlutterRemoveViewInfo, view_id) - 8usize];
+    ["Offset of field: FlutterRemoveViewInfo::user_data"]
+        [::std::mem::offset_of!(FlutterRemoveViewInfo, user_data) - 16usize];
+    ["Offset of field: FlutterRemoveViewInfo::remove_view_callback"]
+        [::std::mem::offset_of!(FlutterRemoveViewInfo, remove_view_callback) - 24usize];
+};
 #[doc = " Indicates the focus transition did not have a direction.\n\n This is typically associated with focus being programmatically requested\n or when focus is lost."]
 pub const FlutterViewFocusDirection_kUndefined: FlutterViewFocusDirection = 0;
 #[doc = " Indicates the focus transition was performed in a forward direction.\n\n This is typically result of the user pressing tab."]
@@ -1137,6 +1241,33 @@ pub const FlutterViewFocusState_kUnfocused: FlutterViewFocusState = 0;
 pub const FlutterViewFocusState_kFocused: FlutterViewFocusState = 1;
 #[doc = " Represents the focus state of a given [FlutterView]."]
 pub type FlutterViewFocusState = ::std::os::raw::c_int;
+#[doc = " A view focus event is sent to the engine by the embedder when a native view\n focus state has changed.\n\n Passed through FlutterEngineSendViewFocusEvent."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct FlutterViewFocusEvent {
+    #[doc = " The size of this struct.\n Must be sizeof(FlutterViewFocusEvent)."]
+    pub struct_size: usize,
+    #[doc = " The identifier of the view that received the focus event."]
+    pub view_id: FlutterViewId,
+    #[doc = " The focus state of the view."]
+    pub state: FlutterViewFocusState,
+    #[doc = " The direction in which the focus transitioned across [FlutterView]s."]
+    pub direction: FlutterViewFocusDirection,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of FlutterViewFocusEvent"][::std::mem::size_of::<FlutterViewFocusEvent>() - 24usize];
+    ["Alignment of FlutterViewFocusEvent"]
+        [::std::mem::align_of::<FlutterViewFocusEvent>() - 8usize];
+    ["Offset of field: FlutterViewFocusEvent::struct_size"]
+        [::std::mem::offset_of!(FlutterViewFocusEvent, struct_size) - 0usize];
+    ["Offset of field: FlutterViewFocusEvent::view_id"]
+        [::std::mem::offset_of!(FlutterViewFocusEvent, view_id) - 8usize];
+    ["Offset of field: FlutterViewFocusEvent::state"]
+        [::std::mem::offset_of!(FlutterViewFocusEvent, state) - 16usize];
+    ["Offset of field: FlutterViewFocusEvent::direction"]
+        [::std::mem::offset_of!(FlutterViewFocusEvent, direction) - 20usize];
+};
 #[doc = " A FlutterViewFocusChangeRequest is sent by the engine to the embedder when\n when a FlutterView focus state has changed and native view focus\n needs to be updated.\n\n Received in FlutterProjectArgs.view_focus_change_request_callback."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -2896,6 +3027,27 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " @brief      Runs an initialized engine instance. An engine can be\n             initialized via `FlutterEngineInitialize`. An initialized\n             instance can only be run once. During and after this call,\n             custom task runners supplied by the embedder are expected to\n             start servicing tasks.\n\n @param[in]  engine  An initialized engine instance that has not previously\n                     been run.\n\n @return     The result of the call to run the initialized Flutter\n             engine instance.\n"]
     pub fn FlutterEngineRunInitialized(engine: FlutterEngine) -> FlutterEngineResult;
+}
+unsafe extern "C" {
+    #[doc = " @brief      Adds a view.\n\n             This is an asynchronous operation. The view should not be used\n             until the |info.add_view_callback| is invoked with an |added|\n             value of true. The embedder should prepare resources in advance\n             but be ready to clean up on failure.\n\n             A frame is scheduled if the operation succeeds.\n\n             The callback is invoked on a thread managed by the engine. The\n             embedder should re-thread if needed.\n\n             Attempting to add the implicit view will fail and will return\n             kInvalidArguments. Attempting to add a view with an already\n             existing view ID will fail, and |info.add_view_callback| will be\n             invoked with an |added| value of false.\n\n @param[in]  engine  A running engine instance.\n @param[in]  info    The add view arguments. This can be deallocated\n                     once |FlutterEngineAddView| returns, before\n                     |add_view_callback| is invoked.\n\n @return     The result of *starting* the asynchronous operation. If\n             `kSuccess`, the |add_view_callback| will be invoked."]
+    pub fn FlutterEngineAddView(
+        engine: FlutterEngine,
+        info: *const FlutterAddViewInfo,
+    ) -> FlutterEngineResult;
+}
+unsafe extern "C" {
+    #[doc = " @brief      Removes a view.\n\n             This is an asynchronous operation. The view's resources must not\n             be cleaned up until |info.remove_view_callback| is invoked with\n             a |removed| value of true.\n\n             The callback is invoked on a thread managed by the engine. The\n             embedder should re-thread if needed.\n\n             Attempting to remove the implicit view will fail and will return\n             kInvalidArguments. Attempting to remove a view with a\n             non-existent view ID will fail, and |info.remove_view_callback|\n             will be invoked with a |removed| value of false.\n\n @param[in]  engine  A running engine instance.\n @param[in]  info    The remove view arguments. This can be deallocated\n                     once |FlutterEngineRemoveView| returns, before\n                     |remove_view_callback| is invoked.\n\n @return     The result of *starting* the asynchronous operation. If\n             `kSuccess`, the |remove_view_callback| will be invoked."]
+    pub fn FlutterEngineRemoveView(
+        engine: FlutterEngine,
+        info: *const FlutterRemoveViewInfo,
+    ) -> FlutterEngineResult;
+}
+unsafe extern "C" {
+    #[doc = " @brief      Notifies the engine that platform view focus state has changed.\n\n @param[in]  engine  A running engine instance\n @param[in]  event   The focus event data describing the change."]
+    pub fn FlutterEngineSendViewFocusEvent(
+        engine: FlutterEngine,
+        event: *const FlutterViewFocusEvent,
+    ) -> FlutterEngineResult;
 }
 unsafe extern "C" {
     pub fn FlutterEngineSendWindowMetricsEvent(

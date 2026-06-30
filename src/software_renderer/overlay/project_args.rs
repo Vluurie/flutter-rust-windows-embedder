@@ -25,7 +25,7 @@ pub unsafe extern "C" fn flutter_log_callback(
     } else {
         unsafe { &CStr::from_ptr(message).to_string_lossy().into_owned() }
     };
-    info!("[Flutter][{}] {}", tag_str, msg_str);
+    info!("[Flutter][{tag_str}] {msg_str}");
 }
 
 fn create_task_runner_description_with_context(

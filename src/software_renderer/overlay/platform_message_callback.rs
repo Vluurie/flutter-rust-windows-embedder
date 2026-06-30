@@ -6,7 +6,7 @@ use crate::software_renderer::overlay::textinput::custom_text_input_platform_mes
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use log::error;
-use serde_json::json;
+use serde_json::{Value, from_slice, json};
 use std::ffi::{CStr, CString, c_void};
 use std::io::{Cursor, Error as IoError, ErrorKind as IoErrorKind, Read};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use winapi::um::winuser::{
 
 /// Enum representing all known Flutter platform channels
 #[derive(Debug, PartialEq, Eq)]
-enum FlutterChannel<'a> {
+pub(crate) enum FlutterChannel<'a> {
     /// Mouse cursor channel - handles cursor appearance changes
     MouseCursor,
     /// Text input channel - handles text input state and methods
@@ -46,7 +46,7 @@ enum FlutterChannel<'a> {
 
 impl<'a> FlutterChannel<'a> {
     /// Parse a channel name string into a FlutterChannel enum
-    fn from_str(channel: &'a str) -> Self {
+    pub(crate) fn from_str(channel: &'a str) -> Self {
         match channel {
             "flutter/mousecursor" => FlutterChannel::MouseCursor,
             "flutter/textinput" => FlutterChannel::TextInput,
@@ -107,7 +107,7 @@ fn read_exact_checked(
     }
 }
 
-fn mc_read_size(cursor: &mut Cursor<&[u8]>) -> Result<usize, IoError> {
+pub(crate) fn mc_read_size(cursor: &mut Cursor<&[u8]>) -> Result<usize, IoError> {
     let first_byte = cursor.read_u8()?;
     match first_byte {
         254 => Ok(cursor.read_u16::<LittleEndian>()? as usize),
@@ -165,7 +165,9 @@ fn mc_parse_args_map(cursor: &mut Cursor<&[u8]>) -> Result<Option<String>, IoErr
     Ok(kind_value)
 }
 
-fn mc_parse_method_call(cursor: &mut Cursor<&[u8]>) -> Result<(String, Option<String>), IoError> {
+pub(crate) fn mc_parse_method_call(
+    cursor: &mut Cursor<&[u8]>,
+) -> Result<(String, Option<String>), IoError> {
     if cursor.read_u8()? != K_SMC_LIST {
         return Err(IoError::new(
             IoErrorKind::InvalidData,
@@ -225,20 +227,17 @@ fn handle_mousecursor_message(
             if !slice.is_empty() {
                 match slice[0] {
                     K_SMC_LIST => {
-                        if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor) {
-                            if method == "activateSystemCursor" {
-                                if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                        if let Ok((method, kind_opt)) = mc_parse_method_call(&mut msg_cursor)
+                            && method == "activateSystemCursor"
+                                && let Ok(mut guard) = overlay.desired_cursor.lock() {
                                     *guard = kind_opt;
                                 }
-                            }
-                        }
                     }
                     K_SMC_STRING | K_SMC_NULL | K_SMC_INT32 | K_SMC_TRUE | K_SMC_FALSE => {
-                        if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor) {
-                            if let Ok(mut guard) = overlay.desired_cursor.lock() {
+                        if let Ok(kind_opt) = mc_read_cursor_kind_value(&mut msg_cursor)
+                            && let Ok(mut guard) = overlay.desired_cursor.lock() {
                                 *guard = kind_opt;
                             }
-                        }
                     }
                     _ => {}
                 }
@@ -253,8 +252,8 @@ fn handle_keyboard_message(message: &embedder::FlutterPlatformMessage) -> Channe
     unsafe {
         let slice = std::slice::from_raw_parts(message.message, message.message_size);
 
-        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(slice) {
-            if let Some(method) = json_value.get("method").and_then(|m| m.as_str()) {
+        if let Ok(json_value) = from_slice::<Value>(slice)
+            && let Some(method) = json_value.get("method").and_then(|m| m.as_str()) {
                 match method {
                     "Keyboard.getState" => {
                         let mut flutter_modifiers = 0;
@@ -283,7 +282,6 @@ fn handle_keyboard_message(message: &embedder::FlutterPlatformMessage) -> Channe
                     }
                 }
             }
-        }
     }
     ChannelHandlerResult::RespondNull
 }
@@ -307,7 +305,7 @@ fn handle_platform_message(message: &embedder::FlutterPlatformMessage) -> Channe
     unsafe {
         let slice = std::slice::from_raw_parts(message.message, message.message_size);
 
-        if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(slice) {
+        if let Ok(json_value) = from_slice::<Value>(slice) {
             if let Some(method) = json_value.get("method").and_then(|m| m.as_str()) {
                 match method {
                     "Clipboard.getData" => {
@@ -321,11 +319,10 @@ fn handle_platform_message(message: &embedder::FlutterPlatformMessage) -> Channe
                         ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
                     }
                     "Clipboard.setData" => {
-                        if let Some(args) = json_value.get("args") {
-                            if let Some(text) = args.get("text").and_then(|t| t.as_str()) {
+                        if let Some(args) = json_value.get("args")
+                            && let Some(text) = args.get("text").and_then(|t| t.as_str()) {
                                 set_clipboard_text(text);
                             }
-                        }
                         let response = json!([null]);
                         ChannelHandlerResult::RespondWith(response.to_string().into_bytes())
                     }
@@ -364,7 +361,7 @@ fn get_clipboard_text() -> Option<String> {
                 if !p_data.is_null() {
                     let size = GlobalSize(h_data) / 2;
                     let mut len = 0;
-                    while len < size && *p_data.offset(len as isize) != 0 {
+                    while len < size && *p_data.add(len) != 0 {
                         len += 1;
                     }
                     let slice = std::slice::from_raw_parts(p_data, len);
@@ -438,8 +435,7 @@ fn handle_custom_channel(
             }
             Err(poisoned) => {
                 error!(
-                    "[PlatformMsgCB] Handlers map mutex poisoned for channel '{}': {}",
-                    channel_name, poisoned
+                    "[PlatformMsgCB] Handlers map mutex poisoned for channel '{channel_name}': {poisoned}"
                 );
                 ChannelHandlerResult::RespondNull
             }
@@ -472,7 +468,7 @@ fn send_response(
         );
 
         if result != embedder::FlutterEngineResult_kSuccess {
-            error!("[PlatformMsgCB] Failed to send response: {:?}", result);
+            error!("[PlatformMsgCB] Failed to send response: {result:?}");
         }
     }
 }
@@ -598,8 +594,7 @@ pub fn send_platform_message(
         Ok(s) => s,
         Err(e) => {
             return Err(FlutterEmbedderError::OperationFailed(format!(
-                "Invalid channel name: {}",
-                e
+                "Invalid channel name: {e}"
             )));
         }
     };
@@ -620,8 +615,7 @@ pub fn send_platform_message(
         Ok(())
     } else {
         let err_msg = format!(
-            "Failed to send platform message on channel '{}': {:?}",
-            channel, result
+            "Failed to send platform message on channel '{channel}': {result:?}"
         );
         error!("[FlutterOverlay:'{}'] {}", overlay.name, err_msg);
         Err(FlutterEmbedderError::OperationFailed(err_msg))

@@ -1,0 +1,186 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "env": {
+      "RUSTC_WRAPPER": "",
+      "RUSTC_WORKSPACE_WRAPPER": "",
+      "RUST_BACKTRACE": "1",
+      "CARGO_TERM_COLOR": "always"
+    }
+  },
+  "presentation": {
+    "echo": true,
+    "reveal": "always",
+    "focus": true,
+    "panel": "dedicated",
+    "showReuseMessage": false,
+    "clear": true
+  },
+  "tasks": [
+    {
+      "label": "UNIT TESTS (fast, no GPU, no download)",
+      "type": "shell",
+      "command": "cargo test --lib -- --nocapture 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: all (downloads SDK + builds bundle + WARP/ANGLE)",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: resize test only",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib satellite_texture_converges -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "STRESS: multi-view stress tests (engine)",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib software_renderer::multiview::tests::stress -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: ResizeBuffers hook test",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib satellite_resize_uses_resize_buffers -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: resize flicker race",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib texture_size_does_not_outrun -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: shared texture cross-device sync (mutex vs no-mutex)",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib shared_texture_race -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: maximize from Dart (isolated, own engine)",
+      "type": "shell",
+      "command": "cargo test --features engine-tests --lib maximizing_satellite_from_dart -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "INTEGRATION: all (RELEASE/AOT Flutter build)",
+      "type": "shell",
+      "command": "$env:FLUTTER_TEST_RELEASE='1'; cargo test --features engine-tests --lib -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "CLIPPY (lib + tests)",
+      "type": "shell",
+      "command": "cargo clippy --lib --tests 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    },
+    {
+      "label": "CLIPPY (lib + tests, engine-tests feature)",
+      "type": "shell",
+      "command": "cargo clippy --lib --tests --features engine-tests 2>&1 | Tee-Object -FilePath logs.txt | Write-Host",
+      "group": "build",
+      "problemMatcher": ["$rustc"],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": true
+      }
+    }
+  ]
+}

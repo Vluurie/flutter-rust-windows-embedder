@@ -5,3 +5,5 @@ pub mod primitive_presets;
 pub mod text_3d_renderer;
 pub mod text_presets;
 pub mod traits;
+#[cfg(test)]
+mod tests;

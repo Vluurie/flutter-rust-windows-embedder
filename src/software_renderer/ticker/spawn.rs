@@ -1,10 +1,12 @@
 use crate::bindings::embedder::{
     FlutterEngineResult_kSuccess, FlutterKeyEvent,
     FlutterKeyEventDeviceType_kFlutterKeyEventDeviceTypeKeyboard, FlutterPlatformMessage,
+    FlutterViewFocusDirection_kForward, FlutterViewFocusDirection_kUndefined, FlutterViewFocusEvent,
+    FlutterViewFocusState_kFocused, FlutterViewFocusState_kUnfocused,
 };
 
 use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
-use crate::software_renderer::ticker::task_scheduler::ScheduledTask;
+use crate::software_renderer::ticker::task_runner_window::{Timer, run_message_loop};
 
 use log::error;
 use std::ffi::{CString, c_void};
@@ -34,47 +36,69 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
     let engine_atomic_ptr = overlay.engine_atomic_ptr.clone();
     let pending_messages_for_thread = overlay.pending_platform_messages.clone();
     let pending_keys_for_thread = overlay.pending_key_events.clone();
+    let pending_view_focus_for_thread = overlay.pending_view_focus.clone();
+
+    let waker_for_thread = overlay.task_queue_state.waker.clone();
+    let timer = Timer::new();
+    timer.run(overlay.task_queue_state.waker.clone());
+    let timer_for_runner = timer.clone();
+    overlay.task_queue_state.set_timer(timer);
 
     let handle = thread::Builder::new()
-        .name(format!("task_runner_{}", name_for_thread))
+        .name(format!("task_runner_{name_for_thread}"))
         .spawn(move || {
-            loop {
+            let process = move || {
                 let engine = engine_atomic_ptr.load(Ordering::SeqCst);
-
                 if engine.is_null() {
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
+                    return;
                 }
 
-                let mut task_to_run: Option<ScheduledTask> = None;
-                let mut wait_duration = Duration::from_millis(100);
-
-                {
+                let expired = {
                     let mut queue_guard = task_queue_for_thread.queue.lock().unwrap();
                     let now = unsafe { (engine_dll_for_thread.FlutterEngineGetCurrentTime)() };
-
-                    if let Some(task) = queue_guard.peek() {
+                    let mut due = Vec::new();
+                    while let Some(task) = queue_guard.peek() {
                         if task.target_time <= now {
-                            task_to_run = queue_guard.pop();
+                            due.push(queue_guard.pop().unwrap());
                         } else {
-                            let nanos_until_due = task.target_time - now;
-                            wait_duration = Duration::from_nanos(nanos_until_due);
+                            let delay = task.target_time - now;
+                            timer_for_runner.schedule_in(Duration::from_nanos(delay));
+                            break;
                         }
                     }
-
-                    if task_to_run.is_none() {
-                        let _ = task_queue_for_thread
-                            .condvar
-                            .wait_timeout(queue_guard, wait_duration);
-                    }
-                }
-
-                if let Some(scheduled_task) = task_to_run {
+                    due
+                };
+                for scheduled_task in expired {
                     let result = unsafe {
                         (engine_dll_for_thread.FlutterEngineRunTask)(engine, &scheduled_task.task.0)
                     };
                     if result != FlutterEngineResult_kSuccess {
-                        error!("[TaskRunner] FlutterEngineRunTask failed: {:?}", result);
+                        error!("[TaskRunner] FlutterEngineRunTask failed: {result:?}");
+                    }
+                }
+
+                if let Ok(mut pending_focus) = pending_view_focus_for_thread.lock() {
+                    while let Some((view_id, focused)) = pending_focus.pop_front() {
+                        let event = FlutterViewFocusEvent {
+                            struct_size: std::mem::size_of::<FlutterViewFocusEvent>(),
+                            view_id,
+                            state: if focused {
+                                FlutterViewFocusState_kFocused
+                            } else {
+                                FlutterViewFocusState_kUnfocused
+                            },
+                            direction: if focused {
+                                FlutterViewFocusDirection_kForward
+                            } else {
+                                FlutterViewFocusDirection_kUndefined
+                            },
+                        };
+                        let _ = unsafe {
+                            (engine_dll_for_thread.FlutterEngineSendViewFocusEvent)(
+                                engine,
+                                &event as *const _,
+                            )
+                        };
                     }
                 }
 
@@ -92,7 +116,7 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
 
                         let event_data = FlutterKeyEvent {
                             struct_size: std::mem::size_of::<FlutterKeyEvent>(),
-                            timestamp: current_time as f64,
+                            timestamp: current_time as f64 / 1000.0,
                             type_: key_event.event_type,
                             physical: key_event.physical,
                             logical: key_event.logical,
@@ -115,11 +139,7 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
                         };
 
                         if result != FlutterEngineResult_kSuccess {
-                            error!(
-                                "[TaskRunner] FlutterEngineSendKeyEvent failed: {:?}",
-                                result
-                            );
-
+                            error!("[TaskRunner] FlutterEngineSendKeyEvent failed: {result:?}");
                             unsafe {
                                 drop(Box::from_raw(user_data_ptr as *mut u64));
                             }
@@ -137,7 +157,6 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
                                 message_size: msg.payload_bytes.len(),
                                 response_handle: ptr::null(),
                             };
-
                             let _ = unsafe {
                                 (engine_dll_for_thread.FlutterEngineSendPlatformMessage)(
                                     engine,
@@ -147,7 +166,10 @@ pub fn start_task_runner(overlay: &mut FlutterOverlay) {
                         }
                     }
                 }
-            }
+            };
+
+            run_message_loop(&waker_for_thread, process);
+            let _ = &waker_for_thread;
         })
         .expect("Failed to spawn task runner thread");
 

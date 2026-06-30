@@ -1,0 +1,6 @@
+# Route every `cargo build` through clippy-driver (instead of plain rustc) so that
+# clippy lints — including `absolute_paths = "deny"` from Cargo.toml — are enforced
+# at build time, not only under `cargo clippy`. This makes inline absolute paths a
+# hard build error.
+[build]
+rustc-wrapper = ".cargo/rustc-clippy-wrapper.cmd"

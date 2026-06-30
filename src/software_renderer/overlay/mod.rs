@@ -3,6 +3,10 @@ pub mod engine;
 pub mod init;
 pub mod input;
 pub mod keyevents;
+#[cfg(test)]
+mod keyevents_tests;
+#[cfg(test)]
+mod tests;
 pub mod overlay_impl;
 pub mod platform_message_callback;
 pub mod project_args;

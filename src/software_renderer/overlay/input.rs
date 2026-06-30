@@ -42,7 +42,7 @@ pub fn handle_pointer_event(
         WM_MOUSEMOVE => {
             let x = (lparam.0 & 0xFFFF) as i16 as f64;
             let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f64;
-            let key_states_from_wparam = wparam.0 as usize;
+            let key_states_from_wparam = wparam.0;
             let mut calculated_mk_buttons_i32: i32 = 0;
 
             if (key_states_from_wparam & WINAPI_MK_LBUTTON) != 0 {
@@ -59,13 +59,11 @@ pub fn handle_pointer_event(
 
             let phase = if current_buttons_state != 0 {
                 FlutterPointerPhase_kMove
+            } else if !overlay.is_mouse_added.load(Ordering::SeqCst) {
+                overlay.is_mouse_added.store(true, Ordering::SeqCst);
+                FlutterPointerPhase_kAdd
             } else {
-                if !overlay.is_mouse_added.load(Ordering::SeqCst) {
-                    overlay.is_mouse_added.store(true, Ordering::SeqCst);
-                    FlutterPointerPhase_kAdd
-                } else {
-                    FlutterPointerPhase_kHover
-                }
+                FlutterPointerPhase_kHover
             };
 
             overlay
@@ -74,12 +72,14 @@ pub fn handle_pointer_event(
             send_pointer_event_to_flutter(
                 engine.0,
                 engine_dll,
-                phase,
-                x,
-                y,
-                0.0,
-                0.0,
-                current_buttons_state as i64,
+                PointerSample {
+                    phase,
+                    x,
+                    y,
+                    scroll_delta_x: 0.0,
+                    scroll_delta_y: 0.0,
+                    buttons: current_buttons_state as i64,
+                },
             );
             true
         }
@@ -104,24 +104,28 @@ pub fn handle_pointer_event(
                 send_pointer_event_to_flutter(
                     engine.0,
                     engine_dll,
-                    FlutterPointerPhase_kAdd,
-                    x,
-                    y,
-                    0.0,
-                    0.0,
-                    0,
+                    PointerSample {
+                        phase: FlutterPointerPhase_kAdd,
+                        x,
+                        y,
+                        scroll_delta_x: 0.0,
+                        scroll_delta_y: 0.0,
+                        buttons: 0,
+                    },
                 );
             }
 
             send_pointer_event_to_flutter(
                 engine.0,
                 engine_dll,
-                FlutterPointerPhase_kDown,
-                x,
-                y,
-                0.0,
-                0.0,
-                new_button_state as i64,
+                PointerSample {
+                    phase: FlutterPointerPhase_kDown,
+                    x,
+                    y,
+                    scroll_delta_x: 0.0,
+                    scroll_delta_y: 0.0,
+                    buttons: new_button_state as i64,
+                },
             );
             true
         }
@@ -145,12 +149,14 @@ pub fn handle_pointer_event(
             send_pointer_event_to_flutter(
                 engine.0,
                 engine_dll,
-                FlutterPointerPhase_kUp,
-                x,
-                y,
-                0.0,
-                0.0,
-                buttons_for_kup_event as i64,
+                PointerSample {
+                    phase: FlutterPointerPhase_kUp,
+                    x,
+                    y,
+                    scroll_delta_x: 0.0,
+                    scroll_delta_y: 0.0,
+                    buttons: buttons_for_kup_event as i64,
+                },
             );
             true
         }
@@ -160,12 +166,14 @@ pub fn handle_pointer_event(
                 send_pointer_event_to_flutter(
                     engine.0,
                     engine_dll,
-                    FlutterPointerPhase_kRemove,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0,
+                    PointerSample {
+                        phase: FlutterPointerPhase_kRemove,
+                        x: 0.0,
+                        y: 0.0,
+                        scroll_delta_x: 0.0,
+                        scroll_delta_y: 0.0,
+                        buttons: 0,
+                    },
                 );
             }
             overlay.mouse_buttons_state.store(0, Ordering::Relaxed);
@@ -193,12 +201,14 @@ pub fn handle_pointer_event(
             send_pointer_event_to_flutter(
                 engine.0,
                 engine_dll,
-                FlutterPointerPhase_kHover,
-                x_client,
-                y_client,
-                0.0,
-                scroll_delta_y_flutter,
-                overlay.mouse_buttons_state.load(Ordering::Relaxed) as i64,
+                PointerSample {
+                    phase: FlutterPointerPhase_kHover,
+                    x: x_client,
+                    y: y_client,
+                    scroll_delta_x: 0.0,
+                    scroll_delta_y: scroll_delta_y_flutter,
+                    buttons: overlay.mouse_buttons_state.load(Ordering::Relaxed) as i64,
+                },
             );
             true
         }
@@ -215,61 +225,69 @@ pub fn handle_set_cursor(
     unsafe {
         let hit_test_code = (lparam_from_message.0 & 0xFFFF) as i16;
 
-        if hwnd_from_wparam == main_app_hwnd && hit_test_code == HTCLIENT as i16 {
-            match overlay.desired_cursor.try_lock() {
-                Ok(desired_kind_guard) => {
-                    if let Some(kind) = desired_kind_guard.as_ref() {
-                        let mut h_cursor_to_set: HCURSOR = HCURSOR(std::ptr::null_mut());
-                        let mut flutter_did_request_cursor_change = true;
+        if hwnd_from_wparam == main_app_hwnd
+            && hit_test_code == HTCLIENT as i16
+            && let Ok(desired_kind_guard) = overlay.desired_cursor.try_lock()
+            && let Some(kind) = desired_kind_guard.as_ref()
+        {
+            let mut h_cursor_to_set: HCURSOR = HCURSOR(std::ptr::null_mut());
+            let mut flutter_did_request_cursor_change = true;
 
-                        let h_instance_null: HINSTANCE = HINSTANCE(std::ptr::null_mut());
+            let h_instance_null: HINSTANCE = HINSTANCE(std::ptr::null_mut());
 
-                        match kind.as_str() {
-                            "basic" | "basic.default" => {
-                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_ARROW)
-                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
-                            }
-                            "click" | "pointer" => {
-                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_HAND)
-                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
-                            }
-                            "text" | "text.TextEditable" => {
-                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_IBEAM)
-                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
-                            }
-                            "forbidden" | "basic.forbidden" => {
-                                h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_NO)
-                                    .unwrap_or(HCURSOR(std::ptr::null_mut()));
-                            }
-                            _ => {
-                                flutter_did_request_cursor_change = false;
-                            }
-                        }
-
-                        if flutter_did_request_cursor_change
-                            && h_cursor_to_set.0 != std::ptr::null_mut()
-                        {
-                            SetCursor(Some(h_cursor_to_set));
-                            return Some(LRESULT(1));
-                        }
-                    }
+            match kind.as_str() {
+                "basic" | "basic.default" => {
+                    h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_ARROW)
+                        .unwrap_or(HCURSOR(std::ptr::null_mut()));
                 }
-                Err(_) => {}
+                "click" | "pointer" => {
+                    h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_HAND)
+                        .unwrap_or(HCURSOR(std::ptr::null_mut()));
+                }
+                "text" | "text.TextEditable" => {
+                    h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_IBEAM)
+                        .unwrap_or(HCURSOR(std::ptr::null_mut()));
+                }
+                "forbidden" | "basic.forbidden" => {
+                    h_cursor_to_set = LoadCursorW(Some(h_instance_null), IDC_NO)
+                        .unwrap_or(HCURSOR(std::ptr::null_mut()));
+                }
+                _ => {
+                    flutter_did_request_cursor_change = false;
+                }
+            }
+
+            if flutter_did_request_cursor_change && !h_cursor_to_set.0.is_null() {
+                SetCursor(Some(h_cursor_to_set));
+                return Some(LRESULT(1));
             }
         }
         None
     }
 }
-fn send_pointer_event_to_flutter(
-    engine: FlutterEngine,
-    engine_dll: &FlutterEngineDll,
+/// One mouse pointer sample to forward to the Flutter engine.
+struct PointerSample {
     phase: FlutterPointerPhase,
     x: f64,
     y: f64,
     scroll_delta_x: f64,
     scroll_delta_y: f64,
     buttons: i64,
+}
+
+fn send_pointer_event_to_flutter(
+    engine: FlutterEngine,
+    engine_dll: &FlutterEngineDll,
+    sample: PointerSample,
 ) {
+    let PointerSample {
+        phase,
+        x,
+        y,
+        scroll_delta_x,
+        scroll_delta_y,
+        buttons,
+    } = sample;
     unsafe {
         if engine.is_null() {
             return;
@@ -278,7 +296,7 @@ fn send_pointer_event_to_flutter(
         let event = FlutterPointerEvent {
             struct_size: std::mem::size_of::<FlutterPointerEvent>(),
             phase,
-            timestamp: (engine_dll.FlutterEngineGetCurrentTime)() as usize,
+            timestamp: (engine_dll.FlutterEngineGetCurrentTime)() as usize / 1000,
             x,
             y,
             device: 0,

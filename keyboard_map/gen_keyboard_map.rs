@@ -1,17 +1,21 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    env,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
 };
+
+use anyhow::Result;
+use serde_json::{Value, from_str};
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct PhysicalKeyEntry {
     names: HashMap<String, String>,
-    scan_codes: HashMap<String, serde_json::Value>,
-    key_codes: Option<HashMap<String, serde_json::Value>>,
+    scan_codes: HashMap<String, Value>,
+    key_codes: Option<HashMap<String, Value>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -36,23 +40,23 @@ struct KeyData {
 }
 
 #[allow(dead_code)]
-fn first_number(value: &serde_json::Value) -> Option<i64> {
+fn first_number(value: &Value) -> Option<i64> {
     match value {
-        serde_json::Value::Number(n) => n.as_i64(),
-        serde_json::Value::Array(a) => a.get(0).and_then(|v| v.as_i64()),
+        Value::Number(n) => n.as_i64(),
+        Value::Array(a) => a.first().and_then(|v| v.as_i64()),
         _ => None,
     }
 }
 #[allow(dead_code)]
-pub fn generate_keyboard_map(platform_name: &str, out_file_path: &Path) -> anyhow::Result<()> {
-    let root_dir: PathBuf = std::env::var("CARGO_MANIFEST_DIR")?.into();
+pub fn generate_keyboard_map(platform_name: &str, out_file_path: &Path) -> Result<()> {
+    let root_dir: PathBuf = env::var("CARGO_MANIFEST_DIR")?.into();
 
     let codes_dir = root_dir.join("keyboard_map");
     let physical = fs::read_to_string(codes_dir.join("physical_key_data.g.json"))?;
     let logical = fs::read_to_string(codes_dir.join("logical_key_data.g.json"))?;
 
-    let physical_keys: HashMap<String, PhysicalKeyEntry> = serde_json::from_str(&physical)?;
-    let logical_keys: HashMap<String, LogicalKeyEntry> = serde_json::from_str(&logical)?;
+    let physical_keys: HashMap<String, PhysicalKeyEntry> = from_str(&physical)?;
+    let logical_keys: HashMap<String, LogicalKeyEntry> = from_str(&logical)?;
 
     let mut key_data = BTreeMap::<i64, KeyData>::new();
 
@@ -78,12 +82,11 @@ pub fn generate_keyboard_map(platform_name: &str, out_file_path: &Path) -> anyho
             let mut fallback = None::<i64>;
             if let Some(logical_key) = logical_keys.get(name) {
                 fallback = Some(logical_key.value);
-                if let Some(values) = &logical_key.values {
-                    if let Some(values) = values.get(logical_platform_name) {
-                        if !values.is_empty() {
-                            logical = Some(logical_key.value);
-                        }
-                    }
+                if let Some(values) = &logical_key.values
+                    && let Some(values) = values.get(logical_platform_name)
+                    && !values.is_empty()
+                {
+                    logical = Some(logical_key.value);
                 }
             }
 

@@ -1,5 +1,6 @@
 use directx_math::{XMMatrix, XMMatrixTranspose};
 use std::{collections::HashMap, mem};
+use windows::core::PCSTR;
 use windows::Win32::{
     Foundation::BOOL,
     Graphics::{
@@ -115,7 +116,7 @@ impl Text3DRenderer {
 
         let input_element_descs = [
             D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: windows::core::PCSTR("POSITION\0".as_ptr()),
+                SemanticName: PCSTR(c"POSITION".as_ptr().cast()),
                 SemanticIndex: 0,
                 Format: DXGI_FORMAT_R32G32B32_FLOAT,
                 InputSlot: 0,
@@ -124,7 +125,7 @@ impl Text3DRenderer {
                 InstanceDataStepRate: 0,
             },
             D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: windows::core::PCSTR("TEXCOORD\0".as_ptr()),
+                SemanticName: PCSTR(c"TEXCOORD".as_ptr().cast()),
                 SemanticIndex: 0,
                 Format: DXGI_FORMAT_R32G32_FLOAT,
                 InputSlot: 0,
@@ -133,7 +134,7 @@ impl Text3DRenderer {
                 InstanceDataStepRate: 0,
             },
             D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: windows::core::PCSTR("COLOR\0".as_ptr()),
+                SemanticName: PCSTR(c"COLOR".as_ptr().cast()),
                 SemanticIndex: 0,
                 Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
                 InputSlot: 0,
@@ -385,7 +386,7 @@ impl Renderer for Text3DRenderer {
             context.OMSetRenderTargets(Some(&original_rtvs), params.depth_stencil_view.as_ref());
 
             let constants = SceneConstants {
-                view_projection: XMMatrix(XMMatrixTranspose((*params.view_projection_matrix).0)),
+                view_projection: XMMatrix(XMMatrixTranspose(params.view_projection_matrix.0)),
             };
             let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
             context

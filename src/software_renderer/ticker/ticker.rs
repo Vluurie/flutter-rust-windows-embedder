@@ -40,7 +40,7 @@ pub fn tick(overlay: &FlutterOverlay, context: &ID3D11DeviceContext) {
                 let rp_buf = (overlay.width as usize) * 4;
 
                 if rp_tex < rp_buf {
-                    error!("[tick] tex_pitch {} < buf_pitch {}", rp_tex, rp_buf);
+                    error!("[tick] tex_pitch {rp_tex} < buf_pitch {rp_buf}");
                     context.Unmap(&overlay.texture, 0);
                     return;
                 }

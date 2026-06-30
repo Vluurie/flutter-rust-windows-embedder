@@ -5,9 +5,8 @@ use serde_json::json;
 use winapi::shared::minwindef::{HKL, UINT};
 use winapi::um::winuser::{
     GetAsyncKeyState, GetKeyboardLayout, GetKeyboardState, MapVirtualKeyW, ToUnicodeEx,
-    MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
-    VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
-    VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP,
+    MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -22,10 +21,12 @@ use crate::bindings::embedder::{
 use crate::bindings::keyboard_layout::{get_key_map, KeyMapEntry};
 
 use crate::software_renderer::overlay::overlay_impl::{
-    FlutterOverlay, PendingKeyEvent, PendingKeyEventQueue, PendingPlatformMessageQueue,
+    FlutterOverlay, PendingKeyEvent, PendingKeyEventQueue, PendingPlatformMessage,
+    PendingPlatformMessageQueue,
 };
 use crate::software_renderer::overlay::textinput::{
-    send_perform_action_to_flutter, send_update_editing_state_to_flutter, TextInputModel,
+    SharedViewKeyboardState, TextInputModel, send_perform_action_to_flutter,
+    send_update_editing_state_to_flutter,
 };
 
 const LOGICAL_KEY_UNKNOWN_CONST: u64 = 0x0;
@@ -101,8 +102,14 @@ fn send_legacy_key_event_platform_message(
         } else {
             None
         };
+        let is_extended_key = ((lparam.0 >> 24) & 0x01) != 0;
+        let scan_code_with_extended = if is_extended_key {
+            scan_code_raw | 0xE000
+        } else {
+            scan_code_raw
+        };
         let platform_message_payload = json!({
-            "type": msg_type, "keymap": "windows", "scanCode": scan_code_raw,
+            "type": msg_type, "keymap": "windows", "scanCode": scan_code_with_extended,
             "keyCode": original_virtual_key, "modifiers": flutter_modifiers,
             "unicodeScalarValues": character_code_point,
         });
@@ -110,7 +117,7 @@ fn send_legacy_key_event_platform_message(
         let payload_bytes = payload_str.into_bytes(); // Vec<u8>
 
         let pending_message =
-            crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage {
+            PendingPlatformMessage {
                 channel: "flutter/keyevent".to_string(),
                 payload_bytes,
             };
@@ -123,6 +130,29 @@ fn send_legacy_key_event_platform_message(
 
 pub fn handle_keyboard_event(
     overlay: &FlutterOverlay,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> bool {
+    let state = overlay.view0_keyboard.clone();
+    handle_keyboard_event_for_view(overlay, &state, msg, wparam, lparam)
+}
+
+pub(crate) fn handle_keyboard_event_for_view(
+    overlay: &FlutterOverlay,
+    state: &SharedViewKeyboardState,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> bool {
+    let handled = handle_keyboard_event_for_view_impl(overlay, state, msg, wparam, lparam);
+    overlay.task_queue_state.waker.wake_up();
+    handled
+}
+
+fn handle_keyboard_event_for_view_impl(
+    overlay: &FlutterOverlay,
+    state: &SharedViewKeyboardState,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
@@ -143,77 +173,19 @@ pub fn handle_keyboard_event(
                 let mut event_handled_by_text_input = false;
 
                 {
-                    let mut active_state_guard = overlay.text_input_state.lock().unwrap();
+                    let mut active_state_guard = overlay.active_text_input.lock().unwrap();
 
-                    if let Some(active_state) = active_state_guard.as_mut() {
-                        match original_virtual_key as i32 {
-                            VK_RETURN => {
-                                let client_id = active_state.client_id;
-                                let input_action = active_state.input_action.clone();
-                                if active_state.input_action.contains("newline") {
-                                    active_state.model.insert_char('\n');
-                                    send_update_args =
-                                        Some((client_id, active_state.model.clone()));
-                                }
-                                send_action_args = Some((client_id, input_action));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_BACK => {
-                                active_state.model.backspace();
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_DELETE => {
-                                active_state.model.delete_forward();
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_LEFT => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_left(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_RIGHT => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_right(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_HOME => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_home(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_END => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_end(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_UP => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_up(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            VK_DOWN => {
-                                let extend = (GetAsyncKeyState(VK_SHIFT) & 0x8000u16 as i16) != 0;
-                                active_state.model.move_down(extend);
-                                send_update_args =
-                                    Some((active_state.client_id, active_state.model.clone()));
-                                event_handled_by_text_input = true;
-                            }
-                            _ => {}
+                    if let Some(active_state) = active_state_guard.as_mut()
+                        && original_virtual_key as i32 == VK_RETURN
+                    {
+                        let client_id = active_state.client_id;
+                        let input_action = active_state.input_action.clone();
+                        if active_state.input_action.contains("newline") {
+                            active_state.model.insert_char('\n');
+                            send_update_args = Some((client_id, active_state.model.clone()));
                         }
+                        send_action_args = Some((client_id, input_action));
+                        event_handled_by_text_input = true;
                     }
                 }
 
@@ -253,11 +225,10 @@ pub fn handle_keyboard_event(
                 );
 
                 // Track this key as pressed (only for non-repeat events)
-                if !is_repeat {
-                    if let Ok(mut pressed) = overlay.pressed_keys.lock() {
+                if !is_repeat
+                    && let Ok(mut pressed) = state.pressed_keys.lock() {
                         pressed.insert(physical_key);
                     }
-                }
 
                 let characters_bytes_for_flutter_key_event =
                     get_characters_for_key_event(original_virtual_key, scan_code_raw, lparam, hkl);
@@ -279,7 +250,7 @@ pub fn handle_keyboard_event(
                     lparam,
                     hkl,
                 );
-                return true;
+                true
             }
             WM_KEYUP | WM_SYSKEYUP => {
                 let original_virtual_key = wparam.0 as u16;
@@ -293,7 +264,7 @@ pub fn handle_keyboard_event(
                     hkl,
                 );
 
-                let was_pressed = if let Ok(mut pressed) = overlay.pressed_keys.lock() {
+                let was_pressed = if let Ok(mut pressed) = state.pressed_keys.lock() {
                     pressed.remove(&physical_key)
                 } else {
                     false
@@ -321,7 +292,7 @@ pub fn handle_keyboard_event(
                     lparam,
                     hkl,
                 );
-                return true;
+                true
             }
             WM_CHAR => {
                 let char_code = wparam.0 as u32;
@@ -330,16 +301,15 @@ pub fn handle_keyboard_event(
 
                 if let Some(char_val) = std::char::from_u32(char_code) {
                     {
-                        let mut active_state_guard = overlay.text_input_state.lock().unwrap();
+                        let mut active_state_guard = overlay.active_text_input.lock().unwrap();
 
-                        if let Some(active_state) = active_state_guard.as_mut() {
-                            if char_val != '\x08' && char_val != '\r' && !char_val.is_control() {
+                        if let Some(active_state) = active_state_guard.as_mut()
+                            && char_val != '\x08' && char_val != '\r' && !char_val.is_control() {
                                 active_state.model.insert_char(char_val);
                                 send_update_args_char =
                                     Some((active_state.client_id, active_state.model.clone()));
                                 event_handled_by_text_input = true;
                             }
-                        }
                     }
                     if let Some((client_id, cloned_model)) = send_update_args_char {
                         send_update_editing_state_to_flutter(
@@ -352,10 +322,10 @@ pub fn handle_keyboard_event(
                         return true;
                     }
                 }
-                return false;
+                false
             }
             _ => {
-                return false;
+                false
             }
         }
     }
@@ -388,7 +358,7 @@ fn send_key_event_to_flutter(
     }
 }
 
-fn windows_to_flutter_key_codes(
+pub(crate) fn windows_to_flutter_key_codes(
     original_virtual_key: u16,
     raw_scan_code: u32,
     is_extended_key: bool,
@@ -399,34 +369,33 @@ fn windows_to_flutter_key_codes(
             resolve_modifier_virtual_key(original_virtual_key, is_extended_key, raw_scan_code);
         let mut physical_key_id: u64 = PHYSICAL_KEY_UNKNOWN_CONST;
         let mut logical_key_id: u64 = LOGICAL_KEY_UNKNOWN_CONST;
-        let platform_scan_code_from_vk =
-            MapVirtualKeyW(original_virtual_key as UINT, MAPVK_VK_TO_VSC_EX);
+        let normalized_scan_code = if raw_scan_code != 0 {
+            (raw_scan_code & 0xff) | if is_extended_key { 0xE000 } else { 0 }
+        } else {
+            MapVirtualKeyW(original_virtual_key as UINT, MAPVK_VK_TO_VSC_EX)
+        };
         let key_map_data_owned: Vec<KeyMapEntry> = get_key_map();
         for entry in key_map_data_owned.iter() {
-            if platform_scan_code_from_vk != 0
-                && entry.platform == platform_scan_code_from_vk as i64
-            {
+            if normalized_scan_code != 0 && entry.platform == normalized_scan_code as i64 {
                 physical_key_id = entry.physical as u64;
-                if let Some(log_val) = entry.logical.or(entry.fallback) {
-                    if log_val != 0 {
+                if let Some(log_val) = entry.logical.or(entry.fallback)
+                    && log_val != 0 {
                         logical_key_id = log_val as u64;
                     }
-                }
                 break;
             }
         }
-        if logical_key_id == LOGICAL_KEY_UNKNOWN_CONST {
-            if (resolved_virtual_key >= 0x30 && resolved_virtual_key <= 0x39)
-                || (resolved_virtual_key >= 0x41 && resolved_virtual_key <= 0x5A)
+        if logical_key_id == LOGICAL_KEY_UNKNOWN_CONST
+            && ((0x30..=0x39).contains(&resolved_virtual_key)
+                || (0x41..=0x5A).contains(&resolved_virtual_key))
             {
                 logical_key_id = resolved_virtual_key as u64;
             }
-        }
         (physical_key_id, logical_key_id)
     }
 }
 
-fn get_characters_for_key_event(
+pub(crate) fn get_characters_for_key_event(
     original_virtual_key: u16,
     scan_code: u32,
     _lparam: LPARAM,
@@ -465,10 +434,8 @@ fn get_characters_for_key_event(
             } else if !buffer.is_empty() {
                 buffer[buffer.len() - 1] = 0;
             }
-        } else {
-            if !buffer.is_empty() {
-                buffer[0] = 0;
-            }
+        } else if !buffer.is_empty() {
+            buffer[0] = 0;
         }
         buffer
     }

@@ -790,15 +790,47 @@ pub fn generate_beam(
         up_vec[2] / up_len * thickness,
     ];
 
-    let s0 = [start[0] - right[0] - up_vec[0], start[1] - right[1] - up_vec[1], start[2] - right[2] - up_vec[2]];
-    let s1 = [start[0] + right[0] - up_vec[0], start[1] + right[1] - up_vec[1], start[2] + right[2] - up_vec[2]];
-    let s2 = [start[0] + right[0] + up_vec[0], start[1] + right[1] + up_vec[1], start[2] + right[2] + up_vec[2]];
-    let s3 = [start[0] - right[0] + up_vec[0], start[1] - right[1] + up_vec[1], start[2] - right[2] + up_vec[2]];
+    let s0 = [
+        start[0] - right[0] - up_vec[0],
+        start[1] - right[1] - up_vec[1],
+        start[2] - right[2] - up_vec[2],
+    ];
+    let s1 = [
+        start[0] + right[0] - up_vec[0],
+        start[1] + right[1] - up_vec[1],
+        start[2] + right[2] - up_vec[2],
+    ];
+    let s2 = [
+        start[0] + right[0] + up_vec[0],
+        start[1] + right[1] + up_vec[1],
+        start[2] + right[2] + up_vec[2],
+    ];
+    let s3 = [
+        start[0] - right[0] + up_vec[0],
+        start[1] - right[1] + up_vec[1],
+        start[2] - right[2] + up_vec[2],
+    ];
 
-    let e0 = [end[0] - right[0] - up_vec[0], end[1] - right[1] - up_vec[1], end[2] - right[2] - up_vec[2]];
-    let e1 = [end[0] + right[0] - up_vec[0], end[1] + right[1] - up_vec[1], end[2] + right[2] - up_vec[2]];
-    let e2 = [end[0] + right[0] + up_vec[0], end[1] + right[1] + up_vec[1], end[2] + right[2] + up_vec[2]];
-    let e3 = [end[0] - right[0] + up_vec[0], end[1] - right[1] + up_vec[1], end[2] - right[2] + up_vec[2]];
+    let e0 = [
+        end[0] - right[0] - up_vec[0],
+        end[1] - right[1] - up_vec[1],
+        end[2] - right[2] - up_vec[2],
+    ];
+    let e1 = [
+        end[0] + right[0] - up_vec[0],
+        end[1] + right[1] - up_vec[1],
+        end[2] + right[2] - up_vec[2],
+    ];
+    let e2 = [
+        end[0] + right[0] + up_vec[0],
+        end[1] + right[1] + up_vec[1],
+        end[2] + right[2] + up_vec[2],
+    ];
+    let e3 = [
+        end[0] - right[0] + up_vec[0],
+        end[1] - right[1] + up_vec[1],
+        end[2] - right[2] + up_vec[2],
+    ];
 
     add_triangle(vertices, s0, s1, e1, color);
     add_triangle(vertices, s0, e1, e0, color);

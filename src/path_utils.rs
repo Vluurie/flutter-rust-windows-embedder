@@ -7,7 +7,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{HWND, MAX_PATH},
+        Foundation::{HMODULE, HWND, MAX_PATH},
         System::{
             Com::{
                 CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -128,7 +128,7 @@ pub fn select_data_directory() -> Option<PathBuf> {
 /// locate the module by the address of this function.
 pub fn dll_directory() -> PathBuf {
     unsafe {
-        let mut hmod = windows::Win32::Foundation::HMODULE(null_mut());
+        let mut hmod = HMODULE(null_mut());
         let addr_of_this_func = dll_directory as *const ();
         let _ = GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,

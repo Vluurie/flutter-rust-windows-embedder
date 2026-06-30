@@ -4,6 +4,9 @@ use crate::bindings::embedder::{
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::{
     BlendMode, PrimitiveOptions, PrimitiveType, Vertex3D,
 };
+use crate::software_renderer::d3d11_compositor::text_3d_renderer::{
+    FontAtlas, GlyphInfo, TexturedVertex3D,
+};
 use crate::software_renderer::overlay::d3d::{
     create_compositing_texture, create_srv, create_texture,
 };
@@ -30,6 +33,26 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::IDXGISwapChain;
 use windows::core::Interface;
 
+/// Value parameters for [`FlutterOverlay::create`]. Bundled into a struct so the
+/// constructor takes a small, named argument set instead of a long positional
+/// list. The D3D device + swap chain are passed separately as borrows.
+pub struct OverlayCreateParams {
+    /// Unique name for this overlay instance.
+    pub name: String,
+    /// Screen-space top-left position.
+    pub x: i32,
+    pub y: i32,
+    /// Initial size in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Directory containing the Flutter application's assets.
+    pub flutter_data_dir: PathBuf,
+    /// Optional Dart VM entrypoint arguments.
+    pub dart_entrypoint_args: Option<Vec<String>>,
+    /// Optional engine command-line arguments.
+    pub engine_args: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RendererType {
     Software,
@@ -47,10 +70,10 @@ impl std::fmt::Display for FlutterEmbedderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FlutterEmbedderError::InitializationFailed(s) => {
-                write!(f, "Flutter Initialization Failed: {}", s)
+                write!(f, "Flutter Initialization Failed: {s}")
             }
             FlutterEmbedderError::OperationFailed(s) => {
-                write!(f, "Flutter Operation Failed: {}", s)
+                write!(f, "Flutter Operation Failed: {s}")
             }
             FlutterEmbedderError::EngineNotRunning => {
                 write!(f, "Flutter engine is not running or handle is null.")
@@ -62,6 +85,16 @@ impl std::fmt::Display for FlutterEmbedderError {
     }
 }
 impl std::error::Error for FlutterEmbedderError {}
+
+/// True when a resize request is a no-op: not forced and the new geometry
+/// `(x, y, w, h)` equals the current geometry.
+pub(crate) fn should_skip_resize(
+    current: (i32, i32, u32, u32),
+    new: (i32, i32, u32, u32),
+    force: bool,
+) -> bool {
+    !force && current == new
+}
 
 impl FlutterOverlay {
     /// Creates and initializes a new `FlutterOverlay` instance.
@@ -82,34 +115,16 @@ impl FlutterOverlay {
     /// # Returns
     /// A `Result` containing a `Box<FlutterOverlay>` or a `FlutterEmbedderError`.
     pub fn create(
-        name: String,
+        params: OverlayCreateParams,
         d3d11_device: &ID3D11Device,
         swap_chain: &IDXGISwapChain,
-        initial_x_pos: i32,
-        initial_y_pos: i32,
-        initial_width: u32,
-        initial_height: u32,
-        flutter_data_dir: PathBuf,
-        dart_entrypoint_args: Option<Vec<String>>,
-        engine_args_opt: Option<Vec<String>>,
     ) -> Result<Box<Self>, FlutterEmbedderError> {
         info!(
             "[FlutterOverlay::create] Initializing Flutter Overlay '{}'. Data dir: {:?}",
-            name, flutter_data_dir
+            params.name, params.flutter_data_dir
         );
 
-        let overlay_box = internal_embedder_init::init_overlay(
-            name,
-            Some(flutter_data_dir),
-            d3d11_device,
-            swap_chain,
-            initial_width,
-            initial_height,
-            initial_x_pos,
-            initial_y_pos,
-            dart_entrypoint_args.as_deref(),
-            engine_args_opt.as_deref(),
-        );
+        let overlay_box = internal_embedder_init::init_overlay(params, d3d11_device, swap_chain);
 
         match overlay_box {
             Some(ob) if !ob.engine.0.is_null() => Ok(ob),
@@ -161,19 +176,13 @@ impl FlutterOverlay {
         swap_chain: &IDXGISwapChain,
         force: bool,
     ) {
-        if !force
-            && self.width == new_width
-            && self.height == new_height
-            && self.x == new_x
-            && self.y == new_y
-        {
+        if should_skip_resize(
+            (self.x, self.y, self.width, self.height),
+            (new_x, new_y, new_width, new_height),
+            force,
+        ) {
             return;
         }
-
-        info!(
-            "[handle_window_resize] Resizing overlay '{}' to {}x{}",
-            self.name, new_width, new_height
-        );
 
         self.width = new_width;
         self.height = new_height;
@@ -184,8 +193,7 @@ impl FlutterOverlay {
             Ok(d) => d,
             Err(e) => {
                 error!(
-                    "[handle_window_resize] Failed to get device from swap chain: {}",
-                    e
+                    "[handle_window_resize] Failed to get device from swap chain: {e}"
                 );
                 return;
             }
@@ -202,11 +210,6 @@ impl FlutterOverlay {
             }
             RendererType::OpenGL => {
                 if let Some(angle_state) = self.angle_state.as_mut() {
-                    info!(
-                        "[handle_window_resize] Deferring ANGLE resize to render thread ({}x{})",
-                        self.width, self.height
-                    );
-
                     angle_state.0.pending_resize = Some((self.width, self.height));
 
                     self.texture =
@@ -245,25 +248,20 @@ impl FlutterOverlay {
     /// After a deferred resize, the game-side shared texture needs to be re-opened.
     /// Call this before tick() when the overlay has mutable access.
     pub fn reopen_shared_texture_if_needed(&mut self, context: &ID3D11DeviceContext) {
-        if self.angle_shared_texture.is_none() {
-            if let Some(handle) = &self.d3d11_shared_handle {
+        if self.angle_shared_texture.is_none()
+            && let Some(handle) = &self.d3d11_shared_handle {
                 unsafe {
                     let game_device: ID3D11Device = context.GetDevice().unwrap();
                     let mut opt: Option<ID3D11Texture2D> = None;
-                    if game_device.OpenSharedResource(handle.0, &mut opt).is_ok() {
-                        if let Some(tex) = opt {
+                    if game_device.OpenSharedResource(handle.0, &mut opt).is_ok()
+                        && let Some(tex) = opt {
                             self.game_keyed_mutex = tex.cast().ok();
                             self.angle_shared_texture = Some(tex);
                             // Now safe to drop the old shared texture
                             self.angle_shared_texture_back = None;
-                            info!(
-                                "[FlutterOverlay] Re-opened shared texture on game device after resize."
-                            );
                         }
-                    }
                 }
             }
-        }
     }
 
     /// Performs per-frame updates, preparing the GPU texture with the latest Flutter content.
@@ -271,6 +269,32 @@ impl FlutterOverlay {
     /// - For `OpenGL` mode, it waits for ANGLE to finish rendering, then copies from the shared texture.
     pub fn tick(&self, context: &ID3D11DeviceContext) {
         if !self.visible || self.width == 0 || self.height == 0 {
+            if !self.secondary_view_ids().is_empty() {
+                // View 0 is hidden but satellite views still render. The engine's
+                // raster thread blocks until view 0's keyed mutex is handed back to
+                // key 0 (present_implicit_view releases it to key 1 each frame). If
+                // we skip that handshake the whole engine — including every
+                // satellite view — stalls. So still acknowledge view 0's frame:
+                // acquire key 1, release key 0, without copying to the (hidden)
+                // view-0 texture. Then schedule the next frame.
+                let presented = self
+                    .angle_frame_presented
+                    .load(std::sync::atomic::Ordering::Acquire);
+                let copied = self
+                    .angle_frame_copied
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if presented > copied {
+                    if let Some(mutex) = &self.game_keyed_mutex {
+                        unsafe {
+                            let _ = mutex.AcquireSync(1, u32::MAX);
+                            let _ = mutex.ReleaseSync(0);
+                        }
+                    }
+                    self.angle_frame_copied
+                        .store(presented, std::sync::atomic::Ordering::Relaxed);
+                }
+                let _ = self.request_frame();
+            }
             return;
         }
 
@@ -279,11 +303,10 @@ impl FlutterOverlay {
                 tick(self, context);
             }
             RendererType::OpenGL => {
-                if let Some(angle_state) = &self.angle_state {
-                    if angle_state.0.is_device_lost() {
+                if let Some(angle_state) = &self.angle_state
+                    && angle_state.0.is_device_lost() {
                         return;
                     }
-                }
 
                 if let Some(angle_texture) = &self.angle_shared_texture {
                     let presented = self
@@ -700,7 +723,7 @@ impl FlutterOverlay {
         sampler: ID3D11SamplerState,
         glyphs: std::collections::HashMap<
             char,
-            crate::software_renderer::d3d11_compositor::text_3d_renderer::GlyphInfo,
+            GlyphInfo,
         >,
         line_height: f32,
         base_font_size: f32,
@@ -725,7 +748,7 @@ impl FlutterOverlay {
     pub fn get_font_atlas(
         &self,
         font_id: &str,
-    ) -> Option<&crate::software_renderer::d3d11_compositor::text_3d_renderer::FontAtlas> {
+    ) -> Option<&FontAtlas> {
         self.text_renderer.get_font_atlas(font_id)
     }
 
@@ -762,7 +785,7 @@ impl FlutterOverlay {
         &mut self,
         font_id: &str,
         group_id: &str,
-        vertices: &[crate::software_renderer::d3d11_compositor::text_3d_renderer::TexturedVertex3D],
+        vertices: &[TexturedVertex3D],
         options: PrimitiveOptions,
     ) {
         self.text_renderer
@@ -837,7 +860,7 @@ impl FlutterOverlay {
                     "FlutterEngineScheduleFrame FAILED for '{}': {:?}",
                     self.name, result_code
                 );
-                error!("[FlutterOverlay] {}", err_msg);
+                error!("[FlutterOverlay] {err_msg}");
                 Err(FlutterEmbedderError::OperationFailed(err_msg))
             }
         }
@@ -900,7 +923,7 @@ impl FlutterOverlay {
                     "FlutterEngineShutdown failed for '{}': {:?}",
                     self.name, result
                 );
-                error!("[FlutterOverlay::shutdown] {}", err_msg);
+                error!("[FlutterOverlay::shutdown] {err_msg}");
                 return Err(FlutterEmbedderError::OperationFailed(err_msg));
             } else {
                 info!(
@@ -1003,8 +1026,7 @@ impl FlutterOverlay {
             }
             Err(poisoned) => {
                 log::error!(
-                    "Failed to acquire lock on message_handlers because it was poisoned: {}",
-                    poisoned
+                    "Failed to acquire lock on message_handlers because it was poisoned: {poisoned}"
                 );
             }
         }
@@ -1081,7 +1103,7 @@ impl FlutterOverlay {
         if result == e::FlutterEngineResult_kSuccess {
             Ok(())
         } else {
-            let err_msg = format!("Failed to post Dart object with code: {:?}", result);
+            let err_msg = format!("Failed to post Dart object with code: {result:?}");
             error!("[FlutterOverlay:'{}'] {}", self.name, err_msg);
             Err(FlutterEmbedderError::OperationFailed(err_msg))
         }

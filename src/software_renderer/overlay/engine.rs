@@ -30,7 +30,7 @@ pub(crate) fn run_engine(
             let err_msg =
                 "[Engine] overlay_raw_ptr is null. Cannot proceed with engine initialization."
                     .to_string();
-            error!("{}", err_msg);
+            error!("{err_msg}");
             return Err(err_msg);
         }
 
@@ -38,7 +38,7 @@ pub(crate) fn run_engine(
             let err_msg =
                 "[Engine] user_data and overlay_raw_ptr mismatch — cannot safely proceed."
                     .to_string();
-            error!("{}", err_msg);
+            error!("{err_msg}");
             return Err(err_msg);
         }
 
@@ -52,10 +52,9 @@ pub(crate) fn run_engine(
 
         if init_result != embedder::FlutterEngineResult_kSuccess || engine_handle.is_null() {
             let err_msg = format!(
-                "[Engine] FlutterEngineInitialize failed with result: {:?} or engine handle is null.",
-                init_result
+                "[Engine] FlutterEngineInitialize failed with result: {init_result:?} or engine handle is null."
             );
-            error!("{}", err_msg);
+            error!("{err_msg}");
             return Err(err_msg);
         }
 
@@ -68,10 +67,9 @@ pub(crate) fn run_engine(
 
         if run_result != embedder::FlutterEngineResult_kSuccess {
             let err_msg = format!(
-                "[Engine] FlutterEngineRunInitialized failed with result: {:?}",
-                run_result
+                "[Engine] FlutterEngineRunInitialized failed with result: {run_result:?}"
             );
-            error!("{}", err_msg);
+            error!("{err_msg}");
 
             (engine_dll_arc.FlutterEngineDeinitialize)(engine_handle);
             (*overlay_raw_ptr).engine = SendableFlutterEngine(ptr::null_mut());
@@ -109,8 +107,7 @@ pub(crate) fn update_flutter_window_metrics(
     let r = unsafe { (engine_dll.FlutterEngineSendWindowMetricsEvent)(engine, &wm) };
     if r != embedder::FlutterEngineResult_kSuccess {
         error!(
-            "[Metrics] FlutterEngineSendWindowMetricsEvent failed with result: {:?}",
-            r
+            "[Metrics] FlutterEngineSendWindowMetricsEvent failed with result: {r:?}"
         );
     }
 }
@@ -151,4 +148,5 @@ pub(crate) unsafe extern "C" fn on_root_isolate_created(user_data: *mut ::std::o
     } else {
         error!("[Engine] Failed to lock queue in isolate callback.");
     }
+    overlay.task_queue_state.waker.wake_up();
 }

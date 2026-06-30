@@ -1,10 +1,12 @@
 use directx_math::{XMMatrix, XMMatrixTranspose};
 use std::{collections::HashMap, mem};
+use windows::core::PCSTR;
 use windows::Win32::{
     Foundation::BOOL,
     Graphics::{
         Direct3D::{D3D11_PRIMITIVE_TOPOLOGY_LINELIST, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST},
         Direct3D11::*,
+        Dxgi::Common::{DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT},
     },
 };
 
@@ -24,11 +26,13 @@ pub enum PrimitiveType {
 /// This controls how the primitive's colors blend with the existing pixels on the render target,
 /// and also affects depth testing behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Default)]
 pub enum BlendMode {
     /// Standard alpha blending (SRC_ALPHA, INV_SRC_ALPHA) with depth testing enabled (no writes).
     /// Most commonly used for transparent objects.
     /// - Blending: Enabled (alpha blending)
     /// - Depth Testing: Enabled (read-only, no depth writes)
+    #[default]
     Transparent,
     /// No blending - pixels are written directly (opaque) with depth testing disabled.
     /// Use this when the camera/player is inside the geometry (e.g., battle royale cylinder).
@@ -37,11 +41,6 @@ pub enum BlendMode {
     Opaque,
 }
 
-impl Default for BlendMode {
-    fn default() -> Self {
-        BlendMode::Transparent
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct PrimitiveOptions {
@@ -174,18 +173,18 @@ impl Primitive3DRenderer {
 
         let input_element_descs = [
             D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: windows::core::PCSTR("POSITION\0".as_ptr()),
+                SemanticName: PCSTR(c"POSITION".as_ptr().cast()),
                 SemanticIndex: 0,
-                Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32B32_FLOAT,
+                Format: DXGI_FORMAT_R32G32B32_FLOAT,
                 InputSlot: 0,
                 AlignedByteOffset: 0,
                 InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
                 InstanceDataStepRate: 0,
             },
             D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: windows::core::PCSTR("COLOR\0".as_ptr()),
+                SemanticName: PCSTR(c"COLOR".as_ptr().cast()),
                 SemanticIndex: 0,
-                Format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                Format: DXGI_FORMAT_R32G32B32A32_FLOAT,
                 InputSlot: 0,
                 AlignedByteOffset: 12,
                 InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
@@ -708,7 +707,7 @@ impl Renderer for Primitive3DRenderer {
             context.OMSetRenderTargets(Some(&original_rtvs), params.depth_stencil_view.as_ref());
 
             let constants = SceneConstants {
-                view_projection: XMMatrix(XMMatrixTranspose((*params.view_projection_matrix).0)),
+                view_projection: XMMatrix(XMMatrixTranspose(params.view_projection_matrix.0)),
             };
             let mut mapped_cb = D3D11_MAPPED_SUBRESOURCE::default();
             context

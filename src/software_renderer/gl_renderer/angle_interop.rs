@@ -1,6 +1,7 @@
 use crate::bindings::embedder;
 
 use crate::software_renderer::gl_renderer::nvidia_aftermath;
+use crate::software_renderer::multiview::view_surface::ViewGlResources;
 use crate::software_renderer::overlay::d3d::create_shared_texture_and_get_handle;
 use crate::software_renderer::overlay::overlay_impl::{FlutterOverlay, SendableHandle};
 
@@ -20,16 +21,16 @@ use windows::core::Interface;
 
 /// Represents the platform's default display connection. Pass this to `eglGetDisplay`
 /// to get a handle to the primary display device available to the system.
-pub const EGL_DEFAULT_DISPLAY: *mut c_void = 0 as *mut c_void;
+pub const EGL_DEFAULT_DISPLAY: *mut c_void = std::ptr::null_mut::<c_void>();
 /// A null handle for an EGL rendering context. It is used with `eglMakeCurrent`
 /// to detach the current rendering context from a thread without attaching a new one.
-pub const EGL_NO_CONTEXT: *mut c_void = 0 as *mut c_void;
+pub const EGL_NO_CONTEXT: *mut c_void = std::ptr::null_mut::<c_void>();
 /// A null handle for an EGL display connection. Functions that return an `EGLDisplay`
 /// will return this value on failure, for instance, if the requested display is not available.
-pub const EGL_NO_DISPLAY: *mut c_void = 0 as *mut c_void;
+pub const EGL_NO_DISPLAY: *mut c_void = std::ptr::null_mut::<c_void>();
 /// A null handle for an EGL drawing surface. Functions that create a window, pbuffer,
 /// or pixmap surface will return this value if the surface cannot be created.
-pub const EGL_NO_SURFACE: *mut c_void = 0 as *mut c_void;
+pub const EGL_NO_SURFACE: *mut c_void = std::ptr::null_mut::<c_void>();
 /// The boolean `true` value for EGL operations. EGL functions returning a boolean
 /// success status will return this value.
 pub const EGL_TRUE: i32 = 1;
@@ -49,6 +50,13 @@ pub const EGL_WIDTH: i32 = 0x3057;
 /// An attribute key used to specify or query the height of a drawing surface in pixels.
 /// Used when creating pbuffer surfaces or querying any surface's dimensions.
 pub const EGL_HEIGHT: i32 = 0x3056;
+/// Pbuffer texture format attribute. `EGL_TEXTURE_RGBA` makes the pbuffer
+/// bindable to a GL texture (render-to-texture) via `eglBindTexImage`.
+pub const EGL_TEXTURE_FORMAT: i32 = 0x3080;
+pub const EGL_TEXTURE_RGBA: i32 = 0x305E;
+/// Pbuffer texture target attribute; `EGL_TEXTURE_2D` binds to a 2D texture.
+pub const EGL_TEXTURE_TARGET: i32 = 0x3081;
+pub const EGL_TEXTURE_2D: i32 = 0x305F;
 /// An ANGLE-specific extension attribute used for operations involving Direct3D 11 textures.
 pub const EGL_D3D11_TEXTURE_ANGLE: i32 = 0x3484;
 /// An OpenGL extension token for a pixel format where color components are ordered
@@ -178,10 +186,112 @@ type EglCreatePbufferFromClientBuffer =
 /// associated with an EGL surface (window, pbuffer, or pixmap).
 type EglDestroySurface = unsafe extern "C" fn(*mut c_void, *mut c_void) -> bool;
 
+// --- GL entry points needed for per-view framebuffer backing stores ---
+//
+// The multi-view compositor hands Flutter a GL framebuffer per view. We create
+// that framebuffer here: a color texture is bound from the view's pbuffer
+// surface (via eglBindTexImage), then attached to an FBO. These are resolved
+// lazily on the render thread the first time a view's resources are built.
+
+/// `glGenFramebuffers(GLsizei n, GLuint* framebuffers)`.
+type GlGenFramebuffers = unsafe extern "C" fn(i32, *mut u32);
+/// `glBindFramebuffer(GLenum target, GLuint framebuffer)`.
+type GlBindFramebuffer = unsafe extern "C" fn(u32, u32);
+/// `glGenTextures(GLsizei n, GLuint* textures)`.
+type GlGenTextures = unsafe extern "C" fn(i32, *mut u32);
+/// `glBindTexture(GLenum target, GLuint texture)`.
+type GlBindTexture = unsafe extern "C" fn(u32, u32);
+/// `glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)`.
+type GlFramebufferTexture2D = unsafe extern "C" fn(u32, u32, u32, u32, i32);
+/// `glDeleteFramebuffers(GLsizei n, const GLuint* framebuffers)`.
+type GlDeleteFramebuffers = unsafe extern "C" fn(i32, *const u32);
+/// `glDeleteTextures(GLsizei n, const GLuint* textures)`.
+type GlDeleteTextures = unsafe extern "C" fn(i32, *const u32);
+/// `glCheckFramebufferStatus(GLenum target) -> GLenum`.
+type GlCheckFramebufferStatus = unsafe extern "C" fn(u32) -> u32;
+/// `eglBindTexImage(EGLDisplay, EGLSurface, EGLint buffer) -> EGLBoolean`.
+type EglBindTexImage = unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32;
+
+/// GL/EGL constants for framebuffer creation.
+pub const GL_FRAMEBUFFER: u32 = 0x8D40;
+pub const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
+pub const GL_TEXTURE_2D: u32 = 0x0DE1;
+pub const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
+pub const EGL_BACK_BUFFER: i32 = 0x3084;
+
+/// GL/EGL function pointers resolved once and shared by all secondary views.
+/// These are resolved through the same `eglGetProcAddress` used by the engine.
+#[derive(Clone, Copy)]
+pub struct ViewGlProcs {
+    pub gen_framebuffers: GlGenFramebuffers,
+    pub bind_framebuffer: GlBindFramebuffer,
+    pub gen_textures: GlGenTextures,
+    pub bind_texture: GlBindTexture,
+    pub framebuffer_texture_2d: GlFramebufferTexture2D,
+    pub delete_framebuffers: GlDeleteFramebuffers,
+    pub delete_textures: GlDeleteTextures,
+    pub check_framebuffer_status: GlCheckFramebufferStatus,
+    pub bind_tex_image: EglBindTexImage,
+    pub flush: GlFlush,
+    pub finish: GlFinish,
+}
+
+unsafe impl Send for ViewGlProcs {}
+unsafe impl Sync for ViewGlProcs {}
+
+impl ViewGlProcs {
+    /// Resolves all GL/EGL entry points via the shared `eglGetProcAddress`.
+    /// Must be called after [`get_or_init_shared_egl`] has succeeded (i.e. after
+    /// at least one [`AngleInteropState::new`]).
+    pub fn resolve() -> Result<Self, String> {
+        let shared = SHARED_EGL
+            .get()
+            .ok_or_else(|| "SHARED_EGL not initialized before ViewGlProcs::resolve".to_string())?;
+        let get = |name: &str| -> Result<*mut c_void, String> {
+            let c = CString::new(name).map_err(|e| e.to_string())?;
+            let p = unsafe { (shared.egl_get_proc_address)(c.as_ptr()) };
+            if p.is_null() {
+                Err(format!("eglGetProcAddress returned null for {name}"))
+            } else {
+                Ok(p)
+            }
+        };
+        unsafe {
+            Ok(Self {
+                gen_framebuffers: mem::transmute::<*mut c_void, GlGenFramebuffers>(get(
+                    "glGenFramebuffers",
+                )?),
+                bind_framebuffer: mem::transmute::<*mut c_void, GlBindFramebuffer>(get(
+                    "glBindFramebuffer",
+                )?),
+                gen_textures: mem::transmute::<*mut c_void, GlGenTextures>(get("glGenTextures")?),
+                bind_texture: mem::transmute::<*mut c_void, GlBindTexture>(get("glBindTexture")?),
+                framebuffer_texture_2d: mem::transmute::<*mut c_void, GlFramebufferTexture2D>(get(
+                    "glFramebufferTexture2D",
+                )?),
+                delete_framebuffers: mem::transmute::<*mut c_void, GlDeleteFramebuffers>(get(
+                    "glDeleteFramebuffers",
+                )?),
+                delete_textures: mem::transmute::<*mut c_void, GlDeleteTextures>(get(
+                    "glDeleteTextures",
+                )?),
+                check_framebuffer_status: mem::transmute::<*mut c_void, GlCheckFramebufferStatus>(
+                    get("glCheckFramebufferStatus")?,
+                ),
+                bind_tex_image: mem::transmute::<*mut c_void, EglBindTexImage>(get(
+                    "eglBindTexImage",
+                )?),
+                flush: mem::transmute::<*mut c_void, GlFlush>(get("glFlush")?),
+                finish: mem::transmute::<*mut c_void, GlFinish>(get("glFinish")?),
+            })
+        }
+    }
+}
+
 ///
 /// Converts a raw EGL error code into a human-readable string literal.
 ///
-fn egl_error_to_string(error_code: i32) -> &'static str {
+pub(crate) fn egl_error_to_string(error_code: i32) -> &'static str {
     match error_code {
         0x3000 => "EGL_SUCCESS",
         0x3001 => "EGL_NOT_INITIALIZED",
@@ -223,7 +333,7 @@ fn log_egl_error(func: &str, line: u32, egl_get_error_fn: EglGetError) {
 /// Builds the EGL display attributes array for ANGLE initialization.
 /// Debug layers are enabled only if the `ANGLE_DEBUG_LAYERS_ENABLED` environment variable is set.
 ///
-fn build_display_attributes() -> Vec<i32> {
+pub(crate) fn build_display_attributes() -> Vec<i32> {
     let debug_layers_enabled = std::env::var("ANGLE_DEBUG_LAYERS_ENABLED").is_ok();
 
     let mut attrs = vec![
@@ -393,9 +503,7 @@ impl AngleInteropState {
             };
 
             let get_proc_assert = |name: &str| {
-                let ptr = get_proc(name);
-                assert!(!ptr.is_null(), "Failed to load {}", name);
-                ptr
+                get_proc(name)
             };
 
             let proc_ptr = get_proc("eglGetPlatformDisplayEXT");
@@ -421,12 +529,8 @@ impl AngleInteropState {
                 return Err("Failed to get EGL display.".to_string());
             }
 
-            match nvidia_aftermath::enable_gpu_crash_dumps(engine_dir) {
-                Ok(true) => info!("[AngleInterop] NVIDIA Aftermath GPU crash debugging enabled"),
-                Ok(false) => info!(
-                    "[AngleInterop] NVIDIA Aftermath not available (non-NVIDIA GPU or missing SDK)"
-                ),
-                Err(e) => warn!("[AngleInterop] Failed to enable Aftermath: {}", e),
+            if let Err(e) = nvidia_aftermath::enable_gpu_crash_dumps(engine_dir) {
+                warn!("[AngleInterop] Failed to enable Aftermath: {e}");
             }
 
             if !egl_initialize(display, ptr::null_mut(), ptr::null_mut()) {
@@ -474,8 +578,7 @@ impl AngleInteropState {
 
             if let Err(e) = nvidia_aftermath::initialize_d3d11_device(&angle_d3d11_device) {
                 warn!(
-                    "[AngleInterop] Failed to initialize Aftermath for D3D11 device: {}",
-                    e
+                    "[AngleInterop] Failed to initialize Aftermath for D3D11 device: {e}"
                 );
             }
 
@@ -560,6 +663,98 @@ impl AngleInteropState {
     ///
     pub fn get_d3d_device(&self) -> Result<ID3D11Device, String> {
         Ok(self.angle_d3d11_device.clone())
+    }
+
+    /// The EGL display this state is bound to. Shared by secondary views so they
+    /// live on the same ANGLE device/context as the implicit view.
+    pub fn display(&self) -> *mut c_void {
+        self.display
+    }
+
+    /// The chosen EGL config. Secondary-view pbuffer surfaces must use the same
+    /// config to be compatible with the shared context.
+    pub fn config(&self) -> *mut c_void {
+        self.config
+    }
+
+    /// The main rendering context. Secondary views render on the same raster
+    /// thread under this context; their FBOs are just additional render targets.
+    pub fn context(&self) -> *mut c_void {
+        self.context
+    }
+
+    /// Creates a pbuffer surface wrapping `d3d_texture` (a shared D3D11 texture
+    /// on ANGLE's device) so GL can render into it. Returns the EGL surface
+    /// handle. The caller owns the surface and must destroy it via
+    /// [`destroy_pbuffer`].
+    ///
+    /// # Safety
+    /// Must be called on the render thread with this state's context current.
+    pub unsafe fn create_pbuffer_for_texture(
+        &self,
+        d3d_texture: &ID3D11Texture2D,
+        width: u32,
+        height: u32,
+    ) -> Result<*mut c_void, String> {
+        unsafe {
+            // Texture-target pbuffer: EGL_TEXTURE_FORMAT/EGL_TEXTURE_TARGET make
+            // the surface bindable to a GL texture via eglBindTexImage, which is
+            // how satellite views attach the shared D3D11 texture to their own
+            // FBO. (The implicit view uses FBO 0 directly and does not need this.)
+            let attribs = [
+                EGL_WIDTH,
+                width as i32,
+                EGL_HEIGHT,
+                height as i32,
+                EGL_TEXTURE_FORMAT,
+                EGL_TEXTURE_RGBA,
+                EGL_TEXTURE_TARGET,
+                EGL_TEXTURE_2D,
+                EGL_NONE,
+            ];
+            let surface = (self.egl_create_pbuffer_from_client_buffer)(
+                self.display,
+                EGL_D3D_TEXTURE_ANGLE as u32,
+                d3d_texture.as_raw(),
+                self.config,
+                attribs.as_ptr(),
+            );
+            if surface == EGL_NO_SURFACE {
+                let code = (self.egl_get_error)();
+                return Err(format!(
+                    "create_pbuffer_for_texture failed: {} ({:#X})",
+                    egl_error_to_string(code),
+                    code
+                ));
+            }
+            Ok(surface)
+        }
+    }
+
+    /// Destroys a pbuffer surface previously created by
+    /// [`create_pbuffer_for_texture`].
+    ///
+    /// # Safety
+    /// `surface` must be a pbuffer created against this state's display.
+    pub unsafe fn destroy_pbuffer(&self, surface: *mut c_void) {
+        if surface != EGL_NO_SURFACE {
+            unsafe {
+                (self.egl_destroy_surface)(self.display, surface);
+            }
+        }
+    }
+
+    /// Binds `surface` and `context` current on the calling (render) thread.
+    /// Used by secondary views before issuing GL into their FBO.
+    ///
+    /// `eglBindTexImage`-binds the pbuffer `surface` to the currently-bound GL
+    /// texture as `GL_BACK_BUFFER`, using the provided proc table.
+    ///
+    /// # Safety
+    /// `surface` must be a valid pbuffer for this state's display and a GL
+    /// texture must be bound on the current thread.
+    pub unsafe fn bind_tex_image(&self, procs: &ViewGlProcs, surface: *mut c_void) -> bool {
+        unsafe { (procs.bind_tex_image)(self.display, surface, EGL_BACK_BUFFER) != 0 }
     }
 
     ///
@@ -716,8 +911,7 @@ impl AngleInteropState {
 
             if let Err(e) = nvidia_aftermath::initialize_d3d11_device(&new_d3d11_device) {
                 warn!(
-                    "[AngleInterop] Failed to initialize Aftermath for recovered D3D11 device: {}",
-                    e
+                    "[AngleInterop] Failed to initialize Aftermath for recovered D3D11 device: {e}"
                 );
             }
 
@@ -773,7 +967,6 @@ impl AngleInteropState {
     ///
     pub fn cleanup_surface_resources(&mut self) {
         if self.pbuffer_surface != EGL_NO_SURFACE {
-            info!("[AngleInterop] Deferring old EGLSurface cleanup to render thread.");
             self.old_pbuffer_surface = Some(self.pbuffer_surface);
             self.pbuffer_surface = EGL_NO_SURFACE;
         }
@@ -812,7 +1005,7 @@ impl AngleInteropState {
             self.pbuffer_surface = (self.egl_create_pbuffer_from_client_buffer)(
                 self.display,
                 EGL_D3D_TEXTURE_ANGLE as u32,
-                d3d_texture_ptr as *mut c_void,
+                d3d_texture_ptr,
                 self.config,
                 pbuffer_attribs.as_ptr(),
             );
@@ -825,8 +1018,6 @@ impl AngleInteropState {
                 );
                 return Err("Failed to create pbuffer surface.".to_string());
             }
-
-            info!("[AngleInterop] New EGLSurface created successfully for texture.");
         }
         Ok((d3d_texture, handle))
     }
@@ -891,13 +1082,8 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
     unsafe {
         let overlay = &mut *(user_data as *mut FlutterOverlay);
 
-        if let Some(angle_state) = &mut overlay.angle_state {
-            if let Some((w, h)) = angle_state.0.pending_resize.take() {
-                info!(
-                    "[AngleInterop] Executing deferred resize {}x{} on render thread.",
-                    w, h
-                );
-
+        if let Some(angle_state) = &mut overlay.angle_state
+            && let Some((w, h)) = angle_state.0.pending_resize.take() {
                 match angle_state.0.recreate_resources(w, h) {
                     Ok((new_angle_texture, new_shared_handle)) => {
                         overlay.angle_keyed_mutex = new_angle_texture.cast().ok();
@@ -916,15 +1102,12 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                         overlay
                             .angle_frame_copied
                             .store(counter, std::sync::atomic::Ordering::Relaxed);
-
-                        info!("[AngleInterop] Deferred resize completed successfully.");
                     }
                     Err(e) => {
-                        error!("[AngleInterop] Deferred resize failed: {}", e);
+                        error!("[AngleInterop] Deferred resize failed: {e}");
                     }
                 }
             }
-        }
 
         // Acquire the shared texture so ANGLE can write to it.
         // Key 0 = "ANGLE can write". Blocks until game side calls ReleaseSync(0).
@@ -986,7 +1169,6 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                     EGL_NO_CONTEXT,
                 );
                 (state.egl_destroy_surface)(state.display, old_surface);
-                info!("[AngleInterop] Destroyed old EGLSurface on render thread.");
             }
 
             let result: EGLBoolean = (state.egl_make_current)(
@@ -1017,8 +1199,37 @@ extern "C" fn make_current_callback(user_data: *mut c_void) -> bool {
                         error_code
                     );
                 }
+                return false;
             }
-            return result == EGL_TRUE;
+
+            // For the implicit view under the compositor path, the backing store
+            // is simply the pbuffer surface's DEFAULT framebuffer (FBO 0): the
+            // pbuffer is already backed by our shared D3D11 texture, and it is
+            // current on this thread. No separate FBO / eglBindTexImage is needed
+            // (and would be invalid for a D3D-client-buffer pbuffer). We resolve
+            // the GL proc table once for the flush in present.
+            if overlay.compositor_active && overlay.view0_gl.is_none() {
+                match ViewGlProcs::resolve() {
+                    Ok(procs) => {
+                        overlay.view0_gl = Some(
+                            ViewGlResources {
+                                procs,
+                                // Default framebuffer of the current pbuffer surface.
+                                pbuffer_surface: state.pbuffer_surface,
+                                color_texture: 0,
+                                fbo: 0,
+                            },
+                        );
+                        info!(
+                            "[AngleInterop] Implicit view uses default framebuffer (FBO 0) for compositor path."
+                        );
+                    }
+                    Err(e) => {
+                        error!("[AngleInterop] Failed to resolve GL procs for view 0: {e}");
+                    }
+                }
+            }
+            return true;
         }
         false
     }
@@ -1169,6 +1380,7 @@ extern "C" fn present_with_info_callback(
 ) -> bool {
     unsafe {
         let overlay = &*(user_data as *mut FlutterOverlay);
+
         if let Some(angle_state) = &overlay.angle_state {
             let state = &angle_state.0;
 
@@ -1317,19 +1529,17 @@ fn get_or_init_shared_egl(engine_dir: Option<&Path>) -> Result<&'static SharedEg
             .unwrap_or_else(|| PathBuf::from("libGLESv2.dll"));
 
         info!(
-            "[SharedEGL] Initializing for the first time with paths: {:?}, {:?}",
-            libegl_path, libgles_path
+            "[SharedEGL] Initializing for the first time with paths: {libegl_path:?}, {libgles_path:?}"
         );
 
         let libegl = unsafe {
             Library::new(&libegl_path)
-                .map_err(|e| format!("Failed to load libEGL.dll from {:?}: {}", libegl_path, e))
+                .map_err(|e| format!("Failed to load libEGL.dll from {libegl_path:?}: {e}"))
         }?;
         let libgles = unsafe {
             Library::new(&libgles_path).map_err(|e| {
                 format!(
-                    "Failed to load libGLESv2.dll from {:?}: {}",
-                    libgles_path, e
+                    "Failed to load libGLESv2.dll from {libgles_path:?}: {e}"
                 )
             })
         }?;

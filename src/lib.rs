@@ -62,7 +62,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     unsafe {
         let hresult_result = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         hresult_result.ok().unwrap_or_else(|e| {
-            error!("COM initialization failed: {:?}", e);
+            error!("COM initialization failed: {e:?}");
             std::process::exit(1);
         });
     }
@@ -78,8 +78,7 @@ pub fn init_flutter_window_from_dir(data_dir: Option<PathBuf>) {
     let dll =
         dynamic_flutter_windows_dll_loader::FlutterDll::get_for(dir_ref).unwrap_or_else(|e| {
             error!(
-                "Failed to load flutter_windows.dll from `{:?}`: {:?}",
-                dir_ref, e
+                "Failed to load flutter_windows.dll from `{dir_ref:?}`: {e:?}"
             );
             std::process::exit(1);
         });

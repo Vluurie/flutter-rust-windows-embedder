@@ -169,29 +169,27 @@ impl AftermathLibrary {
             unsafe { Library::new(dll_name) }
         };
 
-        let lib = lib.map_err(|e| format!("Failed to load {}: {}", dll_name, e))?;
+        let lib = lib.map_err(|e| format!("Failed to load {dll_name}: {e}"))?;
 
         unsafe {
             let enable_gpu_crash_dumps_sym: Symbol<EnableGpuCrashDumpsFn> = lib
                 .get(b"GFSDK_Aftermath_EnableGpuCrashDumps\0")
-                .map_err(|e| format!("Failed to get GFSDK_Aftermath_EnableGpuCrashDumps: {}", e))?;
+                .map_err(|e| format!("Failed to get GFSDK_Aftermath_EnableGpuCrashDumps: {e}"))?;
             let enable_gpu_crash_dumps = *enable_gpu_crash_dumps_sym;
 
             let disable_gpu_crash_dumps_sym: Symbol<DisableGpuCrashDumpsFn> = lib
                 .get(b"GFSDK_Aftermath_DisableGpuCrashDumps\0")
-                .map_err(|e| {
-                    format!("Failed to get GFSDK_Aftermath_DisableGpuCrashDumps: {}", e)
-                })?;
+                .map_err(|e| format!("Failed to get GFSDK_Aftermath_DisableGpuCrashDumps: {e}"))?;
             let disable_gpu_crash_dumps = *disable_gpu_crash_dumps_sym;
 
             let get_crash_dump_status_sym: Symbol<GetCrashDumpStatusFn> = lib
                 .get(b"GFSDK_Aftermath_GetCrashDumpStatus\0")
-                .map_err(|e| format!("Failed to get GFSDK_Aftermath_GetCrashDumpStatus: {}", e))?;
+                .map_err(|e| format!("Failed to get GFSDK_Aftermath_GetCrashDumpStatus: {e}"))?;
             let get_crash_dump_status = *get_crash_dump_status_sym;
 
             let dx11_initialize_sym: Symbol<DX11InitializeFn> = lib
                 .get(b"GFSDK_Aftermath_DX11_Initialize\0")
-                .map_err(|e| format!("Failed to get GFSDK_Aftermath_DX11_Initialize: {}", e))?;
+                .map_err(|e| format!("Failed to get GFSDK_Aftermath_DX11_Initialize: {e}"))?;
             let dx11_initialize = *dx11_initialize_sym;
 
             Ok(AftermathLibrary {
@@ -210,10 +208,7 @@ unsafe extern "C" fn on_crash_dump(
     crash_dump_size: u32,
     _user_data: *mut c_void,
 ) {
-    error!(
-        "[Aftermath] GPU CRASH DETECTED! Dump size: {} bytes",
-        crash_dump_size
-    );
+    error!("[Aftermath] GPU CRASH DETECTED! Dump size: {crash_dump_size} bytes");
 
     if crash_dump_data.is_null() || crash_dump_size == 0 {
         error!("[Aftermath] Crash dump data is null or empty!");
@@ -229,7 +224,7 @@ unsafe extern "C" fn on_crash_dump(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let filename = format!("gpu_crash_{}.nv-gpudmp", timestamp);
+    let filename = format!("gpu_crash_{timestamp}.nv-gpudmp");
 
     let save_paths = [
         std::path::PathBuf::from(&filename),
@@ -263,10 +258,7 @@ unsafe extern "C" fn on_shader_debug_info(
     shader_debug_info_size: u32,
     _user_data: *mut c_void,
 ) {
-    info!(
-        "[Aftermath] Shader debug info available: {} bytes",
-        shader_debug_info_size
-    );
+    info!("[Aftermath] Shader debug info available: {shader_debug_info_size} bytes");
 
     if shader_debug_info.is_null() || shader_debug_info_size == 0 {
         return;
@@ -284,9 +276,9 @@ unsafe extern "C" fn on_shader_debug_info(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let filename = format!("shader_debug_{}.bin", timestamp);
+    let filename = format!("shader_debug_{timestamp}.bin");
     if let Err(e) = std::fs::write(&filename, data) {
-        warn!("[Aftermath] Failed to save shader debug info: {}", e);
+        warn!("[Aftermath] Failed to save shader debug info: {e}");
     }
 }
 
@@ -302,15 +294,10 @@ pub fn enable_gpu_crash_dumps(search_dir: Option<&Path>) -> Result<bool, String>
         return Ok(true);
     }
 
-    info!("[Aftermath] Attempting to enable GPU crash dump collection...");
-
     let lib = match AFTERMATH_LIB.get_or_try_init(|| AftermathLibrary::load(search_dir)) {
         Ok(lib) => lib,
         Err(e) => {
-            info!(
-                "[Aftermath] SDK not available: {}. GPU crash debugging disabled.",
-                e
-            );
+            info!("[Aftermath] SDK not available: {e}. GPU crash debugging disabled.");
             return Ok(false);
         }
     };
@@ -333,8 +320,6 @@ pub fn enable_gpu_crash_dumps(search_dir: Option<&Path>) -> Result<bool, String>
     match result {
         AftermathResult::Success => {
             AFTERMATH_ENABLED.store(true, Ordering::SeqCst);
-            info!("[Aftermath] GPU crash dump collection ENABLED successfully!");
-            info!("[Aftermath] Crash dumps will be saved as .nv-gpudmp files");
             Ok(true)
         }
         AftermathResult::NotAvailable => {
@@ -345,17 +330,13 @@ pub fn enable_gpu_crash_dumps(search_dir: Option<&Path>) -> Result<bool, String>
         }
         AftermathResult::VersionMismatch => {
             warn!(
-                "[Aftermath] API version mismatch. Code expects SDK Version 2.25 (0x{:03X}). \
-                 Ensure GFSDK_Aftermath_Lib.x64.dll matches SDK 2025.4.0",
-                GFSDK_AFTERMATH_VERSION_API_VERSION
+                "[Aftermath] API version mismatch. Code expects SDK Version 2.25 (0x{GFSDK_AFTERMATH_VERSION_API_VERSION:03X}). \
+                 Ensure GFSDK_Aftermath_Lib.x64.dll matches SDK 2025.4.0"
             );
             Ok(false)
         }
         _ => {
-            warn!(
-                "[Aftermath] Failed to enable crash dumps: {:?} (raw code: {})",
-                result, result_code
-            );
+            warn!("[Aftermath] Failed to enable crash dumps: {result:?} (raw code: {result_code})");
             Ok(false)
         }
     }
@@ -371,10 +352,8 @@ pub fn initialize_d3d11_device(device: &ID3D11Device) -> Result<(), String> {
         None => return Ok(()),
     };
 
-    info!("[Aftermath] Initializing D3D11 device for GPU crash monitoring...");
-
     use windows::core::Interface;
-    let device_ptr = device.as_raw() as *mut c_void;
+    let device_ptr = device.as_raw();
 
     let result = unsafe {
         (lib.dx11_initialize)(
@@ -387,17 +366,13 @@ pub fn initialize_d3d11_device(device: &ID3D11Device) -> Result<(), String> {
     let result = AftermathResult::from(result);
 
     match result {
-        AftermathResult::Success => {
-            info!("[Aftermath] D3D11 device initialized successfully for crash monitoring");
-            Ok(())
-        }
+        AftermathResult::Success => Ok(()),
         AftermathResult::NotAvailable => {
             info!("[Aftermath] D3D11 monitoring not available for this device");
             Ok(())
         }
         _ => Err(format!(
-            "[Aftermath] Failed to initialize D3D11 device: {:?}",
-            result
+            "[Aftermath] Failed to initialize D3D11 device: {result:?}"
         )),
     }
 }
@@ -479,10 +454,7 @@ pub fn wait_for_crash_dump(max_wait_ms: u32) -> bool {
             }
             CrashDumpStatus::Collecting | CrashDumpStatus::InvokingCallback => {
                 if start.elapsed() >= timeout {
-                    warn!(
-                        "[Aftermath] Timeout waiting for crash dump (status: {:?})",
-                        status
-                    );
+                    warn!("[Aftermath] Timeout waiting for crash dump (status: {status:?})");
                     return false;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));

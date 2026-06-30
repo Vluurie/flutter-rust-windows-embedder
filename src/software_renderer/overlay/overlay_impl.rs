@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     ffi::{CStr, CString},
     sync::{
         Arc, Mutex,
@@ -15,7 +15,9 @@ use windows::Win32::{
 };
 
 use crate::{
-    bindings::embedder::{self, FlutterEngine, FlutterKeyEventType, FlutterRect},
+    bindings::embedder::{
+        self, FlutterCompositor, FlutterEngine, FlutterKeyEventType, FlutterRect, FlutterViewId,
+    },
     software_renderer::{
         api::RendererType,
         d3d11_compositor::{
@@ -25,16 +27,22 @@ use crate::{
         },
         dynamic_flutter_engine_dll_loader::FlutterEngineDll,
         gl_renderer::angle_interop::SendableAngleState,
-        overlay::{semantics_handler::ProcessedSemanticsNode, textinput::ActiveTextInputState},
-        ticker::task_scheduler::{
-            SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
-            TaskRunnerContext,
+        multiview::{ViewRegistry, view_surface::ViewGlResources},
+        overlay::{
+            semantics_handler::ProcessedSemanticsNode,
+            textinput::{ActiveTextInputState, SharedViewKeyboardState},
+        },
+        ticker::{
+            on_present as ticker_on_present,
+            task_scheduler::{
+                SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription,
+                TaskQueueState, TaskRunnerContext,
+            },
         },
     },
 };
 
-pub static FLUTTER_LOG_TAG: &CStr =
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"rust_embedder\0") };
+pub static FLUTTER_LOG_TAG: &CStr = c"rust_embedder";
 
 /// Represents a platform message that needs to be sent on the platform thread
 #[derive(Debug, Clone)]
@@ -59,6 +67,11 @@ pub type PendingKeyEventQueue = Arc<Mutex<VecDeque<PendingKeyEvent>>>;
 
 /// Queue for pending platform messages that need to be sent from the platform thread
 pub type PendingPlatformMessageQueue = Arc<Mutex<VecDeque<PendingPlatformMessage>>>;
+
+/// A platform-channel message handler: takes the request bytes and returns a response.
+pub type ChannelHandler = Box<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>;
+/// Map of channel name → handler, shared across threads.
+pub type ChannelHandlers = Arc<Mutex<HashMap<String, ChannelHandler>>>;
 
 // A wrapper around the raw FlutterEngine pointer to make it Send + Sync.
 // WARNING: This is only safe because we PROMISE to only use the pointer
@@ -174,8 +187,7 @@ pub struct FlutterOverlay {
     //
     /// A map of channel names to callback functions for handling incoming platform messages from Dart.
     /// This is populated via the public `register_channel_handler` method.
-    pub(crate) message_handlers:
-        Arc<Mutex<HashMap<String, Box<dyn Fn(Vec<u8>) -> Vec<u8> + Send + Sync + 'static>>>>,
+    pub(crate) message_handlers: ChannelHandlers,
 
     /// A reusable buffer for crafting platform channel responses, avoiding allocations on the hot path.
     pub(crate) response_buffer: Arc<Mutex<Vec<u8>>>,
@@ -200,8 +212,10 @@ pub struct FlutterOverlay {
     /// **CRITICAL INTERNAL: Must be valid post-`init_overlay`.**
     pub(crate) engine_dll: Arc<FlutterEngineDll>,
 
-    /// State of the active text input field. Managed by text input callbacks and methods.
-    pub(crate) text_input_state: Arc<Mutex<Option<ActiveTextInputState>>>,
+    /// Keyboard and text-input state for the implicit view (view 0).
+    pub(crate) view0_keyboard: SharedViewKeyboardState,
+
+    pub(crate) active_text_input: Arc<Mutex<Option<ActiveTextInputState>>>,
 
     /// Queue for pending platform messages that need to be sent from the platform thread.
     /// Messages sent from non-platform threads (like Windows UI thread) are queued here
@@ -211,10 +225,10 @@ pub struct FlutterOverlay {
     /// Used for pending keys for the new key event api
     pub(crate) pending_key_events: PendingKeyEventQueue,
 
-    /// Tracks which physical keys we've sent KeyDown events for.
-    /// This prevents sending KeyUp for keys that Flutter doesn't know are pressed,
-    /// which would cause assertion errors in Flutter's HardwareKeyboard.
-    pub(crate) pressed_keys: Arc<Mutex<HashSet<u64>>>,
+    /// Pending `(view_id, focused)` focus events. `FlutterEngineSendViewFocusEvent`
+    /// asserts it runs on the platform task-runner thread, so callers on the
+    /// window thread enqueue here and the task runner drains it.
+    pub(crate) pending_view_focus: Arc<Mutex<VecDeque<(i64, bool)>>>,
 
     /// Instance-specific task queue. Managed by task runner and `post_task_callback`.
     pub(crate) task_queue_state: Arc<TaskQueueState>,
@@ -271,6 +285,24 @@ pub struct FlutterOverlay {
     /// When true, forces a full repaint on the next frame. Set on resize and device recovery.
     pub(crate) full_repaint_needed: AtomicBool,
 
+    /// Registry of secondary (satellite) views driven by this engine. The
+    /// implicit view (`view_id == 0`) is this overlay itself and is NOT stored
+    /// here. Populated by `add_window_view`. Shared via `Arc` because the
+    /// compositor callbacks reach it through the engine `user_data` pointer.
+    pub(crate) view_registry: Arc<ViewRegistry>,
+
+    /// GL framebuffer + color texture for the implicit view (view 0) when the
+    /// compositor present path is active. Built lazily on the render thread from
+    /// the overlay's existing pbuffer surface. `None` for the software renderer
+    /// or before the first compositor backing-store request.
+    pub(crate) view0_gl: Option<ViewGlResources>,
+
+    /// True when a `FlutterCompositor` is installed and therefore the multi-view
+    /// present path is active (OpenGL renderer only). When true, the implicit
+    /// view renders into `view0_gl` and presents via `present_view_callback`
+    /// instead of the legacy `present_with_info` path.
+    pub(crate) compositor_active: bool,
+
     // --- FFI argument storage ---
     // These fields hold C-compatible strings and argument structures for the lifetime
     // of the engine, as the engine may read from this memory at any time.
@@ -282,6 +314,31 @@ pub struct FlutterOverlay {
     pub(crate) _platform_runner_context: Option<Box<TaskRunnerContext>>,
     pub(crate) _platform_runner_description: Option<Box<SendableFlutterTaskRunnerDescription>>,
     pub(crate) _custom_task_runners_struct: Option<Box<SendableFlutterCustomTaskRunners>>,
+    /// The compositor descriptor passed to the engine for multi-view rendering.
+    /// Held for the engine's lifetime because `FlutterProjectArgs.compositor`
+    /// stores a borrowed pointer to it. Only set when the OpenGL renderer is
+    /// active (the software path keeps the legacy present callback).
+    pub(crate) _compositor: Option<Box<SendableFlutterCompositor>>,
+}
+
+/// `Send`/`Sync` wrapper for the engine compositor descriptor. Safe because the
+/// embedded raw `user_data` pointer is only dereferenced on engine threads, and
+/// the struct itself is immutable after construction.
+pub struct SendableFlutterCompositor(pub FlutterCompositor);
+unsafe impl Send for SendableFlutterCompositor {}
+unsafe impl Sync for SendableFlutterCompositor {}
+
+impl FlutterOverlay {
+    /// Queues a view focus change. The actual engine call is made on the platform
+    /// task-runner thread (the engine asserts thread affinity), so this is safe to
+    /// call from any thread (e.g. a satellite window's WndProc thread).
+    pub(crate) fn send_view_focus(&self, view_id: FlutterViewId, focused: bool) {
+        if let Ok(mut q) = self.pending_view_focus.lock() {
+            q.push_back((view_id, focused));
+        }
+        self.task_queue_state.waker.wake_up();
+    }
+
 }
 
 impl Clone for FlutterOverlay {
@@ -311,10 +368,11 @@ impl Clone for FlutterOverlay {
             dart_send_port: self.dart_send_port.clone(),
             engine_dll: self.engine_dll.clone(),
             task_queue_state: self.task_queue_state.clone(),
-            text_input_state: self.text_input_state.clone(),
+            view0_keyboard: self.view0_keyboard.clone(),
+            active_text_input: self.active_text_input.clone(),
             pending_platform_messages: self.pending_platform_messages.clone(),
             pending_key_events: self.pending_key_events.clone(),
-            pressed_keys: self.pressed_keys.clone(),
+            pending_view_focus: self.pending_view_focus.clone(),
             semantics_tree_data: self.semantics_tree_data.clone(),
             message_handlers: self.message_handlers.clone(),
             response_buffer: self.response_buffer.clone(),
@@ -353,6 +411,7 @@ impl Clone for FlutterOverlay {
             _platform_runner_context: None,
             _platform_runner_description: None,
             _custom_task_runners_struct: None,
+            _compositor: None,
             angle_state: None,
             d3d11_shared_handle: None,
             angle_frame_complete_query: None,
@@ -373,6 +432,10 @@ impl Clone for FlutterOverlay {
 
             gl_internal_linear_texture: self.gl_internal_linear_texture.clone(),
             angle_shared_texture: self.angle_shared_texture.clone(),
+
+            view_registry: self.view_registry.clone(),
+            view0_gl: None,
+            compositor_active: self.compositor_active,
         }
     }
 }
@@ -385,7 +448,7 @@ pub(crate) extern "C" fn on_present(
     row_bytes_flutter: usize,
     height_flutter: usize,
 ) -> bool {
-    crate::software_renderer::ticker::on_present(
+    ticker_on_present(
         user_data,
         allocation,
         row_bytes_flutter,

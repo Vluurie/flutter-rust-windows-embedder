@@ -94,27 +94,41 @@ pub fn generate_text_vertices(
     vertices
 }
 
+/// 3D placement + styling for [`generate_text_vertices_aligned`].
+pub struct TextStyle3D {
+    /// The 3D position (anchor point depends on alignment).
+    pub position: [f32; 3],
+    /// Scale factor.
+    pub scale: f32,
+    /// RGBA color.
+    pub color: [f32; 4],
+    /// The "right" direction vector.
+    pub right: [f32; 3],
+    /// The "up" direction vector.
+    pub up: [f32; 3],
+    /// Horizontal alignment: -1.0 = left, 0.0 = center, 1.0 = right.
+    pub align: f32,
+}
+
 /// Generates vertices for text with horizontal alignment.
 ///
 /// # Arguments
 /// * `text` - The text string to render
-/// * `position` - The 3D position (anchor point depends on alignment)
 /// * `font_atlas` - The font atlas containing glyph information
-/// * `scale` - Scale factor
-/// * `color` - RGBA color
-/// * `right` - The "right" direction vector
-/// * `up` - The "up" direction vector
-/// * `align` - Horizontal alignment: -1.0 = left, 0.0 = center, 1.0 = right
+/// * `style` - 3D placement + styling ([`TextStyle3D`])
 pub fn generate_text_vertices_aligned(
     text: &str,
-    position: [f32; 3],
     font_atlas: &FontAtlas,
-    scale: f32,
-    color: [f32; 4],
-    right: [f32; 3],
-    up: [f32; 3],
-    align: f32,
+    style: TextStyle3D,
 ) -> Vec<TexturedVertex3D> {
+    let TextStyle3D {
+        position,
+        scale,
+        color,
+        right,
+        up,
+        align,
+    } = style;
     let text_width = measure_text_width(text, font_atlas);
     let world_scale = scale / font_atlas.base_font_size;
 
@@ -165,7 +179,13 @@ pub fn measure_text_height(text: &str, font_atlas: &FontAtlas) -> (f32, u32) {
 
 /// Transforms a 2D point (in text-local space) to 3D world space.
 #[inline]
-fn transform_point(origin: [f32; 3], right: [f32; 3], up: [f32; 3], x: f32, y: f32) -> [f32; 3] {
+pub(crate) fn transform_point(
+    origin: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+    x: f32,
+    y: f32,
+) -> [f32; 3] {
     [
         origin[0] + right[0] * x + up[0] * y,
         origin[1] + right[1] * x + up[1] * y,

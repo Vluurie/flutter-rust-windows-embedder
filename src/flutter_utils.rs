@@ -68,7 +68,7 @@ pub fn create_flutter_engine_with_paths(
     dll: &Arc<FlutterDll>,
 ) -> FlutterDesktopEngineRef {
     // Prepare the same args as before...
-    let args_ptrs: Vec<*const i8> = crate::constants::DART_ENTRYPOINT_ARGS
+    let args_ptrs: Vec<*const i8> = constants::DART_ENTRYPOINT_ARGS
         .iter()
         .map(|s| s.as_ptr() as *const i8)
         .collect();
@@ -96,8 +96,8 @@ pub fn create_flutter_engine_with_paths(
     let engine = unsafe { (dll.FlutterDesktopEngineCreate)(props) };
     if engine.is_null() {
         // cleanup & abort
-        unsafe { ::windows::Win32::System::Com::CoUninitialize() };
-        crate::win32_utils::panic_with_error("FlutterDesktopEngineCreate failed");
+        unsafe { CoUninitialize() };
+        win32_utils::panic_with_error("FlutterDesktopEngineCreate failed");
     }
     engine
 }
@@ -153,6 +153,6 @@ pub fn get_flutter_view_and_hwnd(
     }
 
     let hwnd: HWND = HWND(raw_handle_as_isize as *mut c_void);
-    info!("[Flutter Utils] Flutter child HWND = {:?}", hwnd);
+    info!("[Flutter Utils] Flutter child HWND = {hwnd:?}");
     (view, hwnd)
 }

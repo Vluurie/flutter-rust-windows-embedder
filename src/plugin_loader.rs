@@ -63,7 +63,7 @@ fn discover_plugins(release_dir: &Path) -> Result<Vec<(PathBuf, Vec<String>)>> {
         if dll
             .extension()
             .and_then(|e| e.to_str())
-            .map_or(false, |e| e.eq_ignore_ascii_case("dll"))
+            .is_some_and(|e| e.eq_ignore_ascii_case("dll"))
         {
             let data = fs::read(&dll).with_context(|| format!("reading {}", dll.display()))?;
             if let Object::PE(pe) = Object::parse(&data)? {
@@ -95,7 +95,7 @@ fn load_and_register(
         let cname = CString::new(sym.as_str()).unwrap();
         let func: Symbol<unsafe extern "C" fn(FlutterDesktopPluginRegistrarRef)> = unsafe {
             lib.get(cname.as_bytes_with_nul())
-                .with_context(|| format!("symbol {}", sym))?
+                .with_context(|| format!("symbol {sym}"))?
         };
         unsafe { func(registrar) };
     }
@@ -130,8 +130,7 @@ pub fn load_and_register_plugins(
         // Skip if we've already registered that plugin into *this* engine
         if !seen.insert(plugin_name.clone()) {
             log::debug!(
-                "[Plugin Loader] skipping `{}` (already registered)",
-                plugin_name
+                "[Plugin Loader] skipping `{plugin_name}` (already registered)"
             );
             continue;
         }

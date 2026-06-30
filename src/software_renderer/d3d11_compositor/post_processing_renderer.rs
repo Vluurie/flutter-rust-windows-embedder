@@ -11,6 +11,17 @@ use windows::Win32::Foundation::BOOL;
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
 use windows::Win32::Graphics::Direct3D11::*;
 
+/// Placement + frame parameters for [`PostProcessRenderer::render_texture_internal`].
+struct RenderTextureParams {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    screen_width: f32,
+    screen_height: f32,
+    time: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GpuParameters {
@@ -71,7 +82,7 @@ impl PostProcessRenderer {
         height: u32,
     ) {
         self.queued_draws
-            .push((srv.clone(), config.clone(), x, y, width, height));
+            .push((srv.clone(), *config, x, y, width, height));
     }
 
     fn render_texture_internal(
@@ -79,14 +90,17 @@ impl PostProcessRenderer {
         context: &ID3D11DeviceContext,
         srv: &ID3D11ShaderResourceView,
         config: &EffectConfig,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        screen_width: f32,
-        screen_height: f32,
-        time: f32,
+        params: RenderTextureParams,
     ) {
+        let RenderTextureParams {
+            x,
+            y,
+            width,
+            height,
+            screen_width,
+            screen_height,
+            time,
+        } = params;
         let mut gpu_params = GpuParameters {
             world_projection: XMMatrix(XMMatrixIdentity()),
             iTime: time,
@@ -174,7 +188,7 @@ impl PostProcessRenderer {
             let translate_matrix = XMMatrixTranslation(x as f32, y as f32, 0.0);
             let world_matrix = XMMatrixMultiply(scale_matrix, &translate_matrix);
             gpu_params.world_projection =
-                directx_math::XMMatrix(XMMatrixMultiply(world_matrix, &proj_matrix));
+                XMMatrix(XMMatrixMultiply(world_matrix, &proj_matrix));
 
             let mut mapped_resource = D3D11_MAPPED_SUBRESOURCE::default();
             context
@@ -328,13 +342,15 @@ impl Renderer for PostProcessRenderer {
                 params.context,
                 srv,
                 config,
-                *x,
-                *y,
-                *width,
-                *height,
-                params.screen_width,
-                params.screen_height,
-                params.time,
+                RenderTextureParams {
+                    x: *x,
+                    y: *y,
+                    width: *width,
+                    height: *height,
+                    screen_width: params.screen_width,
+                    screen_height: params.screen_height,
+                    time: params.time,
+                },
             );
         }
 

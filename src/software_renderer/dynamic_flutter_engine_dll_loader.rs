@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Error, Result, anyhow};
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;
 use std::{
@@ -46,6 +46,27 @@ pub struct FlutterEngineDll {
         unsafe extern "C" fn(
             engine: e::FlutterEngine,
             event: *const e::FlutterWindowMetricsEvent,
+        ) -> e::FlutterEngineResult,
+    >,
+    pub FlutterEngineAddView: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            engine: e::FlutterEngine,
+            info: *const e::FlutterAddViewInfo,
+        ) -> e::FlutterEngineResult,
+    >,
+    pub FlutterEngineRemoveView: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            engine: e::FlutterEngine,
+            info: *const e::FlutterRemoveViewInfo,
+        ) -> e::FlutterEngineResult,
+    >,
+    pub FlutterEngineSendViewFocusEvent: Symbol<
+        'static,
+        unsafe extern "C" fn(
+            engine: e::FlutterEngine,
+            event: *const e::FlutterViewFocusEvent,
         ) -> e::FlutterEngineResult,
     >,
     pub FlutterEngineSendPointerEvent: Symbol<
@@ -150,7 +171,7 @@ impl FlutterEngineDll {
                     Err(e) => {
                         attempt += 1;
                         if attempt >= 50 {
-                            return Err(anyhow::Error::new(e).context(format!(
+                            return Err(Error::new(e).context(format!(
                                 "Failed to load {} after {} attempts",
                                 dll_path.display(),
                                 attempt
@@ -192,6 +213,12 @@ impl FlutterEngineDll {
                 lib_static,
                 b"FlutterEngineSendWindowMetricsEvent\0"
             )?,
+            FlutterEngineAddView: load_symbol!(lib_static, b"FlutterEngineAddView\0")?,
+            FlutterEngineRemoveView: load_symbol!(lib_static, b"FlutterEngineRemoveView\0")?,
+            FlutterEngineSendViewFocusEvent: load_symbol!(
+                lib_static,
+                b"FlutterEngineSendViewFocusEvent\0"
+            )?,
             FlutterEngineSendPointerEvent: load_symbol!(
                 lib_static,
                 b"FlutterEngineSendPointerEvent\0"
@@ -225,15 +252,7 @@ impl FlutterEngineDll {
     }
 
     pub fn get_for(dir: Option<&Path>) -> Result<Arc<Self>> {
-        let key = if let Some(d) = dir {
-            d.to_path_buf()
-        } else {
-            std::env::current_exe()
-                .context("Failed to get current exe path for DLL key")?
-                .parent()
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow!("Exe has no parent directory for DLL key"))?
-        };
+        let key = compute_dll_search_path(dir)?;
 
         let mut cache = ENGINE_DLL_CACHE
             .lock()
@@ -252,5 +271,19 @@ impl FlutterEngineDll {
         let arc_dll = Arc::new(dll);
         cache.insert(key.clone(), arc_dll.clone());
         Ok(arc_dll)
+    }
+}
+
+/// Resolves the directory used as the engine-DLL cache key: the given directory
+/// if present, otherwise the directory of the current executable.
+pub(crate) fn compute_dll_search_path(dir: Option<&Path>) -> Result<PathBuf> {
+    if let Some(d) = dir {
+        Ok(d.to_path_buf())
+    } else {
+        std::env::current_exe()
+            .context("Failed to get current exe path for DLL key")?
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("Exe has no parent directory for DLL key"))
     }
 }

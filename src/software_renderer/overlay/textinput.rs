@@ -1,19 +1,62 @@
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_void};
 use std::ptr;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, from_slice, from_value, json};
 
 use crate::bindings::embedder::FlutterPlatformMessage;
-use crate::software_renderer::overlay::overlay_impl::FlutterOverlay;
+use crate::software_renderer::overlay::overlay_impl::{
+    FlutterOverlay, PendingPlatformMessage, PendingPlatformMessageQueue,
+};
+
+/// Per-view raw-key bookkeeping (down/up dedup). Text editing lives in the
+/// single global [`ACTIVE`] model, like Flutter's one `TextInputPlugin`.
+pub struct ViewKeyboardState {
+    pub(crate) pressed_keys: Mutex<HashSet<u64>>,
+}
+
+impl ViewKeyboardState {
+    pub(crate) fn new() -> Self {
+        Self {
+            pressed_keys: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+pub(crate) type SharedViewKeyboardState = Arc<ViewKeyboardState>;
+
+static VIEW_KEYBOARD_STATES: OnceLock<Mutex<HashMap<i64, SharedViewKeyboardState>>> =
+    OnceLock::new();
+
+pub(crate) fn register_view_keyboard_state(view_id: i64, state: SharedViewKeyboardState) {
+    let map = VIEW_KEYBOARD_STATES.get_or_init(Default::default);
+    if let Ok(mut g) = map.lock() {
+        g.insert(view_id, state);
+    }
+}
+
+pub(crate) fn unregister_view_keyboard_state(view_id: i64) {
+    let map = VIEW_KEYBOARD_STATES.get_or_init(Default::default);
+    if let Ok(mut g) = map.lock() {
+        g.remove(&view_id);
+    }
+}
+
+pub(crate) fn lookup_view_keyboard_state(view_id: i64) -> Option<SharedViewKeyboardState> {
+    let map = VIEW_KEYBOARD_STATES.get_or_init(Default::default);
+    map.lock().ok()?.get(&view_id).cloned()
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct FlutterTextEditingState {
-    text: String,
+    pub(crate) text: String,
     #[serde(rename = "selectionBase")]
-    selection_base: i32,
+    pub(crate) selection_base: i32,
     #[serde(rename = "selectionExtent")]
-    selection_extent: i32,
+    pub(crate) selection_extent: i32,
     #[serde(rename = "composingBase")]
     composing_base: i32,
     #[serde(rename = "composingExtent")]
@@ -138,13 +181,12 @@ impl TextInputModel {
     }
 
     pub(crate) fn move_left(&mut self, extend: bool) {
-        if !extend {
-            if let Some(pos) = self.collapse_or(true) {
+        if !extend
+            && let Some(pos) = self.collapse_or(true) {
                 self.selection_base_utf8 = pos;
                 self.selection_extent_utf8 = pos;
                 return;
             }
-        }
         let pos = self.prev_char_boundary(self.selection_extent_utf8);
         self.selection_extent_utf8 = pos;
         if !extend {
@@ -153,13 +195,12 @@ impl TextInputModel {
     }
 
     pub(crate) fn move_right(&mut self, extend: bool) {
-        if !extend {
-            if let Some(pos) = self.collapse_or(false) {
+        if !extend
+            && let Some(pos) = self.collapse_or(false) {
                 self.selection_base_utf8 = pos;
                 self.selection_extent_utf8 = pos;
                 return;
             }
-        }
         let pos = self.next_char_boundary(self.selection_extent_utf8);
         self.selection_extent_utf8 = pos;
         if !extend {
@@ -201,13 +242,11 @@ impl TextInputModel {
 
     fn offset_at_column(&self, line_start: usize, line_end: usize, column: usize) -> usize {
         let mut offset = line_start;
-        let mut col = 0;
-        for ch in self.text[line_start..line_end].chars() {
+        for (col, ch) in self.text[line_start..line_end].chars().enumerate() {
             if col >= column {
                 break;
             }
             offset += ch.len_utf8();
-            col += 1;
         }
         offset
     }
@@ -299,15 +338,15 @@ fn utf16_code_unit_offset_to_utf8_byte_offset(s: &str, utf16_offset: usize) -> u
 }
 
 fn send_to_flutter_text_input_method_call(
-    message_queue: &crate::software_renderer::overlay::overlay_impl::PendingPlatformMessageQueue,
+    message_queue: &PendingPlatformMessageQueue,
     method_name: &str,
-    args: serde_json::Value,
+    args: Value,
 ) {
     let call_payload = json!({ "method": method_name, "args": args });
     let payload_str = call_payload.to_string();
     let payload_bytes = payload_str.into_bytes();
 
-    let pending_message = crate::software_renderer::overlay::overlay_impl::PendingPlatformMessage {
+    let pending_message = PendingPlatformMessage {
         channel: "flutter/textinput".to_string(),
         payload_bytes,
     };
@@ -318,7 +357,7 @@ fn send_to_flutter_text_input_method_call(
 }
 
 pub(crate) fn send_update_editing_state_to_flutter(
-    message_queue: &crate::software_renderer::overlay::overlay_impl::PendingPlatformMessageQueue,
+    message_queue: &PendingPlatformMessageQueue,
     client_id: i32,
     model: &TextInputModel,
 ) {
@@ -332,12 +371,64 @@ pub(crate) fn send_update_editing_state_to_flutter(
 }
 
 pub(crate) fn send_perform_action_to_flutter(
-    message_queue: &crate::software_renderer::overlay::overlay_impl::PendingPlatformMessageQueue,
+    message_queue: &PendingPlatformMessageQueue,
     client_id: i32,
     action: &str,
 ) {
     let args = json!([client_id, action]);
     send_to_flutter_text_input_method_call(message_queue, "TextInputClient.performAction", args);
+}
+
+pub(crate) fn apply_text_input_method(
+    method_name: &str,
+    args: Option<&Value>,
+    slot: &mut Option<ActiveTextInputState>,
+) {
+    match method_name {
+        "TextInput.setClient" => {
+            if let Some(arr) = args.and_then(|a| a.as_array())
+                && let (Some(id_val), Some(cfg_map)) = (
+                    arr.first().and_then(|v| v.as_i64()),
+                    arr.get(1).and_then(|v| v.as_object()),
+                )
+            {
+                let client_id = id_val as i32;
+                let action = cfg_map
+                    .get("inputAction")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("TextInputAction.done")
+                    .to_string();
+                *slot = Some(ActiveTextInputState {
+                    client_id,
+                    input_action: action,
+                    model: TextInputModel::new(),
+                });
+            }
+        }
+        "TextInput.clearClient" => {
+            *slot = None;
+        }
+        "TextInput.setEditingState" => {
+            if let Some(current_state) = slot.as_mut()
+                && let Some(state_map_val) = args.and_then(|a| a.as_object())
+                && let Ok(flutter_state) =
+                    from_value::<FlutterTextEditingState>(Value::Object(state_map_val.clone()))
+            {
+                current_state.model.text = flutter_state.text;
+                current_state.model.selection_base_utf8 = utf16_code_unit_offset_to_utf8_byte_offset(
+                    &current_state.model.text,
+                    flutter_state.selection_base.max(0) as usize,
+                );
+                current_state.model.selection_extent_utf8 =
+                    utf16_code_unit_offset_to_utf8_byte_offset(
+                        &current_state.model.text,
+                        flutter_state.selection_extent.max(0) as usize,
+                    );
+                current_state.model.sanitize_offsets();
+            }
+        }
+        _ => {}
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -363,76 +454,15 @@ pub(crate) unsafe extern "C" fn custom_text_input_platform_message_handler(
 
         let slice = std::slice::from_raw_parts(message.message, message.message_size);
 
-        if let Ok(parsed_json) = serde_json::from_slice::<serde_json::Value>(slice) {
-            if let Some(method_call) = parsed_json.as_object() {
-                if let Some(method_name) = method_call.get("method").and_then(|m| m.as_str()) {
+        if let Ok(parsed_json) = from_slice::<Value>(slice)
+            && let Some(method_call) = parsed_json.as_object()
+                && let Some(method_name) = method_call.get("method").and_then(|m| m.as_str()) {
                     let args = method_call.get("args");
 
-                    // --- NEU: Auf den Zustand der Instanz zugreifen ---
-                    let mut active_state_guard = overlay
-                        .text_input_state
-                        .lock()
-                        .expect("Mutex panic: text_input_state");
-
-                    match method_name {
-                        "TextInput.setClient" => {
-                            if let Some(arr) = args.and_then(|a| a.as_array()) {
-                                if let (Some(id_val), Some(cfg_map)) = (
-                                    arr.get(0).and_then(|v| v.as_i64()),
-                                    arr.get(1).and_then(|v| v.as_object()),
-                                ) {
-                                    let client_id = id_val as i32;
-                                    let action = cfg_map
-                                        .get("inputAction")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("TextInputAction.done")
-                                        .to_string();
-
-                                    *active_state_guard = Some(ActiveTextInputState {
-                                        client_id,
-                                        input_action: action.clone(),
-                                        model: TextInputModel::new(),
-                                    });
-                                }
-                            }
-                        }
-                        "TextInput.clearClient" => {
-                            *active_state_guard = None;
-                        }
-                        "TextInput.setEditingState" => {
-                            if let Some(current_state) = active_state_guard.as_mut() {
-                                if let Some(state_map_val) = args.and_then(|a| a.as_object()) {
-                                    if let Ok(flutter_state) =
-                                        serde_json::from_value::<FlutterTextEditingState>(
-                                            serde_json::Value::Object(state_map_val.clone()),
-                                        )
-                                    {
-                                        current_state.model.text = flutter_state.text;
-                                        current_state.model.selection_base_utf8 =
-                                            utf16_code_unit_offset_to_utf8_byte_offset(
-                                                &current_state.model.text,
-                                                flutter_state.selection_base.max(0) as usize,
-                                            );
-                                        current_state.model.selection_extent_utf8 =
-                                            utf16_code_unit_offset_to_utf8_byte_offset(
-                                                &current_state.model.text,
-                                                flutter_state.selection_extent.max(0) as usize,
-                                            );
-                                        current_state.model.sanitize_offsets();
-                                    }
-                                }
-                            }
-                        }
-                        "TextInput.show"
-                        | "TextInput.hide"
-                        | "TextInput.setEditableSizeAndTransform" => {
-                            // No-op in this version
-                        }
-                        _ => { /* TODO: Unhandled methods */ }
+                    if let Ok(mut guard) = overlay.active_text_input.lock() {
+                        apply_text_input_method(method_name, args, &mut guard);
                     }
                 }
-            }
-        }
 
         if !message.response_handle.is_null() {
             let _ = (engine_dll_arc.FlutterEngineSendPlatformMessageResponse)(

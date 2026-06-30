@@ -266,18 +266,17 @@ pub extern "C" fn semantics_update_callback(
         let overlay: &mut FlutterOverlay = &mut *(user_data as *mut FlutterOverlay);
 
         if update_ref.node_count == 0 {
-            if let Ok(mut tree_guard) = overlay.semantics_tree_data.lock() {
-                if !tree_guard.is_empty() {
+            if let Ok(mut tree_guard) = overlay.semantics_tree_data.lock()
+                && !tree_guard.is_empty() {
                     tree_guard.clear();
                 }
-            }
             return;
         }
 
         let mut new_tree_snapshot = HashMap::new();
 
         for i in 0..update_ref.node_count {
-            let node_ptr_ptr = update_ref.nodes.add(i as usize);
+            let node_ptr_ptr = update_ref.nodes.add(i);
 
             if node_ptr_ptr.is_null() {
                 continue;
@@ -295,7 +294,7 @@ pub extern "C" fn semantics_update_callback(
                 } else {
                     std::slice::from_raw_parts(
                         ffi_node.children_in_hit_test_order,
-                        ffi_node.child_count as usize,
+                        ffi_node.child_count,
                     )
                     .to_vec()
                 };

@@ -1,10 +1,11 @@
 use crate::bindings::embedder::{FlutterCustomTaskRunners, FlutterTask, FlutterTaskRunnerDescription};
+use crate::software_renderer::ticker::task_runner_window::{Timer, Waker};
 
 use log::{error, warn};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ffi::c_void;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
 #[derive(Debug, Copy, Clone)]
@@ -76,25 +77,30 @@ impl PartialEq for ScheduledTask {
 
 impl Eq for ScheduledTask {}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskRunnerContext {
     pub task_runner_thread_id: Option<ThreadId>,
     pub task_queue: Arc<TaskQueueState>,
 }
 
 impl TaskQueueState {
-    pub fn new() -> Self {
+    pub fn new(waker: Arc<Waker>) -> Self {
         Self {
             queue: Mutex::new(BinaryHeap::new()),
-            condvar: Condvar::new(),
+            waker,
+            timer: Mutex::new(None),
         }
+    }
+
+    pub fn set_timer(&self, timer: Arc<Timer>) {
+        *self.timer.lock().unwrap() = Some(timer);
     }
 }
 
-#[derive(Debug)]
 pub struct TaskQueueState {
     pub queue: Mutex<BinaryHeap<ScheduledTask>>,
-    pub condvar: Condvar,
+    pub waker: Arc<Waker>,
+    pub timer: Mutex<Option<Arc<Timer>>>,
 }
 
 #[unsafe(no_mangle)]
@@ -119,12 +125,12 @@ pub unsafe extern "C" fn post_task_callback(
     match state.queue.lock() {
         Ok(mut queue_guard) => {
             queue_guard.push(scheduled_task);
-            state.condvar.notify_one();
+            drop(queue_guard);
+            state.waker.wake_up();
         }
         Err(poisoned) => {
             error!(
-                "[TaskScheduler] post_task_callback: Task queue mutex was poisoned! {:?}",
-                poisoned
+                "[TaskScheduler] post_task_callback: Task queue mutex was poisoned! {poisoned:?}"
             );
         }
     }

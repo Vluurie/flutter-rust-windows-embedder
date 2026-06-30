@@ -4,12 +4,12 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::{Common::*, IDXGIDevice, IDXGIResource};
-use windows::core::Interface;
+use windows::core::{Interface, Result as WindowsResult};
 
 pub fn create_d3d_device_on_same_adapter(
     existing_device: &ID3D11Device,
     enable_debug: bool,
-) -> windows::core::Result<ID3D11Device> {
+) -> WindowsResult<ID3D11Device> {
     let dxgi_device: IDXGIDevice = existing_device.cast()?;
     let adapter = unsafe { dxgi_device.GetAdapter()? };
     let feature_level: D3D_FEATURE_LEVEL = unsafe { existing_device.GetFeatureLevel() };
@@ -113,17 +113,65 @@ pub fn create_shared_texture_and_get_handle(
 
         device
             .CreateTexture2D(&texture_desc, None, Some(&mut texture_opt))
-            .map_err(|e| format!("Failed to create shared texture: {}", e))?;
+            .map_err(|e| format!("Failed to create shared texture: {e}"))?;
 
         let texture = texture_opt.unwrap();
 
         let resource: IDXGIResource = texture
             .cast()
-            .map_err(|e| format!("Failed to cast texture to IDXGIResource: {}", e))?;
+            .map_err(|e| format!("Failed to cast texture to IDXGIResource: {e}"))?;
 
         let handle = resource
             .GetSharedHandle()
-            .map_err(|e| format!("Failed to get shared handle: {}", e))?;
+            .map_err(|e| format!("Failed to get shared handle: {e}"))?;
+
+        Ok((texture, handle))
+    }
+}
+
+/// Like [`create_shared_texture_and_get_handle`] but WITHOUT a keyed mutex.
+///
+/// Used for satellite-window views where the consumer is a separate thread with
+/// its own device. The three-handle keyed-mutex ping-pong (ANGLE writer / game
+/// opener / window reader) is fragile and can wedge the key, producing a black
+/// window. A plain `D3D11_RESOURCE_MISC_SHARED` texture has no mutex, so the
+/// window can always sample it; the worst case is occasional tearing, never a
+/// stuck/black surface. GPU ordering is provided by the per-frame `glFlush`
+/// before present and the window's own present pacing.
+pub fn create_shared_texture_no_mutex(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(ID3D11Texture2D, HANDLE), String> {
+    unsafe {
+        let texture_desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32 | D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32,
+        };
+
+        let mut texture_opt: Option<ID3D11Texture2D> = None;
+        device
+            .CreateTexture2D(&texture_desc, None, Some(&mut texture_opt))
+            .map_err(|e| format!("Failed to create shared (no-mutex) texture: {e}"))?;
+        let texture = texture_opt.unwrap();
+
+        let resource: IDXGIResource = texture
+            .cast()
+            .map_err(|e| format!("Failed to cast texture to IDXGIResource: {e}"))?;
+        let handle = resource
+            .GetSharedHandle()
+            .map_err(|e| format!("Failed to get shared handle: {e}"))?;
 
         Ok((texture, handle))
     }

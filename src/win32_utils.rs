@@ -59,6 +59,7 @@ use windows::{
     Win32::{
         Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::HBRUSH,
+        System::Com::CoUninitialize,
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
@@ -72,7 +73,7 @@ use windows::{
             WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
         },
     },
-    core::PCWSTR,
+    core::{Error, PCWSTR},
 };
 
 /// Fake constants for UxTheme-drawn non-client messages
@@ -105,7 +106,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
                 info!("[WndProc] WM_NCCREATE");
                 if let Some(cs) = (lparam.0 as *const CREATESTRUCTW).as_ref() {
                     let ptr = cs.lpCreateParams as isize;
-                    debug!("[WndProc] Storing AppState ptr {:?}", ptr);
+                    debug!("[WndProc] Storing AppState ptr {ptr:?}");
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr);
                 } else {
                     warn!("[WndProc] CREATESTRUCTW was null");
@@ -191,7 +192,7 @@ pub extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LP
             // 4) Activation & focus → child
             WM_ACTIVATE | WM_SETFOCUS => {
                 if let Some(state) = state_ptr.as_mut() {
-                    debug!("[WndProc] focus event: {}", msg);
+                    debug!("[WndProc] focus event: {msg}");
                     SetFocus(state.child_hwnd);
                 }
                 LRESULT(0)
@@ -371,16 +372,16 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
 
     match create_window_result {
         Ok(hwnd) => {
-            info!("[Win32 Utils] Main window created: {:?}", hwnd);
+            info!("[Win32 Utils] Main window created: {hwnd:?}");
             hwnd
         }
         Err(e) => {
-            error!("[Win32 Utils] CreateWindowExW failed: {:?}", e);
+            error!("[Win32 Utils] CreateWindowExW failed: {e:?}");
             unsafe {
                 drop(Box::from_raw(app_state_ptr));
                 let dll = &(*app_state_ptr).dll;
                 (dll.FlutterDesktopViewControllerDestroy)((*app_state_ptr).controller);
-                windows::Win32::System::Com::CoUninitialize();
+                CoUninitialize();
             }
             panic!("[Win32 Utils] Could not create main window");
         }
@@ -395,8 +396,7 @@ pub fn create_main_window(app_state_ptr: *mut AppState) -> HWND {
 /// 6. Post WM_SIZE so Flutter updates viewport
 pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
     info!(
-        "[Win32 Utils] Embedding Flutter HWND {:?} into {:?}",
-        child, parent
+        "[Win32 Utils] Embedding Flutter HWND {child:?} into {parent:?}"
     );
     let old = unsafe { GetWindowLongPtrW(child, GWL_STYLE) };
     let new = (old & !(WS_POPUP.0 as isize | WS_OVERLAPPEDWINDOW.0 as isize))
@@ -414,14 +414,14 @@ pub fn set_flutter_window_as_child(parent: HWND, child: HWND) {
             SWP_NOZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED,
         );
     }
-    debug!("[Win32 Utils] Child style {:#x} → {:#x}", old, new);
+    debug!("[Win32 Utils] Child style {old:#x} → {new:#x}");
 
     let prev = unsafe { SetParent(child, Some(parent)) };
     if prev == Ok(HWND(null_mut())) {
-        let err = windows::core::Error::from_win32();
-        warn!("[Win32 Utils] SetParent failed: {:?}", err);
+        let err = Error::from_win32();
+        warn!("[Win32 Utils] SetParent failed: {err:?}");
     } else {
-        debug!("[Win32 Utils] Child already under {:?}", prev);
+        debug!("[Win32 Utils] Child already under {prev:?}");
     }
 
     let mut rc = RECT::default();
@@ -465,6 +465,6 @@ pub fn to_wide(s: &str) -> Vec<u16> {
 /// Log the last OS error, then panic with the given message.
 pub fn panic_with_error(message: &str) -> ! {
     let err = std::io::Error::last_os_error();
-    error!("{} OS error: {}", message, err);
+    error!("{message} OS error: {err}");
     panic!("{}", message);
 }

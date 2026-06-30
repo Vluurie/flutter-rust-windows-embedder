@@ -1,5 +1,5 @@
 use crate::path_utils::load_flutter_build_paths;
-use crate::software_renderer::api::RendererType;
+use crate::software_renderer::api::{OverlayCreateParams, RendererType};
 use crate::software_renderer::d3d11_compositor::effects::EffectConfig;
 use crate::software_renderer::d3d11_compositor::post_processing_renderer::PostProcessRenderer;
 use crate::software_renderer::d3d11_compositor::primitive_3d_renderer::Primitive3DRenderer;
@@ -20,8 +20,15 @@ use crate::software_renderer::overlay::overlay_impl::{
     FLUTTER_LOG_TAG, SendHwnd, SendableFlutterEngine, SendableHandle,
 };
 use crate::software_renderer::overlay::platform_message_callback::simple_platform_message_callback;
+use crate::software_renderer::overlay::textinput::{
+    ViewKeyboardState, register_view_keyboard_state,
+};
 use crate::software_renderer::overlay::project_args::{
     build_project_args_and_strings, flutter_log_callback, maybe_load_aot_path_to_cstring,
+};
+use crate::software_renderer::multiview::ViewRegistry;
+use crate::software_renderer::multiview::compositor::{
+    build_compositor, view_focus_change_request_callback,
 };
 use crate::software_renderer::overlay::renderer::build_software_renderer_config;
 
@@ -32,6 +39,7 @@ use crate::bindings::embedder::{
 };
 use crate::software_renderer::overlay::semantics_handler::semantics_update_callback;
 use crate::software_renderer::ticker::spawn::start_task_runner;
+use crate::software_renderer::ticker::task_runner_window::Waker;
 use crate::software_renderer::ticker::task_scheduler::{
     SendableFlutterCustomTaskRunners, SendableFlutterTaskRunnerDescription, TaskQueueState,
     TaskRunnerContext, destroy_task_runner_context_callback, post_task_callback,
@@ -52,31 +60,55 @@ use windows::Win32::Graphics::Dxgi::{DXGI_SWAP_CHAIN_DESC, IDXGIKeyedMutex, IDXG
 
 use super::overlay_impl::FlutterOverlay;
 
+/// GPU + renderer resources produced when selecting/initializing a renderer
+/// (OpenGL/ANGLE or the software fallback) for a new overlay. Replaces a large
+/// anonymous tuple so the type stays readable.
+struct RendererInitResources {
+    rdr_cfg: embedder::FlutterRendererConfig,
+    texture: ID3D11Texture2D,
+    srv: ID3D11ShaderResourceView,
+    gl_internal_linear_texture: Option<ID3D11Texture2D>,
+    pixel_buffer: Option<Vec<u8>>,
+    angle_state: Option<SendableAngleState>,
+    d3d11_shared_handle: Option<SendableHandle>,
+    angle_shared_texture: Option<ID3D11Texture2D>,
+    angle_query: Option<ID3D11Query>,
+    angle_keyed_mutex: Option<IDXGIKeyedMutex>,
+    game_keyed_mutex: Option<IDXGIKeyedMutex>,
+    renderer_type: RendererType,
+}
+
 const FLUTTER_ENGINE_VERSION: usize = 1;
 ///  global flag tracks if a hardware-accelerated (OpenGL) context has already been created. Currently support only 1 overlay with it.
 /// other fallback to software renderer
 static OPENGL_CONTEXT_CREATED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn init_overlay(
-    name: String,
-    data_dir: Option<PathBuf>,
+    params: OverlayCreateParams,
     device: &ID3D11Device,
     swap_chain: &IDXGISwapChain,
-    width: u32,
-    height: u32,
-    x: i32,
-    y: i32,
-    dart_args_opt: Option<&[String]>,
-    engine_args_opt: Option<&[String]>,
 ) -> Option<Box<FlutterOverlay>> {
+    let OverlayCreateParams {
+        name,
+        x,
+        y,
+        width,
+        height,
+        flutter_data_dir,
+        dart_entrypoint_args,
+        engine_args,
+    } = params;
+    let data_dir: Option<PathBuf> = Some(flutter_data_dir);
+    let dart_args_opt: Option<&[String]> = dart_entrypoint_args.as_deref();
+    let engine_args_opt: Option<&[String]> = engine_args.as_deref();
+
     unsafe {
         let engine_dll_load_dir = data_dir.as_deref();
         let engine_dll_arc = match FlutterEngineDll::get_for(engine_dll_load_dir) {
             Ok(dll) => dll,
             Err(e) => {
                 error!(
-                    "Failed to load flutter_engine.dll from `{:?}`: {:?}",
-                    engine_dll_load_dir, e
+                    "Failed to load flutter_engine.dll from `{engine_dll_load_dir:?}`: {e:?}"
                 );
                 return None;
             }
@@ -84,8 +116,7 @@ pub(crate) fn init_overlay(
 
         if width == 0 || height == 0 {
             error!(
-                "Width and height must be non-zero, got {}x{}",
-                width, height
+                "Width and height must be non-zero, got {width}x{height}"
             );
             return None;
         }
@@ -106,27 +137,27 @@ pub(crate) fn init_overlay(
         let swap_chain_desc: DXGI_SWAP_CHAIN_DESC = match swap_chain.GetDesc() {
             Ok(desc) => desc,
             Err(e) => {
-                error!("Failed to get swap chain description: {}", e);
+                error!("Failed to get swap chain description: {e}");
                 return None;
             }
         };
         let hwnd = swap_chain_desc.OutputWindow;
         let game_device: &ID3D11Device = device;
 
-        let (
+        let RendererInitResources {
             rdr_cfg,
-            texture_for_struct,
-            srv_for_struct,
-            gl_internal_linear_texture_for_struct,
-            pixel_buffer_for_struct,
-            angle_state_for_struct,
-            d3d11_shared_handle_for_struct,
-            angle_shared_texture_for_struct,
-            angle_query_for_struct,
-            angle_keyed_mutex_for_struct,
-            game_keyed_mutex_for_struct,
-            final_renderer_type,
-        ) = 'opengl_attempt: {
+            texture: texture_for_struct,
+            srv: srv_for_struct,
+            gl_internal_linear_texture: gl_internal_linear_texture_for_struct,
+            pixel_buffer: pixel_buffer_for_struct,
+            angle_state: angle_state_for_struct,
+            d3d11_shared_handle: d3d11_shared_handle_for_struct,
+            angle_shared_texture: angle_shared_texture_for_struct,
+            angle_query: angle_query_for_struct,
+            angle_keyed_mutex: angle_keyed_mutex_for_struct,
+            game_keyed_mutex: game_keyed_mutex_for_struct,
+            renderer_type: final_renderer_type,
+        } = 'opengl_attempt: {
             if OPENGL_CONTEXT_CREATED
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
@@ -149,8 +180,7 @@ pub(crate) fn init_overlay(
                             Some(tex) => tex,
                             None => {
                                 error!(
-                                    "[InitOverlay] OpenSharedResource failed for '{}'. Falling back to software renderer.",
-                                    name,
+                                    "[InitOverlay] OpenSharedResource failed for '{name}'. Falling back to software renderer.",
                                 );
                                 drop(angle_state);
                                 OPENGL_CONTEXT_CREATED.store(false, Ordering::SeqCst);
@@ -201,26 +231,25 @@ pub(crate) fn init_overlay(
                         let angle_state = Some(SendableAngleState(angle_state));
                         let rdr_cfg = build_opengl_renderer_config();
 
-                        (
+                        RendererInitResources {
                             rdr_cfg,
                             texture,
                             srv,
-                            Some(angle_texture_on_angle_device),
-                            None,
+                            gl_internal_linear_texture: Some(angle_texture_on_angle_device),
+                            pixel_buffer: None,
                             angle_state,
-                            Some(SendableHandle(shared_handle)),
-                            Some(angle_texture_on_game_device),
+                            d3d11_shared_handle: Some(SendableHandle(shared_handle)),
+                            angle_shared_texture: Some(angle_texture_on_game_device),
                             angle_query,
-                            angle_km,
-                            game_km,
-                            RendererType::OpenGL,
-                        )
+                            angle_keyed_mutex: angle_km,
+                            game_keyed_mutex: game_km,
+                            renderer_type: RendererType::OpenGL,
+                        }
                     }
                     Err(e) => {
                         // If even the first attempt fails, reset the flag and fall back.
                         error!(
-                            "OpenGL initialization failed for overlay: {}. Falling back to software.",
-                            e
+                            "OpenGL initialization failed for overlay: {e}. Falling back to software."
                         );
                         OPENGL_CONTEXT_CREATED.store(false, Ordering::SeqCst);
                         build_software_renderer_config_tuple(game_device, width, height)
@@ -242,8 +271,10 @@ pub(crate) fn init_overlay(
             dart_argv_cs_temp.push(arg);
         }
 
+        let compositor_active = matches!(final_renderer_type, RendererType::OpenGL);
+
         let engine_atomic_ptr_instance = Arc::new(AtomicPtr::new(ptr::null_mut()));
-        let task_queue_arc = Arc::new(TaskQueueState::new());
+        let task_queue_arc = Arc::new(TaskQueueState::new(Arc::new(Waker::new())));
 
         let platform_context_owned_by_overlay = Box::new(TaskRunnerContext {
             task_runner_thread_id: None,
@@ -286,11 +317,13 @@ pub(crate) fn init_overlay(
             _platform_runner_context: Some(platform_context_owned_by_overlay),
             _platform_runner_description: None,
             _custom_task_runners_struct: None,
+            _compositor: None,
             engine_dll: engine_dll_arc.clone(),
-            text_input_state: Arc::new(Mutex::new(None)),
+            view0_keyboard: Arc::new(ViewKeyboardState::new()),
+            active_text_input: Arc::new(Mutex::new(None)),
             pending_platform_messages: Arc::new(Mutex::new(VecDeque::new())),
             pending_key_events: Arc::new(Mutex::new(VecDeque::new())),
-            pressed_keys: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            pending_view_focus: Arc::new(Mutex::new(VecDeque::new())),
             mouse_buttons_state: AtomicI32::new(0),
             is_mouse_added: AtomicBool::new(false),
             semantics_tree_data: Arc::new(Mutex::new(HashMap::new())),
@@ -311,7 +344,12 @@ pub(crate) fn init_overlay(
             damage_rects: std::sync::Mutex::new(Vec::new()),
             frame_damage_rects: std::sync::Mutex::new(Vec::new()),
             full_repaint_needed: std::sync::atomic::AtomicBool::new(true),
+            view_registry: Arc::new(ViewRegistry::new()),
+            view0_gl: None,
+            compositor_active,
         });
+
+        register_view_keyboard_state(0, overlay_box.view0_keyboard.clone());
 
         let user_data_for_engine: *mut c_void = &mut *overlay_box as *mut _ as *mut c_void;
 
@@ -409,8 +447,12 @@ pub(crate) fn init_overlay(
             update_semantics_callback: None,
             update_semantics_callback2: Some(semantics_update_callback),
             channel_update_callback: None,
-            view_focus_change_request_callback: None, // TODO: Implement for multi-window support
-            engine_id: 0,                             // TODO: Support multiple engine instances
+            view_focus_change_request_callback: if compositor_active {
+                Some(view_focus_change_request_callback)
+            } else {
+                None
+            },
+            engine_id: 0,
         };
 
         if let Some(aot_c_ref) = &overlay_box._aot_c {
@@ -436,6 +478,21 @@ pub(crate) fn init_overlay(
 
         overlay_box.is_debug_build = proj_args.aot_data.is_null();
 
+        // Install the multi-view compositor for the OpenGL renderer. Its
+        // callbacks reach the overlay (and its view registry) through this
+        // pointer, which is stable because `overlay_box` is heap-allocated and
+        // not moved after this point. The compositor is held in `_compositor`
+        // for the engine's lifetime since `proj_args.compositor` borrows it.
+        if overlay_box.compositor_active {
+            use crate::software_renderer::overlay::overlay_impl::SendableFlutterCompositor;
+
+            let host_ptr: *mut FlutterOverlay = &mut *overlay_box;
+            let compositor = build_compositor(host_ptr);
+            let compositor_box = Box::new(SendableFlutterCompositor(compositor));
+            proj_args.compositor = &compositor_box.0;
+            overlay_box._compositor = Some(compositor_box);
+        }
+
         let raw_ptr_to_overlay_for_run_engine: *mut FlutterOverlay = &mut *overlay_box;
         let engine_run_result = run_engine(
             FLUTTER_ENGINE_VERSION,
@@ -450,8 +507,7 @@ pub(crate) fn init_overlay(
             Ok(handle) => handle,
             Err(e) => {
                 error!(
-                    "[InitOverlay] Engine initialization failed during run_engine: {}",
-                    e
+                    "[InitOverlay] Engine initialization failed during run_engine: {e}"
                 );
                 engine_atomic_ptr_instance.store(ptr::null_mut(), Ordering::SeqCst);
                 return None;
@@ -473,37 +529,24 @@ fn build_software_renderer_config_tuple(
     game_device: &ID3D11Device,
     width: u32,
     height: u32,
-) -> (
-    embedder::FlutterRendererConfig,
-    ID3D11Texture2D,
-    ID3D11ShaderResourceView,
-    Option<ID3D11Texture2D>,
-    Option<Vec<u8>>,
-    Option<SendableAngleState>,
-    Option<SendableHandle>,
-    Option<ID3D11Texture2D>,
-    Option<ID3D11Query>,
-    Option<IDXGIKeyedMutex>,
-    Option<IDXGIKeyedMutex>,
-    RendererType,
-) {
+) -> RendererInitResources {
     let texture = create_texture(game_device, width, height);
     let srv = create_srv(game_device, &texture);
     let pixel_buffer = Some(vec![0; (width * height * 4) as usize]);
     let rdr_cfg = build_software_renderer_config();
 
-    (
+    RendererInitResources {
         rdr_cfg,
         texture,
         srv,
-        None,
+        gl_internal_linear_texture: None,
         pixel_buffer,
-        None,
-        None,
-        None,
-        None, // No GPU sync query needed for software renderer
-        None, // No keyed mutex for software renderer
-        None,
-        RendererType::Software,
-    )
+        angle_state: None,
+        d3d11_shared_handle: None,
+        angle_shared_texture: None,
+        angle_query: None, // No GPU sync query needed for software renderer
+        angle_keyed_mutex: None, // No keyed mutex for software renderer
+        game_keyed_mutex: None,
+        renderer_type: RendererType::Software,
+    }
 }

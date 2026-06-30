@@ -403,6 +403,65 @@ Widgets then `Watch` those computed signals and rebuild each frame as native
 state changes. (This uses the `signals` package; any reactive state library
 works.)
 
+## Multiple windows (multi-view)
+
+One Flutter engine (one isolate, shared Dart state) can drive more than the
+in-game overlay. You can spawn extra top-level OS windows, each backed by its own
+Flutter view, rendered from the same app. This is great for tear-off panels: an
+editor or inspector that pops out of the overlay into its own resizable window
+while sharing all of the app's state. (Multi-view requires the OpenGL/ANGLE path.)
+
+Spawn a window from native through the manager. You get a `SatelliteWindow` back;
+keep it alive (dropping it closes the window), and use its `view_id` to address
+the new view from Dart.
+
+```rust
+use flutter_rust_windows_embedder::software_renderer::overlays_manager_api::get_flutter_overlay_manager_handle;
+use flutter_rust_windows_embedder::software_renderer::multiview::window::{WindowSpec, WindowStyle};
+
+fn spawn_editor_window() -> Option<i64> {
+    let om = get_flutter_overlay_manager_handle()?;
+    let mut mgr = om.manager.lock();
+
+    let spec = WindowSpec {
+        title: "Script Editor".to_string(),
+        width: 1100,
+        height: 800,
+        pixel_ratio: None,
+        style: WindowStyle { decorated: true, resizable: true },
+    };
+
+    match mgr.spawn_window_for_overlay(None, spec) {
+        Ok(window) => {
+            let view_id = window.view_id() as i64;
+            // Store `window` somewhere lasting (e.g. a Vec); dropping it closes the window.
+            Some(view_id)
+        }
+        Err(_) => None,
+    }
+}
+```
+
+On the Dart side, render every live view with a `ViewCollection`, switching
+content by `viewId` (0 is the main overlay; anything else is a spawned window):
+
+```dart
+@override
+Widget build(BuildContext context) {
+  final views = WidgetsBinding.instance.platformDispatcher.views;
+  return ViewCollection(
+    views: [
+      for (final v in views)
+        View(view: v, child: v.viewId == 0 ? const MainOverlay() : EditorWindow(viewId: v.viewId)),
+    ],
+  );
+}
+```
+
+`SatelliteWindow` also exposes window controls (`minimize`, `maximize`, `restore`,
+`start_drag`, `set_title`, `close`) so a custom, borderless Dart title bar can
+drive the real OS window.
+
 ## Extra rendering APIs (optional)
 
 Beyond compositing the Flutter UI, the same `om` handle exposes a small set of
